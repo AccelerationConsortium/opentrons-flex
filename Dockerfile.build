@@ -1,0 +1,198 @@
+# Stage 1: Compile grpcio on Debian Stretch (glibc 2.24).
+# OT-2 has glibc 2.25. Buster has glibc 2.28 — too new.
+# Stretch (glibc 2.24) is the oldest ARM image with a working apt archive.
+# Python 3.10 requires OpenSSL 1.1.1, but Stretch ships 1.1.0 — compile both from source.
+# Each RUN is a separate cache layer: apt → OpenSSL → Python → grpcio.
+FROM arm32v7/debian:stretch-slim AS grpc-builder
+
+# Stretch is EOL — redirect to archive; Release file is expired so disable valid-until check.
+RUN echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/10no-check-valid-until && \
+    sed -i 's/deb.debian.org/archive.debian.org/g' /etc/apt/sources.list && \
+    sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' /etc/apt/sources.list && \
+    sed -i '/stretch-updates/d' /etc/apt/sources.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        zlib1g-dev \
+        libffi-dev \
+        wget \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# OpenSSL 1.1.1 from source — stretch-backports doesn't reliably override configure detection
+RUN wget -q https://www.openssl.org/source/openssl-1.1.1w.tar.gz && \
+    tar xzf openssl-1.1.1w.tar.gz && \
+    cd openssl-1.1.1w && \
+    ./Configure linux-armv4 --prefix=/usr/local/ssl --openssldir=/usr/local/ssl shared zlib no-asm && \
+    make -j$(nproc) && \
+    make install_sw && \
+    echo /usr/local/ssl/lib > /etc/ld.so.conf.d/ssl.conf && ldconfig && \
+    cd .. && rm -rf openssl-1.1.1w*
+
+# Python 3.10 pointed explicitly at our OpenSSL 1.1.1 install
+RUN wget -q https://www.python.org/ftp/python/3.10.4/Python-3.10.4.tgz && \
+    tar xzf Python-3.10.4.tgz && \
+    cd Python-3.10.4 && \
+    ./configure --enable-shared --prefix=/usr/local \
+        --with-openssl=/usr/local/ssl \
+        --with-openssl-rpath=auto && \
+    make -j$(nproc) && \
+    make install && \
+    ldconfig && \
+    cd .. && rm -rf Python-3.10.4*
+
+# setuptools 80+ removed pkg_resources from the wheel; pin to a version that still includes it.
+RUN /usr/local/bin/pip3 install --upgrade pip wheel "setuptools<80"
+# grpcio 1.46.x bundles abseil-cpp ~20211102 which requires only GCC 5+.
+# grpcio 1.70+ bundles a newer abseil that requires GCC 7+, unavailable on Stretch.
+# Use setup.py bdist_wheel directly (not pip) to avoid pip's subprocess isolation
+# which hides pkg_resources even when setuptools is installed.
+# _PYTHON_HOST_PLATFORM: force linux_armv7l tag — uname -m returns aarch64 in arm32v7 on ARM64.
+RUN wget -q -O /tmp/grpcio-1.46.3.tar.gz \
+        https://files.pythonhosted.org/packages/61/dd/d8eda79197a1275e06621850775c7bbf34a141ff92553754dde4e87d7551/grpcio-1.46.3.tar.gz && \
+    tar xzf /tmp/grpcio-1.46.3.tar.gz -C /tmp/ && \
+    cd /tmp/grpcio-1.46.3 && \
+    _PYTHON_HOST_PLATFORM=linux-armv7l \
+    /usr/local/bin/python3 setup.py bdist_wheel --dist-dir /grpc-output/ && \
+    rm -rf /tmp/grpcio-1.46.3 /tmp/grpcio-1.46.3.tar.gz
+
+
+# Stage 2: Compile gpiod Python bindings for armv7l.
+# The official libgpiod 1.x Python bindings (PascalCase API: Chip, Line, etc.) are not
+# on PyPI — the PyPI "gpiod" package is an unrelated ctypes wrapper with a different API.
+# Build from libgpiod 1.6.3 source (matching the version on the OT-2) on Debian Stretch
+# (glibc 2.24). The resulting .so links against libgpiod.so.2 which is present on the OT-2.
+FROM grpc-builder AS gpiod-builder
+# The tarball includes a pre-generated configure script — ./autogen.sh is not needed.
+# bindings/python/ has no setup.py (uses autotools); we write a minimal one that compiles
+# gpiodmodule.c against the installed libgpiod C library.
+RUN wget -q https://mirrors.edge.kernel.org/pub/software/libs/libgpiod/libgpiod-1.6.3.tar.gz && \
+    tar xzf libgpiod-1.6.3.tar.gz && \
+    cd libgpiod-1.6.3 && \
+    ./configure --prefix=/usr/local --enable-shared --disable-static && \
+    make -j$(nproc) && \
+    make install && \
+    echo /usr/local/lib > /etc/ld.so.conf.d/local.conf && ldconfig && \
+    cd bindings/python && \
+    printf '%s\n' \
+        'from setuptools import setup, Extension' \
+        'setup(name="gpiod", version="1.6.3", ext_modules=[Extension(' \
+        '    "gpiod", sources=["gpiodmodule.c"],' \
+        '    libraries=["gpiod"], library_dirs=["/usr/local/lib"],' \
+        '    include_dirs=["/usr/local/include"])])' \
+        > setup.py && \
+    _PYTHON_HOST_PLATFORM=linux-armv7l \
+    /usr/local/bin/pip3 wheel . --no-deps --wheel-dir=/gpiod-output/ && \
+    cd / && rm -rf libgpiod-1.6.3*
+
+
+# Stage 3: Compile numpy for armv7l on Debian Stretch (glibc 2.24).
+# Must use the same Stretch base as grpc-builder: building on Bookworm (glibc 2.36)
+# produces a wheel that requires GLIBC_2.34+, which the OT-2 (glibc 2.25) does not have.
+# Reuses the custom Python 3.10 + OpenSSL already built in Stage 1.
+# Compiled without BLAS/LAPACK (NPY_BLAS_ORDER="" NPY_LAPACK_ORDER="") — no libopenblas
+# runtime dep, which is also absent on the OT-2. Only array ops are needed for robot control.
+FROM grpc-builder AS numpy-builder
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gfortran && \
+    rm -rf /var/lib/apt/lists/*
+# _PYTHON_HOST_PLATFORM: force armv7l tag — uname -m returns aarch64 in arm32v7 on ARM64.
+RUN _PYTHON_HOST_PLATFORM=linux-armv7l \
+    NPY_BLAS_ORDER="" NPY_LAPACK_ORDER="" \
+    /usr/local/bin/pip3 wheel "numpy>=1.20,<1.25" --no-deps --wheel-dir=/numpy-output/
+
+
+# Stage 3: Build our package and download remaining deps
+FROM arm32v7/python:3.10-slim-bookworm AS builder
+
+WORKDIR /build
+RUN pip install --upgrade pip wheel build uv
+
+COPY pyproject.toml README.md ./
+COPY src/ src/
+COPY config/ config/
+
+# Dependency resolution strategy:
+#
+# uv pip compile resolves the full dep tree from pyproject.toml. Python version
+# markers in pyproject.toml select opentrons==8.8.1 and numpy<1.25 for py310.
+#
+# Packages excluded from pip download (compiled from source in earlier stages):
+#   - grpcio==1.46.3: no pre-built armv7l wheel on PyPI for glibc 2.24; compiled
+#     in grpcio-builder stage. Overridden here so uv captures six>=1.5.2 as a
+#     transitive dep (latest grpcio dropped six from its declared deps).
+#   - numpy: compiled without BLAS/LAPACK; libopenblas is absent on the OT-2
+#   - gpiod: opentrons undeclared dep; PyPI "gpiod" is an unrelated ctypes wrapper;
+#     official libgpiod 1.x bindings built from source in gpiod-builder stage
+#   - pydantic/pydantic-core/pydantic-settings: system versions must be used so
+#     the system fastapi 0.100.0 that robot_server depends on is not broken by a
+#     newer pydantic API (FieldInfo.in_ removed in newer pydantic)
+RUN python -m build --wheel && \
+    mkdir -p /output && \
+    cp dist/*.whl /output/ && \
+    printf 'grpcio==1.46.3\n' > /tmp/overrides.txt && \
+    uv pip compile --python-version 3.10 --override /tmp/overrides.txt pyproject.toml > /tmp/resolved.txt && \
+    grep -v '^numpy\|^grpcio\|^gpiod\|^pydantic' /tmp/resolved.txt > /tmp/resolved_filtered.txt && \
+    pip download --no-deps -d /output/ \
+        --platform manylinux_2_17_armv7l --platform linux_armv7l \
+        --python-version 310 --implementation cp --abi cp310 \
+        -r /tmp/resolved_filtered.txt
+
+COPY --from=numpy-builder /numpy-output/numpy-*.whl /output/
+COPY --from=grpc-builder /grpc-output/grpcio-*.whl /output/
+COPY --from=gpiod-builder /gpiod-output/gpiod-*.whl /output/
+
+
+# Stage 5: Build single self-contained connector binary using PyInstaller.
+# Based on gpiod-builder: Stretch + Python 3.10 + libgpiod.so.2 at /usr/local/lib.
+# Bundles every Python package, every C extension, and libgpiod.so.2.
+# The only external dep at runtime is glibc (OS ABI; built on Stretch glibc 2.24 → OT-2 glibc 2.25).
+FROM gpiod-builder AS pyinstaller-builder
+
+# All wheels (pure-Python + C extensions) come from the builder stage's /output.
+COPY --from=builder /output/ /wheels/
+
+# Install all wheels into the Stretch Python 3.10 environment.
+# --no-deps: every required package is already in /wheels/; no PyPI lookups needed.
+# pydantic was excluded from /output to avoid shadowing system pydantic in the venv deploy,
+# but the PyInstaller bundle is self-contained — add it back from PyPI.
+RUN /usr/local/bin/pip3 install --no-deps /wheels/*.whl && \
+    /usr/local/bin/pip3 install pydantic pydantic-settings
+
+# Build the PyInstaller bootloader from source for armv7l on Stretch (glibc 2.24).
+# PyInstaller ships pre-built bootloaders for x86/x86_64/aarch64 only — not armv7l.
+# The bootloader is injected into the output binary and must match the target glibc.
+# build-essential and zlib1g-dev are already present from the grpc-builder stage.
+RUN /usr/local/bin/pip3 install pyinstaller-hooks-contrib && \
+    wget -q https://github.com/pyinstaller/pyinstaller/archive/refs/tags/v5.13.2.tar.gz && \
+    tar xzf v5.13.2.tar.gz && \
+    cd pyinstaller-5.13.2/bootloader && \
+    /usr/local/bin/python3 ./waf all && \
+    cd ../.. && \
+    /usr/local/bin/pip3 install ./pyinstaller-5.13.2/ && \
+    rm -rf pyinstaller-5.13.2 v5.13.2.tar.gz
+
+# Smoke-test imports before PyInstaller runs — fails fast if any package is missing.
+RUN /usr/local/bin/python3 -c "import grpc, gpiod, opentrons, numpy, unitelabs.opentrons_ot2; print('imports OK: grpc=%s numpy=%s' % (grpc.__version__, numpy.__version__))"
+
+# Build the connector binary.
+# Entry point: /usr/local/bin/connector — the console_scripts shim written by pip when
+# unitelabs-cdk is installed.
+# --add-binary bundles libgpiod.so.2 (compiled on Stretch in gpiod-builder) so the gpiod
+# extension resolves it from inside the bundle via PyInstaller's LD_LIBRARY_PATH, not the system.
+# libstdc++.so.6, libgcc_s.so.1, and libpython3.10.so.1.0 are auto-collected via ldd.
+RUN _PYTHON_HOST_PLATFORM=linux-armv7l \
+    /usr/local/bin/pyinstaller \
+        --onefile \
+        --name connector \
+        --collect-all opentrons \
+        --collect-all opentrons_shared_data \
+        --collect-all unitelabs \
+        --collect-all zeroconf \
+        --hidden-import grpc._cython.cygrpc \
+        --add-binary '/usr/local/lib/libgpiod.so.2:.' \
+        --distpath /exe-output/ \
+        /usr/local/bin/connector
+
+# Smoke-test the frozen binary itself — catches missing hidden imports and data files.
+RUN /exe-output/connector --help

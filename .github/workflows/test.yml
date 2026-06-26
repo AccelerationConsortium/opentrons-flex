@@ -1,0 +1,173 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # Old OT-2: Python 3.10, opentrons 8.8.1 (Debian-based, glibc 2.25)
+          - python-version: "3.10"
+            opentrons-version: "8.8.1"
+          # New OT-2: Python 3.12, opentrons 9.0.0 (Buildroot, glibc 2.40)
+          - python-version: "3.12"
+            opentrons-version: "9.0.0"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          version: "0.9.6"
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies (opentrons ${{ matrix.opentrons-version }})
+        run: |
+          uv sync --all-extras
+          if [ "${{ matrix.opentrons-version }}" != "8.8.1" ]; then
+            uv pip install "opentrons==${{ matrix.opentrons-version }}"
+          fi
+
+      - name: Lint
+        run: uv run ruff check src
+
+      - name: Format
+        run: uv run ruff format --check src
+
+      - name: Test (unit + gRPC simulator)
+        run: uv run pytest --cov=src --cov-report=term --cov-report=xml --junit-xml=junit.xml
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: coverage.xml
+          retention-days: 7
+
+      # ── HTTP + gRPC integration against the simulator ──────────────────────
+      # robot_server and server_utils are not on PyPI; install them from the
+      # opentrons monorepo at the matching release tag.  robot_server's pyproject.toml
+      # pins opentrons/opentrons-shared-data/server-utils at ==0.0.0 (monorepo-internal
+      # constraints).  We override those pins to the real release version so uv can
+      # resolve WITH full deps — picking up fastapi, pydantic, sqlalchemy, etc. from
+      # robot_server's own pyproject.toml without manual enumeration.
+      # opentrons-shared-data is reinstalled from git because the PyPI package omits
+      # the util/ subpackage that robot_server imports.
+      - name: Install opentrons robot-server ${{ matrix.opentrons-version }}
+        run: |
+          VER="${{ matrix.opentrons-version }}"
+          # robot_server/server_utils are not on PyPI; install with --no-deps to skip the
+          # monorepo-internal ==0.0.0 dep constraints that can't be satisfied from PyPI.
+          uv pip install --no-deps \
+            "robot_server @ git+https://github.com/Opentrons/opentrons.git@v${VER}#subdirectory=robot-server" \
+            "server_utils @ git+https://github.com/Opentrons/opentrons.git@v${VER}#subdirectory=server-utils"
+          # Reinstall opentrons monorepo packages from git so robot_server gets all the
+          # internal symbols it imports at module load time.  The PyPI builds omit or differ
+          # from the monorepo source (e.g. PREVIEW_IMAGE, opentrons_shared_data.util,
+          # opentrons_hardware which is not even a dep of the PyPI opentrons package).
+          uv pip install --no-deps --reinstall \
+            "opentrons @ git+https://github.com/Opentrons/opentrons.git@v${VER}#subdirectory=api" \
+            "opentrons_shared_data @ git+https://github.com/Opentrons/opentrons.git@v${VER}#subdirectory=shared-data" \
+            "opentrons_hardware @ git+https://github.com/Opentrons/opentrons.git@v${VER}#subdirectory=hardware"
+          # Install robot_server's non-monorepo deps (versions from its Pipfile.lock).
+          # aiohttp: needed by the legacy routers in robot_server 8.8.1.
+          uv pip install \
+            "aiohttp" \
+            "fastapi==0.100.0" \
+            "pydantic==2.11.7" \
+            "pydantic-settings==2.4.0" \
+            "python-dotenv==1.0.1" \
+            "python-multipart==0.0.6" \
+            "uvicorn==0.27.0.post1" \
+            "wsproto==1.2.0" \
+            "sqlalchemy==1.4.51" \
+            "paho-mqtt==1.6.1"
+
+      - name: Integration tests (HTTP API + gRPC, simulator)
+        run: uv run --no-sync pytest tests/integration/ --with-http-server -v --junit-xml=junit-integration.xml
+
+      - name: Upload integration test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: integration-results-${{ matrix.python-version }}
+          path: junit-integration.xml
+          retention-days: 7
+
+  sonar:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download coverage (Python 3.10)
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-3.10
+          path: .
+
+      - name: SonarCloud scan
+        uses: SonarSource/sonarqube-scan-action@v6
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+
+      - name: Print SonarCloud issues
+        if: always()
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          # Wait for SonarCloud to finish processing before querying
+          for i in $(seq 1 10); do
+            STATUS=$(curl -s -u "$SONAR_TOKEN:" \
+              "https://sonarcloud.io/api/qualitygates/project_status?projectKey=AccelerationConsortium_opentrons-ot2" \
+              | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('projectStatus',{}).get('status','NONE'))")
+            echo "Quality gate status: $STATUS"
+            if [ "$STATUS" != "NONE" ] && [ "$STATUS" != "IN_PROGRESS" ]; then break; fi
+            sleep 5
+          done
+
+          echo "=== Quality Gate Conditions ==="
+          curl -s -u "$SONAR_TOKEN:" \
+            "https://sonarcloud.io/api/qualitygates/project_status?projectKey=AccelerationConsortium_opentrons-ot2" \
+            | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          ps = d.get('projectStatus', {})
+          print(f'Status: {ps.get(\"status\")}')
+          for c in ps.get('conditions', []):
+              status = c['status']
+              metric = c['metricKey']
+              actual = c.get('actualValue', '?')
+              threshold = c.get('errorThreshold', '?')
+              print(f'  [{status}] {metric}: {actual} (threshold: {threshold})')
+          "
+
+          echo "=== Open Issues ==="
+          curl -s -u "$SONAR_TOKEN:" \
+            "https://sonarcloud.io/api/issues/search?projectKeys=AccelerationConsortium_opentrons-ot2&resolved=false&ps=100" \
+            | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          total = data.get('total', 0)
+          issues = data.get('issues', [])
+          print(f'Total: {total}')
+          for i in issues:
+              component = i.get('component', '').split(':')[-1]
+              line = i.get('line', '?')
+              print(f'  [{i[\"severity\"]}] {i[\"type\"]} | {component}:{line} | {i[\"message\"]}')
+          if total == 0:
+              print('  No open issues.')
+          "
