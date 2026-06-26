@@ -20,18 +20,21 @@ Magnetic Block), so there is no magnetic controller here.
 
 from ._errors import (
     COMMON_MODULE_ERRORS,
-    EngageHeightOutOfRangeError,
-    ModuleNotRespondingError,
-    ModuleOperationError,
-)
-from ._types import RPM, DeviceInfo, Temperature
-from .calibration import (
     CalibrationFailedError,
     CalibrationProbeNotAttachedError,
-    FlexCalibrationController,
+    EngageHeightOutOfRangeError,
+    GripActionError,
+    GripperNotAttachedError,
+    ModuleNotRespondingError,
+    ModuleOperationError,
+    MovementOutOfBoundsError,
+    NotHomedError,
+    StallDetectedError,
 )
+from ._types import RPM, DeviceInfo, Temperature
+from .calibration import FlexCalibrationController
 from .flex_motion import Axis, FlexMotionController, OT3Mount, Point
-from .gripper import FlexGripperController, GripActionError, GripperNotAttachedError
+from .gripper import FlexGripperController
 from .hardware_proxy import HardwareProxy
 from .heater_shaker import HeaterShakerController
 from .modules import scan_module_ports
@@ -55,8 +58,11 @@ __all__ = [
     "HeaterShakerController",
     "ModuleNotRespondingError",
     "ModuleOperationError",
+    "MovementOutOfBoundsError",
+    "NotHomedError",
     "OT3Mount",
     "Point",
+    "StallDetectedError",
     "Temperature",
     "TemperatureModuleController",
     "ThermocyclerController",

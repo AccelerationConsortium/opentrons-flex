@@ -14,6 +14,7 @@ raises defined errors (probe missing, calibration failed) the operator can act o
 import enum
 from dataclasses import dataclass
 
+from opentrons.hardware_control.types import OT3Mount
 from unitelabs.cdk import sila
 
 from ..io import (
@@ -47,9 +48,7 @@ class Offset:
     z: float
 
 
-def _ot3_pipette_mount(mount: PipetteMount):
-    from opentrons.hardware_control.types import OT3Mount
-
+def _ot3_pipette_mount(mount: PipetteMount) -> OT3Mount:
     return OT3Mount.LEFT if mount is PipetteMount.LEFT else OT3Mount.RIGHT
 
 

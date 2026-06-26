@@ -17,12 +17,12 @@ from the robot-server through an ``asyncio.Lock``. This controller is handed the
 
 import asyncio
 import logging
-import typing
 
 from opentrons.hardware_control import HardwareControlAPI
 from opentrons.hardware_control.types import Axis, OT3Mount
 from opentrons.types import Point
 
+from ._errors import translate_motion_errors
 from .hardware_proxy import _TimedLock
 
 log = logging.getLogger(__name__)
@@ -115,6 +115,7 @@ class FlexMotionController:
 
     # ------------------------------------------------------------------ motion
 
+    @translate_motion_errors
     async def home(self, axes: list[Axis] | None = None) -> None:
         """Home the given axes (all axes when ``None``)."""
         async with self._lock:
@@ -124,12 +125,14 @@ class FlexMotionController:
         """Home only the axes belonging to one mount."""
         await self.home(_MOUNT_AXES.get(mount))
 
+    @translate_motion_errors
     async def move_to(self, mount: OT3Mount, point: Point, speed: float | None = None) -> Point:
         """Move ``mount`` to an absolute deck ``point`` and return the resulting position."""
         async with self._lock:
             await self._api.move_to(mount=mount, abs_position=point, speed=speed)
             return await self._api.gantry_position(mount, refresh=True)
 
+    @translate_motion_errors
     async def move_rel(self, mount: OT3Mount, delta: Point, speed: float | None = None) -> Point:
         """Move ``mount`` by ``delta`` and return the resulting position."""
         async with self._lock:

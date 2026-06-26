@@ -35,7 +35,7 @@ class ModuleNotRespondingError(Exception):
     """
     The module did not respond — it may be disconnected or powered off.
 
-    Check that the module is connected to the OT-2 and powered on, then retry.
+    Check that the module is connected to the Flex and powered on, then retry.
     """
 
 
@@ -79,3 +79,111 @@ def translate_public_async_methods(cls: type) -> None:
     for name, attr in list(vars(cls).items()):
         if not name.startswith("_") and inspect.iscoroutinefunction(attr):
             setattr(cls, name, translate_module_errors(attr))
+
+
+# ---------------------------------------------------------------------------
+# Motion defined errors
+#
+# Translation lives here (io layer) for the same reason as the module errors:
+# the features see one stable set of SiLA errors regardless of the opentrons
+# exception type the OT3API happens to raise. The docstrings become the SiLA
+# DefinedExecutionError descriptions on the wire, so they are written for an
+# operator and include a resolution hint.
+# ---------------------------------------------------------------------------
+
+
+class NotHomedError(Exception):
+    """
+    The robot's position is unknown, so the move was refused.
+
+    Home the robot (or the affected mount) before requesting a move.
+    """
+
+
+class MovementOutOfBoundsError(Exception):
+    """
+    The requested move would take the mount outside the deck working volume.
+
+    Check the target coordinates against the Flex deck envelope and retry.
+    """
+
+
+class StallDetectedError(Exception):
+    """
+    A stall or collision was detected during the move; motion was halted.
+
+    Clear any obstruction, then re-home before continuing. The underlying
+    hardware message is preserved to aid diagnosis.
+    """
+
+
+def translate_motion_errors(
+    fn: typing.Callable[..., typing.Awaitable[object]],
+) -> typing.Callable[..., typing.Awaitable[object]]:
+    """Wrap an async motion method, translating OT3API exceptions to defined errors."""
+
+    @functools.wraps(fn)
+    async def wrapper(*args: object, **kwargs: object) -> object:
+        # Imported lazily: these live in opentrons/opentrons_shared_data and are
+        # only needed when a motion call actually fails.
+        from opentrons.hardware_control.errors import OutOfBoundsMove
+        from opentrons_shared_data.errors.exceptions import (
+            PositionEstimationInvalidError,
+            PositionUnknownError,
+            StallOrCollisionDetectedError,
+        )
+
+        try:
+            return await fn(*args, **kwargs)
+        except (PositionUnknownError, PositionEstimationInvalidError) as e:
+            raise NotHomedError(str(e)) from e
+        except OutOfBoundsMove as e:
+            raise MovementOutOfBoundsError(str(e)) from e
+        except StallOrCollisionDetectedError as e:
+            raise StallDetectedError(str(e)) from e
+
+    return wrapper
+
+
+# ---------------------------------------------------------------------------
+# Gripper defined errors (Flex-only instrument)
+# ---------------------------------------------------------------------------
+
+
+class GripperNotAttachedError(Exception):
+    """
+    No gripper is attached, so the requested gripper action cannot run.
+
+    Attach the Flex gripper to the rear mount and re-scan instruments before retrying.
+    """
+
+
+class GripActionError(Exception):
+    """
+    The gripper failed to complete a grip, ungrip, or home-jaw action.
+
+    The underlying hardware message is preserved so the failure can be diagnosed.
+    """
+
+
+# ---------------------------------------------------------------------------
+# Calibration defined errors
+# ---------------------------------------------------------------------------
+
+
+class CalibrationProbeNotAttachedError(Exception):
+    """
+    The calibration probe is required for this routine but is not attached.
+
+    Attach the conductive calibration probe to the pipette nozzle (or the named
+    gripper jaw) and retry.
+    """
+
+
+class CalibrationFailedError(Exception):
+    """
+    An automatic calibration routine failed to find or verify a position.
+
+    The underlying hardware/geometry message is preserved so the measured
+    deviation and probe coordinates are available for troubleshooting.
+    """

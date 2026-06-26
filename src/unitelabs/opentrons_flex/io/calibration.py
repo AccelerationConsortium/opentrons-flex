@@ -16,29 +16,15 @@ import asyncio
 import logging
 
 from opentrons.hardware_control import HardwareControlAPI
-from opentrons.hardware_control.types import OT3Mount
+from opentrons.hardware_control.types import GripperProbe, OT3Mount
 
+from ._errors import CalibrationFailedError, CalibrationProbeNotAttachedError
 from .hardware_proxy import _TimedLock
 
 log = logging.getLogger(__name__)
 
 # Default Flex calibration slot (deck slot 5 / "C2") used by the Opentrons routines.
 DEFAULT_CALIBRATION_SLOT = 5
-
-
-class CalibrationProbeNotAttachedError(Exception):
-    """The calibration probe is required but not attached.
-
-    Attach the conductive calibration probe to the pipette/gripper before calibrating.
-    """
-
-
-class CalibrationFailedError(Exception):
-    """An automatic calibration routine failed to find or verify a position.
-
-    The message includes the underlying hardware/geometry error so the deviation
-    and probe coordinates are available for troubleshooting.
-    """
 
 
 class FlexCalibrationController:
@@ -64,7 +50,9 @@ class FlexCalibrationController:
         """Share an already-built API and lock (in-process robot-server mode)."""
         return cls(api=api, lock=lock, lock_timeout_s=lock_timeout_s)
 
-    async def calibrate_pipette(self, mount: OT3Mount, slot: int = DEFAULT_CALIBRATION_SLOT) -> tuple[float, float, float]:
+    async def calibrate_pipette(
+        self, mount: OT3Mount, slot: int = DEFAULT_CALIBRATION_SLOT
+    ) -> tuple[float, float, float]:
         """
         Run automatic pipette-offset calibration for ``mount``.
 
@@ -75,15 +63,17 @@ class FlexCalibrationController:
         async with self._lock:
             try:
                 offset = await cal.calibrate_pipette(self._api, mount=mount, slot=slot)
-            except Exception as exc:  # noqa: BLE001 — re-raised as a defined error below
+            except Exception as exc:
                 raise self._translate(exc) from exc
         return (offset.x, offset.y, offset.z)
 
-    async def calibrate_gripper_jaw(self, probe, slot: int = DEFAULT_CALIBRATION_SLOT) -> tuple[float, float, float]:
+    async def calibrate_gripper_jaw(
+        self, probe: GripperProbe, slot: int = DEFAULT_CALIBRATION_SLOT
+    ) -> tuple[float, float, float]:
         """
         Run gripper-jaw calibration for one jaw probe.
 
-        ``probe`` is an ``opentrons.hardware_control.types.GripperProbe`` member.
+        ``probe`` selects which gripper jaw (FRONT/REAR) carries the calibration probe.
         Returns the measured jaw offset as ``(x, y, z)`` mm.
         """
         from opentrons.hardware_control import ot3_calibration as cal
@@ -91,7 +81,7 @@ class FlexCalibrationController:
         async with self._lock:
             try:
                 offset = await cal.calibrate_gripper_jaw(self._api, probe=probe, slot=slot)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 raise self._translate(exc) from exc
         return (offset.x, offset.y, offset.z)
 
@@ -102,22 +92,22 @@ class FlexCalibrationController:
         async with self._lock:
             try:
                 await cal.calibrate_belts(self._api, mount=mount, pipette_id=pipette_id)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 raise self._translate(exc) from exc
 
     @staticmethod
     def _translate(exc: Exception) -> Exception:
         """Map opentrons calibration exceptions to this module's defined errors."""
-        name = type(exc).__name__.lower()
-        text = str(exc).lower()
-        if "probe" in name or "probe" in text and "not" in text:
+        haystack = f"{type(exc).__name__} {exc}".lower()
+        probe_missing = "probe" in haystack and ("not" in haystack or "attach" in haystack or "missing" in haystack)
+        if probe_missing:
             return CalibrationProbeNotAttachedError(str(exc))
         return CalibrationFailedError(str(exc))
 
 
 __all__ = [
+    "DEFAULT_CALIBRATION_SLOT",
     "CalibrationFailedError",
     "CalibrationProbeNotAttachedError",
-    "DEFAULT_CALIBRATION_SLOT",
     "FlexCalibrationController",
 ]

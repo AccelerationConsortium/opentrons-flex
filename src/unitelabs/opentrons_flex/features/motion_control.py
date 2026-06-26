@@ -14,12 +14,22 @@ import enum
 import typing
 from dataclasses import dataclass
 
-from opentrons.hardware_control.types import Axis, OT3Mount
+from opentrons.hardware_control.types import OT3Mount
 from opentrons.types import Point
 from unitelabs.cdk import sila
 from unitelabs.cdk.sila import constraints
 
-from ..io import FlexMotionController
+from ..io import (
+    FlexMotionController,
+    MovementOutOfBoundsError,
+    NotHomedError,
+    StallDetectedError,
+)
+
+# Expected failure modes for any commanded move; declared on the SiLA commands so
+# clients receive Defined Execution Errors (with recovery hints) rather than
+# opaque undefined errors.
+_MOVE_ERRORS = [NotHomedError, MovementOutOfBoundsError, StallDetectedError]
 
 
 class Mount(enum.Enum):
@@ -30,29 +40,11 @@ class Mount(enum.Enum):
     GRIPPER = "GRIPPER"
 
 
-class HomeAxis(enum.Enum):
-    """A single Flex motion axis (Z_L/Z_R = mount Z, P_L/P_R = plunger, Z_G/G = gripper)."""
-
-    X = "X"
-    Y = "Y"
-    Z_L = "Z_L"
-    Z_R = "Z_R"
-    Z_G = "Z_G"
-    P_L = "P_L"
-    P_R = "P_R"
-    Q = "Q"
-    G = "G"
-
-
 _MOUNT_TO_OT3 = {Mount.LEFT: OT3Mount.LEFT, Mount.RIGHT: OT3Mount.RIGHT, Mount.GRIPPER: OT3Mount.GRIPPER}
 
 
 def _ot3_mount(mount: Mount) -> OT3Mount:
     return _MOUNT_TO_OT3[mount]
-
-
-def _axis(a: HomeAxis) -> Axis:
-    return Axis[a.value]
 
 
 @dataclass
@@ -91,12 +83,12 @@ class MotionControlFeature(sila.Feature):
 
     # ------------------------------------------------------------------ homing
 
-    @sila.UnobservableCommand()
+    @sila.UnobservableCommand(errors=_MOVE_ERRORS)
     async def home(self) -> None:
         """Home every axis. Required after an emergency stop before further motion."""
         await self._controller.home()
 
-    @sila.UnobservableCommand()
+    @sila.UnobservableCommand(errors=_MOVE_ERRORS)
     async def home_mount(self, mount: Mount) -> None:
         """
         Home only the axes belonging to one mount.
@@ -108,7 +100,7 @@ class MotionControlFeature(sila.Feature):
 
     # ------------------------------------------------------------------ motion
 
-    @sila.UnobservableCommand()
+    @sila.UnobservableCommand(errors=_MOVE_ERRORS)
     async def move_to(
         self,
         mount: Mount,
@@ -134,7 +126,7 @@ class MotionControlFeature(sila.Feature):
         point = await self._controller.move_to(_ot3_mount(mount), Point(x=x, y=y, z=z), speed=spd)
         return _to_position(point)
 
-    @sila.UnobservableCommand()
+    @sila.UnobservableCommand(errors=_MOVE_ERRORS)
     async def move_relative(
         self,
         mount: Mount,
@@ -162,7 +154,7 @@ class MotionControlFeature(sila.Feature):
         )
         return _to_position(point)
 
-    @sila.UnobservableCommand()
+    @sila.UnobservableCommand(errors=_MOVE_ERRORS)
     async def get_position(self, mount: Mount) -> Position:
         """Return the current deck position of ``mount`` in mm."""
         point = await self._controller.gantry_position(_ot3_mount(mount))
@@ -170,12 +162,12 @@ class MotionControlFeature(sila.Feature):
 
     # ----------------------------------------------------- primitive liquid moves
 
-    @sila.UnobservableCommand()
+    @sila.UnobservableCommand(errors=_MOVE_ERRORS)
     async def prepare_for_aspirate(self, mount: Mount) -> None:
         """Move the plunger to its bottom position, ready to aspirate."""
         await self._controller.prepare_for_aspirate(_ot3_mount(mount))
 
-    @sila.UnobservableCommand()
+    @sila.UnobservableCommand(errors=_MOVE_ERRORS)
     async def aspirate(
         self,
         mount: Mount,
@@ -192,7 +184,7 @@ class MotionControlFeature(sila.Feature):
         """
         await self._controller.aspirate(_ot3_mount(mount), volume=volume, rate=rate)
 
-    @sila.UnobservableCommand()
+    @sila.UnobservableCommand(errors=_MOVE_ERRORS)
     async def dispense(
         self,
         mount: Mount,
@@ -212,7 +204,7 @@ class MotionControlFeature(sila.Feature):
         po = push_out if push_out > 0 else None
         await self._controller.dispense(_ot3_mount(mount), volume=volume, rate=rate, push_out=po)
 
-    @sila.UnobservableCommand()
+    @sila.UnobservableCommand(errors=_MOVE_ERRORS)
     async def blow_out(self, mount: Mount) -> None:
         """Blow out any residual liquid from the attached tip."""
         await self._controller.blow_out(_ot3_mount(mount))
@@ -261,7 +253,7 @@ class MotionControlFeature(sila.Feature):
 
     @sila.UnobservableProperty()
     async def lights(self) -> Lights:
-        """Current status-bar and deck light state."""
+        """Return the current status-bar and deck light state."""
         return await self._read_lights()
 
     async def _read_lights(self) -> Lights:

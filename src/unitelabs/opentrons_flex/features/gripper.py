@@ -50,7 +50,7 @@ class GripperFeature(sila.Feature):
         Close the jaw to grip labware.
 
         Args:
-            force: Grip force in Newtons (5–25 N).
+            force: Grip force in Newtons (5-25 N).
         """
         await self._controller.grip(force_newtons=force)
 

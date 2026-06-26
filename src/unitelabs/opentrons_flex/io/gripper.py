@@ -12,20 +12,10 @@ import logging
 
 from opentrons.hardware_control import HardwareControlAPI
 
+from ._errors import GripActionError, GripperNotAttachedError
 from .hardware_proxy import _TimedLock
 
 log = logging.getLogger(__name__)
-
-
-class GripperNotAttachedError(Exception):
-    """No gripper is attached, so the requested gripper action cannot run.
-
-    Attach the Flex gripper to the rear mount and re-scan instruments before retrying.
-    """
-
-
-class GripActionError(Exception):
-    """The gripper failed to complete a grip/ungrip/home action."""
 
 
 class FlexGripperController:
@@ -73,10 +63,9 @@ class FlexGripperController:
         async with self._lock:
             try:
                 await self._api.grip(force_newtons=force_newtons)
-            except GripperNotAttachedError:
-                raise
             except Exception as exc:  # surface the hardware error to the operator
-                raise GripActionError(f"Grip failed: {exc}") from exc
+                msg = f"Grip failed: {exc}"
+                raise GripActionError(msg) from exc
 
     async def ungrip(self, force_newtons: float | None = None) -> None:
         """Open the jaw to release labware."""
@@ -85,7 +74,8 @@ class FlexGripperController:
             try:
                 await self._api.ungrip(force_newtons=force_newtons)
             except Exception as exc:
-                raise GripActionError(f"Ungrip failed: {exc}") from exc
+                msg = f"Ungrip failed: {exc}"
+                raise GripActionError(msg) from exc
 
     async def home_jaw(self, recalibrate_jaw_width: bool = False) -> None:
         """Home the gripper jaw to its reference position."""
@@ -94,7 +84,8 @@ class FlexGripperController:
             try:
                 await self._api.home_gripper_jaw(recalibrate_jaw_width=recalibrate_jaw_width)
             except Exception as exc:
-                raise GripActionError(f"Home jaw failed: {exc}") from exc
+                msg = f"Home jaw failed: {exc}"
+                raise GripActionError(msg) from exc
 
 
 __all__ = ["FlexGripperController", "GripActionError", "GripperNotAttachedError"]
