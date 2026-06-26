@@ -12,9 +12,10 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-# Symlink name → our internal module type key
+# Symlink name → our internal module type key.
+# The Flex does not support the Magnetic Module (replaced by the passive Magnetic
+# Block), so ``magdeck`` is intentionally absent here.
 _MODULE_NAME_MAP = {
-    "magdeck": "magnetic",
     "tempdeck": "temperature",
     "thermocycler": "thermocycler",
     "heatershaker": "heater_shaker",

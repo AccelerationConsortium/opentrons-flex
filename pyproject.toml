@@ -1,7 +1,7 @@
 [project]
-name = "unitelabs-opentrons-ot2"
+name = "unitelabs-opentrons-flex"
 version = "0.5.0"
-description = "A SiLA2 connector for the Opentrons OT-2 liquid handling robot"
+description = "A SiLA2 connector for the Opentrons Flex liquid handling robot"
 readme = "README.md"
 authors = [{name = "Acceleration Consortium", email = "developers@accelerationconsortium.ca"},]
 maintainers = [
@@ -33,9 +33,9 @@ dependencies=[
 ]
 
 [project.urls]
-repository = "https://github.com/AccelerationConsortium/sila2-ot2"
-documentation = "https://github.com/AccelerationConsortium/sila2-ot2/-/README.md"
-"Bug Tracker" = "https://github.com/AccelerationConsortium/sila2-ot2/-/issues"
+repository = "https://github.com/AccelerationConsortium/opentrons-flex"
+documentation = "https://github.com/AccelerationConsortium/opentrons-flex/-/README.md"
+"Bug Tracker" = "https://github.com/AccelerationConsortium/opentrons-flex/-/issues"
 
 [project.optional-dependencies]
 test = [
@@ -116,7 +116,7 @@ ignore = [
 # ignore documentation, typing, strict rules in scripts outside src/
 "!src/**.py" = ["D", "ANN", "ARG", "S101", "EM", "BLE", "PTH", "T201", "FIX", "ERA", "E7", "S", "B"]
 # ignore parameter name warnings in feature files
-"src/unitelabs/opentrons_ot2/features/**/**.py" =  ["D417", "EM"]
+"src/unitelabs/opentrons_flex/features/**/**.py" =  ["D417", "EM"]
 # test scripts outside the tests/ suite
 "test_*.py" = ["E402"]
 
@@ -150,7 +150,7 @@ major_version_zero = true
 bump_message = "chore: bump version $current_version → $new_version"
 pre_bump_hooks = [
     "echo '[PRE] CZ PreBumpHook...'",
-    "if [ \"$(git rev-parse --abbrev-ref HEAD)\" = \"main\" ]; then uv run --no-sync clog unitelabs.opentrons_ot2 -o ./CHANGELOG.md -r; else uv run --no-sync clog unitelabs.opentrons_ot2 -o ./CHANGELOG.md; fi",
+    "if [ \"$(git rev-parse --abbrev-ref HEAD)\" = \"main\" ]; then uv run --no-sync clog unitelabs.opentrons_flex -o ./CHANGELOG.md -r; else uv run --no-sync clog unitelabs.opentrons_flex -o ./CHANGELOG.md; fi",
 ]
 post_bump_hooks = [
     "echo '[POST] CZ PostBumpHook...'",

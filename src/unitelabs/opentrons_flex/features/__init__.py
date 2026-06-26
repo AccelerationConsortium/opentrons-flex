@@ -1,22 +1,22 @@
-"""SiLA2 features for Opentrons OT-2 control."""
+"""SiLA2 features for Opentrons Flex control."""
 
-from .motion_control import AxisBound, BoardRevision, MotionControlFeature, OutOfBoundsError
 from .calibration import CalibrationFeature
+from .gripper import GripperFeature
 from .heater_shaker import HeaterShakerFeature
+from .motion_control import Lights, MotionControlFeature, Mount, Position
 from .pipette import PipetteFeature
-from .thermocycler import ThermocyclerFeature
 from .temperature import TemperatureModuleFeature
-from .magnetic import MagneticModuleFeature
+from .thermocycler import ThermocyclerFeature
 
 __all__ = [
-    "AxisBound",
-    "BoardRevision",
     "CalibrationFeature",
+    "GripperFeature",
     "HeaterShakerFeature",
-    "MagneticModuleFeature",
+    "Lights",
     "MotionControlFeature",
-    "OutOfBoundsError",
+    "Mount",
     "PipetteFeature",
+    "Position",
     "TemperatureModuleFeature",
     "ThermocyclerFeature",
 ]

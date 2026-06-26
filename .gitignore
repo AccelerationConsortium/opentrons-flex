@@ -240,3 +240,4 @@ config/ot2_config.local.json
 # Local planning notes
 plan/
 dev/tailscale setup/*.tgz
+.venv-introspect/
