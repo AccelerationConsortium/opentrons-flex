@@ -11,10 +11,9 @@ from typing import ClassVar
 
 import pytest
 
-from unitelabs.opentrons_ot2.io import (
+from unitelabs.opentrons_flex.io import (
     DeviceInfo,
     HeaterShakerController,
-    MagneticModuleController,
     TemperatureModuleController,
     ThermocyclerController,
 )
@@ -194,31 +193,5 @@ async def test_thermocycler_from_module_maps_calls():
     await ctrl.disconnect()  # no-op
 
 
-# ── Magnetic module ───────────────────────────────────────────────────────────
-
-
-class FakeMagDeck(_Recorder):
-    current_height = 12.5
-    device_info: ClassVar[dict] = {"serial": "M1", "model": "mag_v2", "version": "1.5"}
-
-    async def engage(self, height=None):
-        self.record("engage", height)
-
-    async def deactivate(self):
-        self.record("deactivate")
-
-
-@pytest.mark.asyncio
-async def test_magnetic_from_module_maps_calls():
-    mod = FakeMagDeck()
-    ctrl = MagneticModuleController.from_module(mod)
-
-    await ctrl.engage(8.0)
-    assert ("engage", (8.0,), {}) in mod.calls or ("engage", (), {"height": 8.0}) in mod.calls
-
-    await ctrl.disengage()
-    assert ("deactivate", (), {}) in mod.calls
-
-    assert await ctrl.get_mag_position() == 12.5
-    assert await ctrl.get_device_info() == DeviceInfo.from_dict(mod.device_info)
-    await ctrl.disconnect()  # no-op
+# The Magnetic Module is not supported on the Flex, so there is no magnetic
+# controller or from_module() adapter to test here.

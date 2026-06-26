@@ -2,7 +2,7 @@
 
 Spins up a real SiLA gRPC server on a dynamic port and makes real gRPC calls
 over the wire using the server's own protobuf codec. Confirms the full chain:
-  gRPC channel → SiLA server → MotionControlFeature → OT2MotionController → SmoothieDriver
+  gRPC channel → SiLA server → MotionControlFeature → FlexMotionController → OT3API
 
 The server's protobuf object is reused client-side to encode requests and decode
 responses — no separate client SDK required.
@@ -19,7 +19,7 @@ import grpc.aio
 import pytest
 import pytest_asyncio
 
-from unitelabs.opentrons_ot2.features.motion_control import Axis, AxisPosition, HomedFlags, HomeResult, Mount
+from unitelabs.opentrons_flex.features.motion_control import Axis, AxisPosition, HomedFlags, HomeResult, Mount
 
 _PKG = "sila2.ca.accelerationconsortium.robots.motioncontrolfeature.v1"
 _SERVICE = f"{_PKG}.MotionControlFeature"

@@ -5,8 +5,8 @@ import grpc.aio
 import pytest
 import pytest_asyncio
 
-from unitelabs.opentrons_ot2.features.motion_control import Mount
-from unitelabs.opentrons_ot2.features.pipette import PipetteInfo
+from unitelabs.opentrons_flex.features.motion_control import Mount
+from unitelabs.opentrons_flex.features.pipette import PipetteInfo
 
 _PKG = "sila2.ca.accelerationconsortium.robots.pipettefeature.v1"
 _SERVICE = f"{_PKG}.PipetteFeature"

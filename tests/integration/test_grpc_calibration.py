@@ -13,8 +13,8 @@ import grpc.aio
 import pytest
 import pytest_asyncio
 
-from unitelabs.opentrons_ot2.features.calibration import StepsPerMm
-from unitelabs.opentrons_ot2.features.motion_control import Axis
+from unitelabs.opentrons_flex.features.calibration import StepsPerMm
+from unitelabs.opentrons_flex.features.motion_control import Axis
 
 _PKG = "sila2.ca.accelerationconsortium.robots.calibrationfeature.v1"
 _SERVICE = f"{_PKG}.CalibrationFeature"

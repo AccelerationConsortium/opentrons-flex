@@ -1,7 +1,11 @@
-"""Integration tests for create_app() module detection wiring.
+"""Tests for create_app() feature-registration wiring (Flex).
 
-Validates that scan_module_ports() results drive feature registration correctly.
-Hardware boundaries (controller builds, Connector gRPC server) are mocked.
+The Flex connector builds a single OT3API and registers the core features
+(motion, pipette, gripper, calibration) plus a feature per attached module. The
+Magnetic Module is not supported, so it must never be registered.
+
+Hardware boundary: the OT3API simulator is real (fast, no mocks); the Connector
+is patched to capture registrations without starting a gRPC server.
 """
 
 import contextlib
@@ -9,155 +13,72 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from unitelabs.opentrons_ot2 import OpentronsOt2Config, create_app
-from unitelabs.opentrons_ot2.features import (
+from unitelabs.opentrons_flex import OpentronsFlexConfig, create_app
+from unitelabs.opentrons_flex.features import (
     CalibrationFeature,
-    HeaterShakerFeature,
-    MagneticModuleFeature,
+    GripperFeature,
     MotionControlFeature,
     PipetteFeature,
-    TemperatureModuleFeature,
-    ThermocyclerFeature,
 )
-
-_ALL_MODULE_PORTS = {
-    "heater_shaker": "/dev/ot_module_heatershaker0",
-    "thermocycler": "/dev/ot_module_thermocycler0",
-    "temperature": "/dev/ot_module_tempdeck0",
-    "magnetic": "/dev/ot_module_magdeck0",
-}
 
 
 @contextlib.asynccontextmanager
-async def _run_app(config: OpentronsOt2Config, module_ports: dict):
-    """Run create_app() with all hardware mocked; yield (connector, registered_features)."""
-    mock_motion_ctrl = AsyncMock()
-    mock_hs_ctrl = AsyncMock()
-    mock_tc_ctrl = AsyncMock()
-    mock_temp_ctrl = AsyncMock()
-    mock_mag_ctrl = AsyncMock()
-
-    # Connector is patched to avoid starting a real gRPC server.
-    mock_connector = MagicMock()
+async def _run_app(config: OpentronsFlexConfig):
+    """Run create_app() with a capturing Connector; yield the registered feature list."""
     registered: list = []
+    mock_connector = MagicMock()
     mock_connector.register.side_effect = registered.append
 
-    with (
-        patch("unitelabs.opentrons_ot2.OT2MotionController.build", return_value=mock_motion_ctrl),
-        patch("unitelabs.opentrons_ot2.HeaterShakerController.build", return_value=mock_hs_ctrl),
-        patch("unitelabs.opentrons_ot2.ThermocyclerController.build", return_value=mock_tc_ctrl),
-        patch("unitelabs.opentrons_ot2.TemperatureModuleController.build", return_value=mock_temp_ctrl),
-        patch("unitelabs.opentrons_ot2.MagneticModuleController.build", return_value=mock_mag_ctrl),
-        patch("unitelabs.opentrons_ot2.scan_module_ports", return_value=module_ports),
-        patch("unitelabs.opentrons_ot2.Connector", return_value=mock_connector),
-    ):
+    with patch("unitelabs.opentrons_flex.Connector", return_value=mock_connector):
         gen = create_app(config)
         await gen.__anext__()
-        yield mock_connector, registered
+        yield registered
         with contextlib.suppress(StopAsyncIteration):
             await gen.__anext__()
-
-
-# ── simulate mode ────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_simulate_registers_core_features():
-    config = OpentronsOt2Config(use_simulator=True)
-    async with _run_app(config, module_ports=_ALL_MODULE_PORTS) as (_, registered):
+    """Simulator mode registers exactly the four core features, in order."""
+    config = OpentronsFlexConfig(use_simulator=True)
+    async with _run_app(config) as registered:
         types = [type(f) for f in registered]
-        assert types == [MotionControlFeature, PipetteFeature, CalibrationFeature]
+        assert types == [MotionControlFeature, PipetteFeature, GripperFeature, CalibrationFeature]
 
 
 @pytest.mark.asyncio
-async def test_simulate_skips_module_scan(monkeypatch):
-    scan = MagicMock(return_value=_ALL_MODULE_PORTS)
-    monkeypatch.setattr("unitelabs.opentrons_ot2.scan_module_ports", scan)
-    config = OpentronsOt2Config(use_simulator=True)
-    async with _run_app(config, module_ports=_ALL_MODULE_PORTS):
-        scan.assert_not_called()
-
-
-# ── real hardware, no modules ─────────────────────────────────────────────────
+async def test_no_magnetic_feature_registered():
+    """The Flex has no Magnetic Module — no registered feature may reference it."""
+    config = OpentronsFlexConfig(use_simulator=True)
+    async with _run_app(config) as registered:
+        assert not any("Magnetic" in type(f).__name__ for f in registered)
 
 
 @pytest.mark.asyncio
-async def test_no_modules_registers_core_features():
-    config = OpentronsOt2Config(use_simulator=False)
-    async with _run_app(config, module_ports={}) as (_, registered):
-        types = [type(f) for f in registered]
-        assert types == [MotionControlFeature, PipetteFeature, CalibrationFeature]
-
-
-# ── real hardware, individual modules ────────────────────────────────────────
+async def test_bare_simulator_registers_no_module_features():
+    """With no attached modules, only the core features register."""
+    config = OpentronsFlexConfig(use_simulator=True)
+    async with _run_app(config) as registered:
+        assert len(registered) == 4
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("ports", "expected_feature"),
-    [
-        ({"heater_shaker": "/dev/ot_module_heatershaker0"}, HeaterShakerFeature),
-        ({"thermocycler": "/dev/ot_module_thermocycler0"}, ThermocyclerFeature),
-        ({"temperature": "/dev/ot_module_tempdeck0"}, TemperatureModuleFeature),
-        ({"magnetic": "/dev/ot_module_magdeck0"}, MagneticModuleFeature),
-    ],
-)
-async def test_single_module_registers_correct_feature(ports, expected_feature):
-    config = OpentronsOt2Config(use_simulator=False)
-    async with _run_app(config, module_ports=ports) as (_, registered):
-        types = [type(f) for f in registered]
-        assert MotionControlFeature in types
-        assert PipetteFeature in types
-        assert CalibrationFeature in types
-        assert expected_feature in types
-        assert len(types) == 4
-
-
-@pytest.mark.asyncio
-async def test_all_modules_registers_all_features():
-    config = OpentronsOt2Config(use_simulator=False)
-    async with _run_app(config, module_ports=_ALL_MODULE_PORTS) as (_, registered):
-        types = {type(f) for f in registered}
-        assert types == {
-            MotionControlFeature,
-            PipetteFeature,
-            CalibrationFeature,
-            HeaterShakerFeature,
-            ThermocyclerFeature,
-            TemperatureModuleFeature,
-            MagneticModuleFeature,
-        }
-
-
-# ── cleanup ───────────────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_all_controllers_disconnected_on_shutdown():
-    config = OpentronsOt2Config(use_simulator=False)
-
-    mock_motion_ctrl = AsyncMock()
-    mock_hs_ctrl = AsyncMock()
-    mock_tc_ctrl = AsyncMock()
-    mock_temp_ctrl = AsyncMock()
-    mock_mag_ctrl = AsyncMock()
+async def test_shared_api_cleaned_up_on_shutdown():
+    """create_app must clean up the shared OT3API when the generator is closed."""
+    fake_api = AsyncMock()
+    fake_api.attached_modules = []
+    fake_api.attached_instruments = {}
 
     with (
-        patch("unitelabs.opentrons_ot2.OT2MotionController.build", return_value=mock_motion_ctrl),
-        patch("unitelabs.opentrons_ot2.HeaterShakerController.build", return_value=mock_hs_ctrl),
-        patch("unitelabs.opentrons_ot2.ThermocyclerController.build", return_value=mock_tc_ctrl),
-        patch("unitelabs.opentrons_ot2.TemperatureModuleController.build", return_value=mock_temp_ctrl),
-        patch("unitelabs.opentrons_ot2.MagneticModuleController.build", return_value=mock_mag_ctrl),
-        patch("unitelabs.opentrons_ot2.scan_module_ports", return_value=_ALL_MODULE_PORTS),
-        patch("unitelabs.opentrons_ot2.Connector", return_value=MagicMock()),
+        patch(
+            "opentrons.hardware_control.ot3api.OT3API.build_hardware_simulator",
+            AsyncMock(return_value=fake_api),
+        ),
+        patch("unitelabs.opentrons_flex.Connector", return_value=MagicMock()),
     ):
-        gen = create_app(config)
+        gen = create_app(OpentronsFlexConfig(use_simulator=True))
         await gen.__anext__()
         with contextlib.suppress(StopAsyncIteration):
             await gen.__anext__()
 
-    mock_motion_ctrl.disconnect.assert_awaited_once()
-    mock_hs_ctrl.disconnect.assert_awaited_once()
-    mock_tc_ctrl.disconnect.assert_awaited_once()
-    mock_temp_ctrl.disconnect.assert_awaited_once()
-    mock_mag_ctrl.disconnect.assert_awaited_once()
+    fake_api.clean_up.assert_awaited_once()

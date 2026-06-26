@@ -31,7 +31,7 @@ import pytest
 import pytest_asyncio
 
 from unitelabs.cdk import SiLAServerConfig
-from unitelabs.opentrons_ot2 import OpentronsOt2Config, create_app
+from unitelabs.opentrons_flex import OpentronsFlexConfig, create_app
 
 _HTTP_API_PORT = 31950
 _HTTP_API_VERSION_HEADER = "Opentrons-Version"
@@ -110,7 +110,7 @@ def _simulator_http_url(request: pytest.FixtureRequest) -> Generator[str | None,
     exc: list[BaseException] = []
 
     async def _serve() -> None:
-        config = OpentronsOt2Config(
+        config = OpentronsFlexConfig(
             use_simulator=True,
             with_robot_server=True,
             robot_server_tcp_port=http_port,
@@ -219,7 +219,7 @@ async def sila_channel(robot_address: str | None):
     simulator otherwise.  pb (the protobuf codec) always comes from a local
     simulator because it is derived from the feature definitions, not the wire.
     """
-    config = OpentronsOt2Config(
+    config = OpentronsFlexConfig(
         use_simulator=True,
         sila_server=SiLAServerConfig(hostname="127.0.0.1", port=0, tls=False),
         cloud_server_endpoint=None,

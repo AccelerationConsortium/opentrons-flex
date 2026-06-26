@@ -21,7 +21,7 @@ from opentrons.hardware_control.types import Axis, MotionChecks
 from opentrons_shared_data.errors.exceptions import PositionUnknownError
 from opentrons.drivers.smoothie_drivers.simulator import SimulatingDriver
 
-from unitelabs.opentrons_ot2.io.hardware_proxy import HardwareProxy, _TimedLock
+from unitelabs.opentrons_flex.io.hardware_proxy import HardwareProxy, _TimedLock
 
 
 @pytest_asyncio.fixture
@@ -171,16 +171,16 @@ async def test_current_position_homing_failures(proxy: HardwareProxy) -> None:
 # ── from_api shim ─────────────────────────────────────────────────────────────
 
 
-async def test_from_api_shares_driver_and_lock(api: API) -> None:
-    """OT2MotionController.from_api() must share the driver and lock with HardwareProxy."""
-    from unitelabs.opentrons_ot2.io.motion import OT2MotionController
+async def test_from_api_shares_api_and_lock(api: API) -> None:
+    """FlexMotionController.from_api() must share the API instance and lock with HardwareProxy."""
+    from unitelabs.opentrons_flex.io import FlexMotionController
 
     shared_lock = asyncio.Lock()
     proxy = HardwareProxy(api, lock=shared_lock)
-    controller = OT2MotionController.from_api(api, lock=shared_lock)
+    controller = FlexMotionController.from_api(api, lock=shared_lock)
 
     assert controller._lock._lock is proxy._lock._lock is shared_lock
-    assert controller._driver is api._backend._smoothie_driver
+    assert controller._api is api
 
 
 # ── Lock serialisation ────────────────────────────────────────────────────────

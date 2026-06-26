@@ -1,6 +1,24 @@
+import importlib.metadata
 import sys
 import types
 from unittest.mock import MagicMock
+
+# The connector reads its version via importlib.metadata at import time. When the
+# package is run from source without being pip-installed (offline dev), that
+# lookup raises PackageNotFoundError; fall back to a placeholder so imports work.
+_real_version = importlib.metadata.version
+
+
+def _version_with_fallback(name: str) -> str:
+    try:
+        return _real_version(name)
+    except importlib.metadata.PackageNotFoundError:
+        if name == "unitelabs-opentrons-flex":
+            return "0.0.0+dev"
+        raise
+
+
+importlib.metadata.version = _version_with_fallback
 
 # gpiod is a Linux-only kernel library; stub it so tests run on any platform.
 if "gpiod" not in sys.modules:
@@ -25,8 +43,72 @@ except ImportError:
     sys.modules["robot_server.app"] = _rs_app
 
 try:
-    import unitelabs.bus.testing.fixtures  # noqa: F401
+    import unitelabs.bus.testing.fixtures
 
     pytest_plugins = ["unitelabs.bus.testing.fixtures"]
 except ImportError:
     pytest_plugins = []
+
+
+# The unitelabs CDK lives on a private package index and may be absent in offline
+# / open-source CI. When it is missing, install a minimal stub so the connector
+# package imports and the *simulation* tests (feature -> controller -> OT3 hardware
+# simulator) can run without it. The SiLA decorators become identity functions, so
+# these tests exercise real controller/feature behaviour against the real opentrons
+# simulator — they do NOT cover SiLA wire-format / feature-definition generation,
+# which is verified separately in CI where the real CDK is installed.
+try:
+    import unitelabs.cdk  # noqa: F401
+
+    _CDK_STUBBED = False
+except ImportError:
+    _cdk = types.ModuleType("unitelabs.cdk")
+
+    class _Connector:
+        def __init__(self, config=None):
+            self.config = config
+            self.features = []
+
+        def register(self, feature):
+            self.features.append(feature)
+
+    class _ConnectorBaseConfig:
+        pass
+
+    class _SiLAServerConfig:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+            self.hostname = kw.get("hostname", "127.0.0.1")
+            self.port = kw.get("port", 50051)
+
+    _cdk.Connector = _Connector
+    _cdk.ConnectorBaseConfig = _ConnectorBaseConfig
+    _cdk.SiLAServerConfig = _SiLAServerConfig
+
+    _sila = types.ModuleType("unitelabs.cdk.sila")
+
+    class _Feature:
+        def __init__(self, **kw):
+            self._meta = kw
+
+    def _passthrough(*_a, **_k):
+        def wrap(fn):
+            return fn
+
+        return wrap
+
+    _sila.Feature = _Feature
+    _sila.UnobservableCommand = _passthrough
+    _sila.ObservableCommand = _passthrough
+    _sila.UnobservableProperty = _passthrough
+    _sila.ObservableProperty = _passthrough
+
+    _constraints = types.ModuleType("unitelabs.cdk.sila.constraints")
+    for _name in ("MinimalInclusive", "MaximalInclusive", "MinimalExclusive", "Pattern"):
+        setattr(_constraints, _name, lambda *_a, **_k: object())
+    _sila.constraints = _constraints
+
+    sys.modules["unitelabs.cdk"] = _cdk
+    sys.modules["unitelabs.cdk.sila"] = _sila
+    sys.modules["unitelabs.cdk.sila.constraints"] = _constraints
+    _CDK_STUBBED = True

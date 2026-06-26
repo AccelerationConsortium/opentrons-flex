@@ -10,26 +10,33 @@ enums) without needing an attached module.
 import pytest
 
 from unitelabs.cdk import Connector, SiLAServerConfig
-from unitelabs.opentrons_ot2 import OpentronsOt2Config
-from unitelabs.opentrons_ot2.features import (
+from unitelabs.opentrons_flex import OpentronsFlexConfig
+from unitelabs.opentrons_flex.features import (
     HeaterShakerFeature,
-    MagneticModuleFeature,
     TemperatureModuleFeature,
     ThermocyclerFeature,
+)
+
+# Real SiLA feature-definition generation requires the actual unitelabs CDK. When
+# it is stubbed (offline dev, see tests/conftest.py), Connector.start() does not
+# exist, so this test is skipped — it runs in CI where the real CDK is installed.
+_REQUIRES_REAL_CDK = pytest.mark.skipif(
+    not hasattr(Connector, "start"),
+    reason="real unitelabs CDK not installed (stubbed); SiLA generation runs in CI",
 )
 
 _MODULE_FEATURES = [
     TemperatureModuleFeature,
     HeaterShakerFeature,
     ThermocyclerFeature,
-    MagneticModuleFeature,
 ]
 
 
+@_REQUIRES_REAL_CDK
 @pytest.mark.parametrize("feature_cls", _MODULE_FEATURES)
 @pytest.mark.asyncio
 async def test_module_feature_sila_definition_builds(feature_cls) -> None:
-    config = OpentronsOt2Config(
+    config = OpentronsFlexConfig(
         use_simulator=True,
         sila_server=SiLAServerConfig(hostname="127.0.0.1", port=0, tls=False),
         cloud_server_endpoint=None,

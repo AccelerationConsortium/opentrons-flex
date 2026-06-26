@@ -1,4 +1,4 @@
-"""Integration tests for create_app() with with_robot_server=True.
+"""Integration tests for create_app() with with_robot_server=True (Flex).
 
 Exercises _create_app_with_robot_server() end-to-end with all hardware and
 external server boundaries mocked. Catches import errors, wiring mistakes, and
@@ -7,7 +7,7 @@ shutdown regressions for the in-process robot-server mode.
 Boundaries:
   robot_server  — stubbed in conftest.py (Opentrons-internal, not on PyPI)
   uvicorn       — real package (test dep); Server.serve mocked to avoid binding ports
-  hardware      — mocked at API.build_hardware_controller
+  hardware      — mocked at OT3API.build_hardware_controller (CAN, no serial port)
 """
 
 import asyncio
@@ -24,12 +24,19 @@ _rs_app_mod = sys.modules.get("robot_server.app")
 if _rs_app_mod is None or not isinstance(getattr(_rs_app_mod, "app", None), MagicMock):
     pytest.skip("real robot_server installed; stub-based tests skipped", allow_module_level=True)
 
-from unitelabs.opentrons_ot2 import OpentronsOt2Config, create_app
-from unitelabs.opentrons_ot2.features import CalibrationFeature, MotionControlFeature, PipetteFeature
-from unitelabs.opentrons_ot2.io import HardwareProxy
+from unitelabs.opentrons_flex import OpentronsFlexConfig, create_app
+from unitelabs.opentrons_flex.features import (
+    CalibrationFeature,
+    GripperFeature,
+    MotionControlFeature,
+    PipetteFeature,
+)
+from unitelabs.opentrons_flex.io import HardwareProxy
 
+_CONFIG = OpentronsFlexConfig(use_simulator=False, with_robot_server=True, robot_server_uds="/run/aiohttp.sock")
 
-_CONFIG = OpentronsOt2Config(use_simulator=False, with_robot_server=True, robot_server_uds="/run/aiohttp.sock")
+# Where the deferred OT3API import resolves inside _create_app_with_robot_server.
+_OT3API_BUILD = "opentrons.hardware_control.ot3api.OT3API.build_hardware_controller"
 
 
 @pytest.fixture(autouse=True)
@@ -40,34 +47,37 @@ def _reset_robot_server_stubs():
     sys.modules["robot_server.app"].app.reset_mock()
 
 
-@contextlib.asynccontextmanager
-async def _run(config=_CONFIG, module_ports=None):
-    """Run create_app(with_robot_server=True) with all external deps mocked.
+def _make_api() -> AsyncMock:
+    api = AsyncMock()
+    api.attached_modules = []  # iterated by _register_modules
+    return api
 
-    Yields a namespace with:
-      api          — mock returned by API.build_hardware_controller
-      registered   — list of features registered on the connector
-      uv_server    — mock uvicorn.Server instance
-    """
-    mock_api = AsyncMock()
-    mock_uv_server = MagicMock()
-    mock_uv_server.serve = AsyncMock()
-    mock_connector = MagicMock()
-    registered = []
-    mock_connector.register.side_effect = registered.append
 
+@contextlib.contextmanager
+def _patches(mock_api, mock_connector, mock_uv_server):
     with (
-        patch(
-            "opentrons.hardware_control.API.build_hardware_controller",
-            new_callable=AsyncMock,
-            return_value=mock_api,
-        ),
-        patch("unitelabs.opentrons_ot2.OT2MotionController.from_api", return_value=MagicMock()),
-        patch("unitelabs.opentrons_ot2.scan_module_ports", return_value=module_ports or {}),
-        patch("unitelabs.opentrons_ot2.Connector", return_value=mock_connector),
+        patch(_OT3API_BUILD, new_callable=AsyncMock, return_value=mock_api),
+        patch("unitelabs.opentrons_flex.FlexMotionController.from_api", return_value=MagicMock()),
+        patch("unitelabs.opentrons_flex.FlexGripperController.from_api", return_value=MagicMock()),
+        patch("unitelabs.opentrons_flex.FlexCalibrationController.from_api", return_value=MagicMock()),
+        patch("unitelabs.opentrons_flex.Connector", return_value=mock_connector),
         patch("uvicorn.Server", return_value=mock_uv_server),
         patch("uvicorn.Config"),
     ):
+        yield
+
+
+@contextlib.asynccontextmanager
+async def _run(config=_CONFIG):
+    """Run create_app(with_robot_server=True) with all external deps mocked."""
+    mock_api = _make_api()
+    mock_uv_server = MagicMock()
+    mock_uv_server.serve = AsyncMock()
+    mock_connector = MagicMock()
+    registered: list = []
+    mock_connector.register.side_effect = registered.append
+
+    with _patches(mock_api, mock_connector, mock_uv_server):
         gen = create_app(config)
         await gen.__anext__()
         await asyncio.sleep(0)  # let the uvicorn task be scheduled
@@ -79,7 +89,6 @@ async def _run(config=_CONFIG, module_ports=None):
         result.api = mock_api
         result.registered = registered
         result.uv_server = mock_uv_server
-
         yield result
 
         with contextlib.suppress(StopAsyncIteration):
@@ -91,11 +100,7 @@ async def _run(config=_CONFIG, module_ports=None):
 
 @pytest.mark.asyncio
 async def test_no_import_errors():
-    """All deferred imports in _create_app_with_robot_server resolve without error.
-
-    This test will fail with ModuleNotFoundError if any import inside the
-    function is missing from the test environment or not stubbed in conftest.
-    """
+    """All deferred imports in _create_app_with_robot_server resolve without error."""
     async with _run():
         pass
 
@@ -104,23 +109,21 @@ async def test_no_import_errors():
 
 
 @pytest.mark.asyncio
-async def test_hardware_built_on_configured_port():
-    """API.build_hardware_controller is awaited once with the configured serial port."""
+async def test_hardware_built_via_ot3api():
+    """OT3API.build_hardware_controller is awaited once (no serial port — CAN bus)."""
+    mock_api = _make_api()
     with (
-        patch(
-            "opentrons.hardware_control.API.build_hardware_controller",
-            new_callable=AsyncMock,
-            return_value=AsyncMock(),
-        ) as mock_build,
-        patch("unitelabs.opentrons_ot2.OT2MotionController.from_api", return_value=MagicMock()),
-        patch("unitelabs.opentrons_ot2.scan_module_ports", return_value={}),
-        patch("unitelabs.opentrons_ot2.Connector", return_value=MagicMock()),
+        patch(_OT3API_BUILD, new_callable=AsyncMock, return_value=mock_api) as mock_build,
+        patch("unitelabs.opentrons_flex.FlexMotionController.from_api", return_value=MagicMock()),
+        patch("unitelabs.opentrons_flex.FlexGripperController.from_api", return_value=MagicMock()),
+        patch("unitelabs.opentrons_flex.FlexCalibrationController.from_api", return_value=MagicMock()),
+        patch("unitelabs.opentrons_flex.Connector", return_value=MagicMock()),
         patch("uvicorn.Server", return_value=MagicMock(serve=AsyncMock())),
         patch("uvicorn.Config"),
     ):
         gen = create_app(_CONFIG)
         await gen.__anext__()
-        mock_build.assert_awaited_once_with(port=_CONFIG.serial_port)
+        mock_build.assert_awaited_once_with()
         with contextlib.suppress(StopAsyncIteration):
             await gen.__anext__()
 
@@ -155,17 +158,15 @@ async def test_app_state_receives_hardware_proxy():
 @pytest.mark.asyncio
 async def test_uvicorn_configured_on_unix_socket():
     """uvicorn.Config is constructed with the configured robot_server_uds socket path."""
+    mock_api = _make_api()
     with (
-        patch("uvicorn.Config") as mock_cfg,
-        patch(
-            "opentrons.hardware_control.API.build_hardware_controller",
-            new_callable=AsyncMock,
-            return_value=AsyncMock(),
-        ),
-        patch("unitelabs.opentrons_ot2.OT2MotionController.from_api", return_value=MagicMock()),
-        patch("unitelabs.opentrons_ot2.scan_module_ports", return_value={}),
-        patch("unitelabs.opentrons_ot2.Connector", return_value=MagicMock()),
+        patch(_OT3API_BUILD, new_callable=AsyncMock, return_value=mock_api),
+        patch("unitelabs.opentrons_flex.FlexMotionController.from_api", return_value=MagicMock()),
+        patch("unitelabs.opentrons_flex.FlexGripperController.from_api", return_value=MagicMock()),
+        patch("unitelabs.opentrons_flex.FlexCalibrationController.from_api", return_value=MagicMock()),
+        patch("unitelabs.opentrons_flex.Connector", return_value=MagicMock()),
         patch("uvicorn.Server", return_value=MagicMock(serve=AsyncMock())),
+        patch("uvicorn.Config") as mock_cfg,
     ):
         gen = create_app(_CONFIG)
         await gen.__anext__()
@@ -187,11 +188,12 @@ async def test_uvicorn_serve_task_started():
 
 @pytest.mark.asyncio
 async def test_core_features_registered():
-    """MotionControlFeature, PipetteFeature, CalibrationFeature are always registered."""
+    """Motion, Pipette, Gripper, Calibration features are always registered."""
     async with _run() as r:
         types_ = [type(f) for f in r.registered]
         assert MotionControlFeature in types_
         assert PipetteFeature in types_
+        assert GripperFeature in types_
         assert CalibrationFeature in types_
 
 
@@ -208,7 +210,7 @@ async def test_shutdown_stops_uvicorn():
 
 @pytest.mark.asyncio
 async def test_shutdown_disconnects_hardware():
-    """real_api.clean_up is awaited on shutdown."""
+    """The shared OT3API clean_up is awaited on shutdown."""
     async with _run() as r:
         pass
     r.api.clean_up.assert_awaited_once()
