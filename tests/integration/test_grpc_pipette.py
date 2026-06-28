@@ -1,6 +1,5 @@
-"""End-to-end gRPC integration tests for PipetteFeature in simulate mode."""
+"""End-to-end gRPC integration tests for the Flex PipetteFeature (simulate mode)."""
 
-import grpc
 import grpc.aio
 import pytest
 import pytest_asyncio
@@ -32,32 +31,28 @@ class _PipetteClient:
 
 @pytest_asyncio.fixture
 async def client(sila_channel) -> _PipetteClient:
-    """Yield a PipetteFeature gRPC client (local sim or --robot target)."""
     channel, pb = sila_channel
     return _PipetteClient(channel, pb)
 
 
 @pytest.mark.asyncio
-async def test_get_attached_pipettes_returns_two_entries(client: _PipetteClient) -> None:
+async def test_get_attached_pipettes_returns_both_mounts(client: _PipetteClient) -> None:
+    """GetAttachedPipettes returns one entry per mount (LEFT, RIGHT) over the wire."""
     result = await client.get_attached_pipettes()
-    assert len(result) == 2
+    assert {p.mount for p in result} == {Mount.LEFT, Mount.RIGHT}
 
 
 @pytest.mark.asyncio
-async def test_get_attached_pipettes_entries_are_pipette_info(client: _PipetteClient) -> None:
+async def test_get_attached_pipettes_returns_pipette_info(client: _PipetteClient) -> None:
+    """Each decoded entry is a PipetteInfo dataclass."""
     result = await client.get_attached_pipettes()
     assert all(isinstance(p, PipetteInfo) for p in result)
 
 
 @pytest.mark.asyncio
 @pytest.mark.simulator_only
-async def test_get_attached_pipettes_sim_model_is_empty(client: _PipetteClient) -> None:
+async def test_bare_simulator_reports_no_pipettes(client: _PipetteClient) -> None:
+    """On the bare simulator both mounts report not-attached with empty model (no sentinel)."""
     result = await client.get_attached_pipettes()
+    assert all(p.attached is False for p in result)
     assert all(p.model == "" for p in result)
-
-
-@pytest.mark.asyncio
-async def test_get_attached_pipettes_covers_both_mounts(client: _PipetteClient) -> None:
-    result = await client.get_attached_pipettes()
-    mounts = {p.mount for p in result}
-    assert mounts == {Mount.LEFT, Mount.RIGHT}

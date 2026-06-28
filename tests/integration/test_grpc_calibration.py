@@ -1,20 +1,20 @@
-"""End-to-end gRPC integration tests for CalibrationFeature.
+"""End-to-end gRPC integration tests for the Flex CalibrationFeature (simulate mode).
 
-These exercise the calibration *write* commands (M92 steps/mm, M365 pipette
-config). They are marked ``simulator_only``: against a real robot they would
-write arbitrary values into the live Smoothie calibration and never restore it,
-corrupting homing/motion for the rest of the session (e.g. setting plunger
-steps/mm to 100 makes a later plunger home travel the wrong distance and fail).
-They verify command plumbing/encoding, which the simulator covers fully.
+Flex calibration is automatic probe-based calibration, not Smoothie config writes.
+On the bare simulator there is no pipette/gripper/probe, so the routines fail — and
+that failure is exactly what we assert propagates over the wire as the
+``CalibrationFailedError`` Defined Execution Error (gRPC ABORTED). This validates
+both the calibration service plumbing and the io-layer error translation.
 """
+
+import base64
 
 import grpc
 import grpc.aio
 import pytest
 import pytest_asyncio
 
-from unitelabs.opentrons_flex.features.calibration import StepsPerMm
-from unitelabs.opentrons_flex.features.motion_control import Axis
+from unitelabs.opentrons_flex.features.calibration import GripperJaw, PipetteMount
 
 _PKG = "sila2.ca.accelerationconsortium.robots.calibrationfeature.v1"
 _SERVICE = f"{_PKG}.CalibrationFeature"
@@ -25,67 +25,45 @@ class _CalibrationClient:
         self._ch = channel
         self._pb = pb
 
-    async def _call(self, method: str, params: dict | None = None) -> dict:
-        req = await self._pb.encode(f"{_PKG}.{method}_Parameters", params or {})
+    async def _call(self, method: str, params: dict) -> dict:
+        req = await self._pb.encode(f"{_PKG}.{method}_Parameters", params)
         stub = self._ch.unary_unary(f"/{_SERVICE}/{method}")
         resp_bytes = await stub(req)
         return await self._pb.decode(f"{_PKG}.{method}_Responses", resp_bytes)
 
-    async def update_steps_per_mm(self, updates: list[StepsPerMm]) -> None:
-        await self._call("UpdateStepsPerMm", {"updates": updates})
+    async def calibrate_pipette(self, mount: PipetteMount, slot: int = 5) -> dict:
+        return await self._call("CalibratePipette", {"mount": mount, "slot": slot})
 
-    async def update_pipette_home(self, axis: Axis, home_position_mm: float) -> None:
-        await self._call("UpdatePipetteHome", {"axis": axis, "home_position_mm": home_position_mm})
-
-    async def update_max_travel(self, axis: Axis, max_travel_mm: float) -> None:
-        await self._call("UpdateMaxTravel", {"axis": axis, "max_travel_mm": max_travel_mm})
-
-    async def update_retract_distance(self, axis: Axis, retract_mm: float) -> None:
-        await self._call("UpdateRetractDistance", {"axis": axis, "retract_mm": retract_mm})
-
-    async def update_endstop_debounce(self, debounce_mm: float) -> None:
-        await self._call("UpdateEndstopDebounce", {"debounce_mm": debounce_mm})
+    async def calibrate_gripper_jaw(self, jaw: GripperJaw, slot: int = 5) -> dict:
+        return await self._call("CalibrateGripperJaw", {"jaw": jaw, "slot": slot})
 
 
 @pytest_asyncio.fixture
 async def client(sila_channel) -> _CalibrationClient:
-    """Yield a CalibrationFeature gRPC client (local sim or --robot target)."""
     channel, pb = sila_channel
     return _CalibrationClient(channel, pb)
 
 
-@pytest.mark.asyncio
-@pytest.mark.simulator_only
-async def test_update_steps_per_mm_single_axis(client: _CalibrationClient) -> None:
-    await client.update_steps_per_mm([StepsPerMm(axis=Axis.X, steps_per_mm=80.0)])
+def _details(exc: grpc.aio.AioRpcError) -> bytes:
+    return base64.b64decode(exc.details() or "")
 
 
 @pytest.mark.asyncio
 @pytest.mark.simulator_only
-async def test_update_steps_per_mm_all_axes(client: _CalibrationClient) -> None:
-    updates = [StepsPerMm(axis=ax, steps_per_mm=100.0) for ax in Axis]
-    await client.update_steps_per_mm(updates)
+async def test_calibrate_pipette_without_pipette_raises_defined_error(client: _CalibrationClient) -> None:
+    """CalibratePipette with no pipette surfaces CalibrationFailedError over the wire."""
+    with pytest.raises(grpc.aio.AioRpcError) as excinfo:
+        await client.calibrate_pipette(PipetteMount.LEFT)
+    assert excinfo.value.code() is grpc.StatusCode.ABORTED
+    assert b"CalibrationFailedError" in _details(excinfo.value)
 
 
 @pytest.mark.asyncio
 @pytest.mark.simulator_only
-async def test_update_pipette_home_does_not_raise(client: _CalibrationClient) -> None:
-    await client.update_pipette_home(Axis.Z, home_position_mm=220.0)
-
-
-@pytest.mark.asyncio
-@pytest.mark.simulator_only
-async def test_update_max_travel_does_not_raise(client: _CalibrationClient) -> None:
-    await client.update_max_travel(Axis.B, max_travel_mm=30.0)
-
-
-@pytest.mark.asyncio
-@pytest.mark.simulator_only
-async def test_update_retract_distance_does_not_raise(client: _CalibrationClient) -> None:
-    await client.update_retract_distance(Axis.B, retract_mm=2.0)
-
-
-@pytest.mark.asyncio
-@pytest.mark.simulator_only
-async def test_update_endstop_debounce_does_not_raise(client: _CalibrationClient) -> None:
-    await client.update_endstop_debounce(debounce_mm=0.5)
+async def test_calibrate_gripper_jaw_without_gripper_raises_defined_error(client: _CalibrationClient) -> None:
+    """CalibrateGripperJaw with no gripper surfaces a calibration defined error over the wire."""
+    with pytest.raises(grpc.aio.AioRpcError) as excinfo:
+        await client.calibrate_gripper_jaw(GripperJaw.FRONT)
+    assert excinfo.value.code() is grpc.StatusCode.ABORTED
+    details = _details(excinfo.value)
+    assert b"CalibrationFailedError" in details or b"CalibrationProbeNotAttachedError" in details

@@ -1,47 +1,31 @@
-"""End-to-end gRPC integration tests for the OT-2 connector in simulate mode.
+"""End-to-end gRPC integration tests for the Flex MotionControlFeature (simulate mode).
 
-Spins up a real SiLA gRPC server on a dynamic port and makes real gRPC calls
-over the wire using the server's own protobuf codec. Confirms the full chain:
+Spins up a real SiLA gRPC server on a dynamic port (see conftest ``sila_channel``)
+and makes real gRPC calls over the wire using the server's own protobuf codec.
+Confirms the full chain:
   gRPC channel → SiLA server → MotionControlFeature → FlexMotionController → OT3API
 
-The server's protobuf object is reused client-side to encode requests and decode
-responses — no separate client SDK required.
-
-``pb.decode()`` returns a single-entry dict whose value is the native Python
-dataclass returned by the feature method.  The client wrapper extracts that
-value so callers get the dataclass directly.
+``pb.encode`` accepts the feature method's snake_case parameter names; ``pb.decode``
+returns a single-entry dict whose value is the native dataclass the method returned
+(empty for void commands).
 """
 
 import typing
 
-import grpc
 import grpc.aio
 import pytest
 import pytest_asyncio
 
-from unitelabs.opentrons_flex.features.motion_control import Axis, AxisPosition, HomedFlags, HomeResult, Mount
+from unitelabs.opentrons_flex.features.motion_control import Lights, Mount, Position
 
 _PKG = "sila2.ca.accelerationconsortium.robots.motioncontrolfeature.v1"
 _SERVICE = f"{_PKG}.MotionControlFeature"
-
-# The simulator reports nominal homed coordinates (Y=353), but a real robot
-# reports its firmware-queried homed position, which can differ slightly per
-# machine (e.g. Y=350). Position assertions therefore compare against the
-# `homed_position` fixture (captured live) rather than a hardcoded constant.
 
 T = typing.TypeVar("T")
 
 
 class _MotionClient:
-    """Raw gRPC client for MotionControlFeature.
-
-    Commands encode ``_Parameters`` via the server's protobuf object and decode
-    ``_Responses`` the same way.  Properties (``Get_*``) have no registered
-    ``_Parameters`` message, so they receive an empty-byte request.
-
-    ``pb.decode`` returns ``{'response_0': <dataclass>}`` or
-    ``{'TypeName': <dataclass>}``.  ``_single`` extracts the dataclass value.
-    """
+    """Raw gRPC client for MotionControlFeature using the server's protobuf codec."""
 
     def __init__(self, channel: grpc.aio.Channel, pb: object) -> None:
         self._ch = channel
@@ -49,7 +33,6 @@ class _MotionClient:
 
     @staticmethod
     def _single(decoded: dict, expected_type: type[T]) -> T:
-        """Extract the single value from a decoded response dict."""
         value = next(iter(decoded.values()))
         assert isinstance(value, expected_type), (
             f"Expected {expected_type.__name__}, got {type(value).__name__}: {value}"
@@ -67,247 +50,146 @@ class _MotionClient:
         resp_bytes = await stub(b"")
         return await self._pb.decode(f"{_PKG}.{name}_Responses", resp_bytes)
 
-    async def home(self, axes: str = "XYZABC") -> HomeResult:
-        """Home axes and return the HomeResult dataclass."""
-        return self._single(await self._call("Home", {"axes": axes}), HomeResult)
+    async def home(self) -> None:
+        await self._call("Home")
 
-    async def get_position(self) -> AxisPosition:
-        """Return the current AxisPosition dataclass."""
-        return self._single(await self._call("GetPosition"), AxisPosition)
+    async def home_mount(self, mount: Mount) -> None:
+        await self._call("HomeMount", {"mount": mount})
 
-    async def move_axis(self, axis: Axis, position: float) -> AxisPosition:
-        """Move a single axis; returns AxisPosition dataclass."""
+    async def get_position(self, mount: Mount) -> Position:
+        return self._single(await self._call("GetPosition", {"mount": mount}), Position)
+
+    async def move_to(self, mount: Mount, x: float, y: float, z: float, speed: float = 0.0) -> Position:
         return self._single(
-            await self._call("MoveAxis", {"axis": axis, "position": position, "speed": 0.0}),
-            AxisPosition,
+            await self._call("MoveTo", {"mount": mount, "x": x, "y": y, "z": z, "speed": speed}),
+            Position,
         )
 
-    async def move_relative_axis(self, axis: Axis, delta: float) -> AxisPosition:
-        """Move a single axis relative; returns AxisPosition dataclass."""
-        return self._single(
-            await self._call("MoveRelativeAxis", {"axis": axis, "delta": delta, "speed": 0.0}),
-            AxisPosition,
-        )
-
-    async def get_firmware_version(self) -> str:
-        """Return the firmware version string."""
-        return next(iter((await self._call("GetFirmwareVersion")).values()))
-
-    async def reset_from_error(self) -> HomedFlags:
-        """Clear alarm state; returns HomedFlags dataclass."""
-        return self._single(await self._call("ResetFromError"), HomedFlags)
-
-    async def aspirate(self, mount: Mount, volume_ul: float, ul_per_mm: float, flow_rate_ul_s: float) -> AxisPosition:
-        """Aspirate volume_ul from mount; returns AxisPosition."""
+    async def move_relative(
+        self, mount: Mount, delta_x: float, delta_y: float, delta_z: float, speed: float = 0.0
+    ) -> Position:
         return self._single(
             await self._call(
-                "Aspirate",
-                {"mount": mount, "volume_ul": volume_ul, "ul_per_mm": ul_per_mm, "flow_rate_ul_s": flow_rate_ul_s},
+                "MoveRelative",
+                {"mount": mount, "delta_x": delta_x, "delta_y": delta_y, "delta_z": delta_z, "speed": speed},
             ),
-            AxisPosition,
+            Position,
         )
 
-    async def dispense(self, mount: Mount, volume_ul: float, ul_per_mm: float, flow_rate_ul_s: float) -> AxisPosition:
-        """Dispense volume_ul from mount; returns AxisPosition."""
-        return self._single(
-            await self._call(
-                "Dispense",
-                {"mount": mount, "volume_ul": volume_ul, "ul_per_mm": ul_per_mm, "flow_rate_ul_s": flow_rate_ul_s},
-            ),
-            AxisPosition,
-        )
+    async def set_lights(self, button: bool, rails: bool) -> Lights:
+        return self._single(await self._call("SetLights", {"button": button, "rails": rails}), Lights)
+
+    async def emergency_stop(self) -> str:
+        return next(iter((await self._call("EmergencyStop")).values()))
+
+    async def pause(self) -> str:
+        return next(iter((await self._call("Pause")).values()))
+
+    async def resume(self) -> str:
+        return next(iter((await self._call("Resume")).values()))
+
+    async def get_lights(self) -> Lights:
+        return self._single(await self._get_property("Get_Lights"), Lights)
 
     async def get_is_simulating(self) -> bool:
-        """Return the is-simulating boolean."""
         return next(iter((await self._get_property("Get_IsSimulating")).values()))
-
-    async def get_homed_flags(self) -> HomedFlags:
-        """Return the HomedFlags dataclass."""
-        return self._single(await self._get_property("Get_HomedFlags"), HomedFlags)
 
 
 @pytest_asyncio.fixture
 async def client(sila_channel) -> _MotionClient:
-    """Yield a MotionControlFeature gRPC client (local sim or --robot target)."""
     channel, pb = sila_channel
     return _MotionClient(channel, pb)
 
 
 @pytest_asyncio.fixture
-async def homed_position(client: _MotionClient) -> AxisPosition:
-    """Home the robot and return its actual homed position.
-
-    Nominal coordinates in the simulator; the real firmware-reported position on
-    hardware. Position tests compare against this so they hold on both backends.
-    """
-    return (await client.home()).position
+async def homed_position(client: _MotionClient) -> Position:
+    """Home the robot and return the LEFT mount's resulting position."""
+    await client.home()
+    return await client.get_position(Mount.LEFT)
 
 
-# ── Simulation flag and firmware ──────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-@pytest.mark.simulator_only
-async def test_firmware_version_is_virtual(client: _MotionClient) -> None:
-    """GetFirmwareVersion returns the simulator sentinel string over the wire."""
-    assert await client.get_firmware_version() == "Virtual Smoothie"
+# ── simulation flag ───────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 @pytest.mark.simulator_only
 async def test_is_simulating_is_true(client: _MotionClient) -> None:
-    """Get_IsSimulating property returns True in simulate mode."""
+    """Get_IsSimulating returns True in simulate mode (over the wire)."""
     assert await client.get_is_simulating() is True
 
 
-# ── Home ──────────────────────────────────────────────────────────────────────
+# ── home / position ───────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_home_returns_homed_axes_string(client: _MotionClient) -> None:
-    """Home XYZABC echoes the axes string in the response."""
-    result = await client.home()
-    assert result.homed_axes == "XYZABC"
-
-
-@pytest.mark.asyncio
-async def test_home_returns_homed_position(client: _MotionClient, homed_position: AxisPosition) -> None:
-    """Home returns reproducible homed coordinates (matches a prior home)."""
-    result = await client.home()
-    assert result.position.x == pytest.approx(homed_position.x)
-    assert result.position.y == pytest.approx(homed_position.y)
-    assert result.position.z == pytest.approx(homed_position.z)
-    assert result.position.a == pytest.approx(homed_position.a)
-
-
-@pytest.mark.asyncio
-async def test_home_sets_all_homed_flags(client: _MotionClient) -> None:
-    """Home sets all six axis homed flags to True."""
+async def test_home_then_get_position_returns_a_position(client: _MotionClient) -> None:
+    """Home, then GetPosition decodes to a Position dataclass over the wire."""
     await client.home()
-    flags = await client.get_homed_flags()
-    assert all([flags.x, flags.y, flags.z, flags.a, flags.b, flags.c])
+    pos = await client.get_position(Mount.LEFT)
+    assert isinstance(pos, Position)
 
 
 @pytest.mark.asyncio
-@pytest.mark.simulator_only
-async def test_home_subset_only_sets_requested_flags(client: _MotionClient) -> None:
-    """Homing only BC leaves X, Y, Z, A flags False.
-
-    Simulator-only: assumes a cold (un-homed) starting state. On real hardware
-    homed flags reflect the firmware's actual state (GCODE.HOMING_STATUS) and
-    stay set from any prior home — homing a subset does not un-home other axes.
-    """
-    await client.home(axes="BC")
-    flags = await client.get_homed_flags()
-    assert flags.b is True
-    assert flags.c is True
-    assert flags.x is False
-    assert flags.y is False
-
-
-# ── Position tracking ─────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_get_position_reflects_home(client: _MotionClient, homed_position: AxisPosition) -> None:
-    """GetPosition returns the homed coordinates after a full home."""
-    pos = await client.get_position()
+async def test_home_position_is_reproducible(client: _MotionClient, homed_position: Position) -> None:
+    """A second home returns the same coordinates as the first."""
+    await client.home()
+    pos = await client.get_position(Mount.LEFT)
     assert pos.x == pytest.approx(homed_position.x)
     assert pos.y == pytest.approx(homed_position.y)
+    assert pos.z == pytest.approx(homed_position.z)
+
+
+# ── motion ────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_move_axis_changes_target_axis(client: _MotionClient) -> None:
-    """MoveAxis X to 75 mm produces X≈75 in the returned position."""
-    await client.home()
-    result = await client.move_axis(axis=Axis.X, position=75.0)
-    assert result.x == pytest.approx(75.0)
+async def test_move_to_sets_absolute_position(client: _MotionClient, homed_position: Position) -> None:
+    """MoveTo returns the requested absolute coordinates."""
+    target_x = homed_position.x - 20.0
+    target_y = homed_position.y - 20.0
+    target_z = homed_position.z - 20.0
+    result = await client.move_to(Mount.LEFT, target_x, target_y, target_z)
+    assert result.x == pytest.approx(target_x)
+    assert result.y == pytest.approx(target_y)
+    assert result.z == pytest.approx(target_z)
 
 
 @pytest.mark.asyncio
-async def test_move_axis_does_not_change_other_axes(client: _MotionClient, homed_position: AxisPosition) -> None:
-    """MoveAxis X leaves Y at its homed value."""
-    result = await client.move_axis(axis=Axis.X, position=75.0)
-    assert result.y == pytest.approx(homed_position.y)
+async def test_move_relative_accumulates(client: _MotionClient, homed_position: Position) -> None:
+    """Two relative Y moves of -10 mm produce Y = homed_Y - 20 mm."""
+    await client.move_relative(Mount.LEFT, 0.0, -10.0, 0.0)
+    result = await client.move_relative(Mount.LEFT, 0.0, -10.0, 0.0)
+    assert result.y == pytest.approx(homed_position.y - 20.0)
+
+
+# ── lights ────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_move_relative_axis_accumulates(client: _MotionClient, homed_position: AxisPosition) -> None:
-    """Two MoveRelativeAxis Y -20 mm moves produce Y = homed_Y - 40 mm."""
-    await client.move_relative_axis(axis=Axis.Y, delta=-20.0)
-    result = await client.move_relative_axis(axis=Axis.Y, delta=-20.0)
-    assert result.y == pytest.approx(homed_position.y - 40.0)
-
-
-# ── Error reset ───────────────────────────────────────────────────────────────
+async def test_set_lights_returns_lights(client: _MotionClient) -> None:
+    """SetLights decodes to a Lights dataclass over the wire."""
+    result = await client.set_lights(button=True, rails=False)
+    assert isinstance(result, Lights)
 
 
 @pytest.mark.asyncio
-@pytest.mark.simulator_only
-async def test_reset_from_error_clears_homed_flags(client: _MotionClient) -> None:
-    """ResetFromError clears the homed flags set by a prior Home call.
-
-    Simulator-only: in simulation update_homed_flags() resets every flag to
-    False. On real hardware M999 does not un-home the carriages, and
-    update_homed_flags() re-queries the firmware (GCODE.HOMING_STATUS), which
-    still reports the axes homed — so the flags correctly remain True.
-    """
-    await client.home()
-    flags_before = await client.get_homed_flags()
-    assert all([flags_before.x, flags_before.y, flags_before.z])
-
-    await client.reset_from_error()
-
-    flags_after = await client.get_homed_flags()
-    assert not any([flags_after.x, flags_after.y, flags_after.z, flags_after.a, flags_after.b, flags_after.c])
+async def test_get_lights_property(client: _MotionClient) -> None:
+    """The Lights property decodes to a Lights dataclass over the wire."""
+    assert isinstance(await client.get_lights(), Lights)
 
 
-# ── Aspirate / Dispense ───────────────────────────────────────────────────────
-
-# ul_per_mm of 1.0 makes the math trivial: volume_ul == distance_mm.
-_UL_PER_MM = 1.0
-_FLOW_RATE = 10.0  # µL/s
+# ── stop / pause / resume ─────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_aspirate_decreases_plunger_position(client: _MotionClient) -> None:
-    """Aspirate moves the left plunger (B) down by volume_ul / ul_per_mm."""
-    await client.home()
-    pos_before = await client.get_position()
-    volume = 5.0
-    pos_after = await client.aspirate(Mount.LEFT, volume, _UL_PER_MM, _FLOW_RATE)
-    assert pos_after.b == pytest.approx(pos_before.b - volume / _UL_PER_MM)
+async def test_pause_and_resume_return_status_strings(client: _MotionClient) -> None:
+    """Pause and Resume return human-readable status strings."""
+    assert isinstance(await client.pause(), str)
+    assert isinstance(await client.resume(), str)
 
 
 @pytest.mark.asyncio
-async def test_dispense_restores_plunger_position(client: _MotionClient) -> None:
-    """Dispense after aspirate returns the left plunger (B) to its original position."""
-    await client.home()
-    pos_before = await client.get_position()
-    volume = 5.0
-    await client.aspirate(Mount.LEFT, volume, _UL_PER_MM, _FLOW_RATE)
-    pos_after = await client.dispense(Mount.LEFT, volume, _UL_PER_MM, _FLOW_RATE)
-    assert pos_after.b == pytest.approx(pos_before.b)
-
-
-@pytest.mark.asyncio
-async def test_aspirate_right_mount_moves_c_axis(client: _MotionClient) -> None:
-    """Aspirate on the right mount moves axis C, not B."""
-    await client.home()
-    pos_before = await client.get_position()
-    volume = 3.0
-    pos_after = await client.aspirate(Mount.RIGHT, volume, _UL_PER_MM, _FLOW_RATE)
-    assert pos_after.c == pytest.approx(pos_before.c - volume / _UL_PER_MM)
-    assert pos_after.b == pytest.approx(pos_before.b)
-
-
-@pytest.mark.asyncio
-async def test_aspirate_does_not_move_gantry(client: _MotionClient) -> None:
-    """Aspirate leaves X, Y, Z, A axes unchanged."""
-    await client.home()
-    pos_before = await client.get_position()
-    pos_after = await client.aspirate(Mount.LEFT, 5.0, _UL_PER_MM, _FLOW_RATE)
-    assert pos_after.x == pytest.approx(pos_before.x)
-    assert pos_after.y == pytest.approx(pos_before.y)
-    assert pos_after.z == pytest.approx(pos_before.z)
-    assert pos_after.a == pytest.approx(pos_before.a)
+async def test_emergency_stop_returns_status_string(client: _MotionClient) -> None:
+    """EmergencyStop returns a status string mentioning the required re-home."""
+    msg = await client.emergency_stop()
+    assert "re-home" in msg.lower()
