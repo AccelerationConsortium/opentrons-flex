@@ -34,4 +34,4 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Reset the entrypoint, don't invoke `uv`
 ENTRYPOINT []
 
-CMD [ "connector", "start", "--app", "unitelabs.opentrons_ot2:create_app", "-vvv" ]
+CMD [ "connector", "start", "--app", "unitelabs.opentrons_flex:create_app", "-vvv" ]

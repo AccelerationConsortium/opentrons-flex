@@ -12,10 +12,10 @@ jobs:
     strategy:
       matrix:
         include:
-          # Old OT-2: Python 3.10, opentrons 8.8.1 (Debian-based, glibc 2.25)
+          # opentrons 8.8.1 line (Python 3.10) — older robot software baseline
           - python-version: "3.10"
             opentrons-version: "8.8.1"
-          # New OT-2: Python 3.12, opentrons 9.0.0 (Buildroot, glibc 2.40)
+          # opentrons 9.0.0 line (Python 3.12) — current Flex robot software (Buildroot, aarch64)
           - python-version: "3.12"
             opentrons-version: "9.0.0"
 
@@ -132,7 +132,7 @@ jobs:
           # Wait for SonarCloud to finish processing before querying
           for i in $(seq 1 10); do
             STATUS=$(curl -s -u "$SONAR_TOKEN:" \
-              "https://sonarcloud.io/api/qualitygates/project_status?projectKey=AccelerationConsortium_opentrons-ot2" \
+              "https://sonarcloud.io/api/qualitygates/project_status?projectKey=AccelerationConsortium_opentrons-flex" \
               | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('projectStatus',{}).get('status','NONE'))")
             echo "Quality gate status: $STATUS"
             if [ "$STATUS" != "NONE" ] && [ "$STATUS" != "IN_PROGRESS" ]; then break; fi
@@ -141,7 +141,7 @@ jobs:
 
           echo "=== Quality Gate Conditions ==="
           curl -s -u "$SONAR_TOKEN:" \
-            "https://sonarcloud.io/api/qualitygates/project_status?projectKey=AccelerationConsortium_opentrons-ot2" \
+            "https://sonarcloud.io/api/qualitygates/project_status?projectKey=AccelerationConsortium_opentrons-flex" \
             | python3 -c "
           import json, sys
           d = json.load(sys.stdin)
@@ -157,7 +157,7 @@ jobs:
 
           echo "=== Open Issues ==="
           curl -s -u "$SONAR_TOKEN:" \
-            "https://sonarcloud.io/api/issues/search?projectKeys=AccelerationConsortium_opentrons-ot2&resolved=false&ps=100" \
+            "https://sonarcloud.io/api/issues/search?projectKeys=AccelerationConsortium_opentrons-flex&resolved=false&ps=100" \
             | python3 -c "
           import json, sys
           data = json.load(sys.stdin)

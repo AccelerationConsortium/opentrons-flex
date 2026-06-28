@@ -1,0 +1,47 @@
+name: Build Flex aarch64 Wheels
+
+# The Flex host is aarch64 (ARM64) with a modern glibc, so standard PyPI
+# manylinux_2_17_aarch64 wheels install directly — no from-source grpcio/OpenSSL
+# build (that was an OT-2 armv7/glibc-2.25 concern). This builds the connector
+# wheel + runtime-dep wheels into the flex-arm-wheels artifact for deploy.sh.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['*']
+    paths:
+      - 'Dockerfile.build'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'src/**'
+
+jobs:
+  build-flex-arm-wheels:
+    runs-on: ubuntu-24.04-arm  # native arm64 — no QEMU needed
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build aarch64 wheels into dist_arm/
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.build
+          platforms: linux/arm64
+          target: export
+          outputs: type=local,dest=dist_arm
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: List wheels
+        run: ls -la dist_arm/
+
+      - name: Upload flex-arm-wheels artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: flex-arm-wheels
+          path: dist_arm/*.whl
+          retention-days: 14

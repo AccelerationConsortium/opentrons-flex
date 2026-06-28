@@ -8,10 +8,10 @@
     "certificate_chain": null,
     "private_key": null,
     "options": {},
-    "uuid": "f036fcea-1756-4f9e-835b-20336f4baf58",
-    "name": "Opentrons OT-2",
+    "uuid": "9f1d2b5a-7c3e-4a18-9b2c-1e7f5a3d8c40",
+    "name": "Opentrons Flex",
     "type": "LiquidHandler",
-    "description": "SiLA2 connector for Opentrons OT-2 motion and GPIO control",
+    "description": "SiLA2 connector for Opentrons Flex motion, pipettes, gripper and calibration",
     "version": "0.1",
     "vendor_url": "https://opentrons.com/",
     "default_lifetime": 3600.0
@@ -51,7 +51,6 @@
     }
   },
   "use_simulator": false,
-  "serial_port": "/dev/ttyAMA0",
   "with_robot_server": true,
   "robot_server_uds": "/run/aiohttp.sock",
   "lock_timeout_s": null

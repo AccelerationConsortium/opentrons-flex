@@ -193,32 +193,50 @@ Always add a simulation mode, even if it just returns mocked data. The simulatio
 Add unit tests for every endpoint in the transport protocol implementation (simulated)
 Add unit tests for every SiLA endpoint
 
-OT-2 Deployment and ARM Wheel Builds
-The OT-2 runs glibc 2.25. When a C-extension wheel fails with "GLIBC_X.XX not found", before reaching for a source compile:
+Flex Deployment and ARM Wheel Builds
+The Flex host is aarch64 (ARM64) with a modern glibc — unlike the OT-2 (armv7l,
+glibc 2.25), which had to compile grpcio + OpenSSL from source on Debian Stretch.
+For the Flex, PyPI's standard manylinux_2_17_aarch64 wheels (grpcio, numpy, rpds-py,
+etc.) install directly. Build them with `Dockerfile.build` (`--platform linux/arm64`)
+and ship via `deploy.sh`. Do NOT carry over the OT-2 from-source grpcio/OpenSSL
+build — it is armv7-specific and unnecessary here.
 
-1. Check if a newer package version ships a manylinux_2_17_armv7l wheel (glibc 2.17+) — this is often the fix (e.g. rpds-py 0.7 → 0.30).
-2. Check if the required dependency (e.g. OpenSSL 1.1.1) is available in a distro backports repo (e.g. debian stretch-backports) before building from source.
-3. Only compile from source as a last resort when no pre-built binary exists for glibc <= 2.25.
-For grpcio specifically: no pre-built manylinux armv7l wheel exists on PyPI. It must be compiled from source on Debian Stretch (glibc 2.24) using Python 3.10 (also compiled from source, since Stretch predates Python 3.10 packages) with OpenSSL 1.1.1 compiled from source. When compiling OpenSSL on arm32v7 inside a container on an ARM64 host, use `./Configure linux-armv4 ... no-asm` — do NOT use `./config` which auto-detects AArch64 and tries to build ARMv8 NEON assembly that fails to assemble in 32-bit mode.
-
-OT-2 pip.conf pitfall: The OT-2 ships `/etc/pip.conf` containing `root = /var/user-packages`. This silently redirects every `pip install` call — including inside a venv — so packages land in `/var/user-packages/var/<venv>/lib/python3.10/site-packages/` instead of the venv's own site-packages. The venv's Python never sees them and imports fail. Fix: always pass `--root /` to pip when installing into a venv on the OT-2 — this overrides the config-file root on the command line, so packages land in the venv's own site-packages. Note: `--isolated` does NOT fix this; it only suppresses user-level config (~/.pip/pip.conf), not site-level (/etc/pip.conf). Also: call the venv's pip binary directly (`"$VENV_PATH/bin/pip" install --root / ...`) rather than using `source activate`, since the install script runs under `sh` (no bash on OT-2). Do NOT use `#!/bin/bash` in scripts deployed to the OT-2.
+pip.conf pitfall (still applies): the Opentrons system image ships `/etc/pip.conf`
+with `root = /var/user-packages`, which silently redirects every `pip install` —
+including inside a venv — away from the venv's own site-packages, so imports fail.
+Fix: always pass `--root /` to pip when installing into a venv on the robot (this
+overrides the config-file root on the command line). `--isolated` does NOT fix it
+(it only suppresses user-level config, not site-level /etc/pip.conf). Call the
+venv's pip binary directly (`"$VENV_PATH/bin/pip" install --root / ...`) and do NOT
+use `#!/bin/bash` in deployed scripts (the robot's install shell is `sh`).
 
 Hardware Driver Rules
-Never use or introduce silent fallback-to-simulation patterns for hardware drivers. If hardware (GPIO, serial, etc.) fails to initialise, raise an error immediately — do not catch the exception and substitute a no-op simulator.
-Use concrete driver classes directly (e.g. GPIOCharDev), not wrapper functions with silent fallbacks (e.g. build_gpio_chardev).
-Simulation is explicit and opt-in via simulate=True only — never automatic on error.
-If you see except (ImportError, OSError): return SimulatingFoo() anywhere, remove it.
+Never use or introduce silent fallback-to-simulation patterns for hardware. If the
+OT3API hardware controller fails to initialise (CAN bus, instruments, etc.), raise
+an error immediately — do not catch it and substitute a simulator.
+Simulation is explicit and opt-in via `use_simulator=True` (which builds
+`OT3API.build_hardware_simulator()`) only — never automatic on error.
+If you see `except (ImportError, OSError): return SimulatingFoo()` anywhere, remove it.
 
-OT-2 Axis Reference
+Flex (OT-3) Axis Reference
+The Flex is driven through OT3API over CAN — no Smoothie, no single serial port.
+Axis names differ from the OT-2 (which used X/Y/Z/A/B/C):
 
-| Axis | Description | Limit Switch |
-|------|-------------|--------------|
-| X | Gantry right (+X) and left (-X) | +X |
-| Y | Gantry back, away from front window (+Y) and forward, towards front window (-Y) | +Y |
-| Z | Left pipette mount up (+Z) and down (-Z) | +Z |
-| A | Right pipette mount up (+A) and down (-A) | +A |
-| B | Left pipette plunger up (+B) and down (-B) | +B |
-| C | Right pipette plunger up (+C) and down (-C) | +C |
+| Axis | Description |
+|------|-------------|
+| X | Gantry left/right |
+| Y | Gantry front/back |
+| Z_L | Left mount up/down |
+| Z_R | Right mount up/down |
+| P_L | Left pipette plunger |
+| P_R | Right pipette plunger |
+| Z_G | Gripper mount up/down |
+| G | Gripper jaw open/close |
+| Q | 96-channel tip-pickup axis |
+
+Mounts (`OT3Mount`): LEFT, RIGHT, GRIPPER. The SiLA MotionControl feature exposes
+motion per *mount* in deck coordinates (x, y, z mm), not by raw axis, matching how
+OT3API models the Flex.
 
 CI Monitoring
 When watching a GitHub Actions run, use: `gh run watch <run-id> --repo <owner/repo> --interval 30` in the background, then `tail -f` its output file. Do NOT write custom Python or shell polling loops that parse the GitHub API — they break on shell variable conflicts and other edge cases. Simple and reliable.

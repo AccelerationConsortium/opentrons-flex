@@ -1,6 +1,4 @@
 {
-    "model": "OT-2 Standard",
-    "name": "SiLA2 OT-2",
-    "version": 4,
-    "serial_speed": 115200
+    "model": "OT-3 Standard",
+    "name": "SiLA2 Flex"
 }

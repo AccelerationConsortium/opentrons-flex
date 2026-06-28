@@ -3,12 +3,16 @@
 These tests exercise the HTTP API that our connector starts in-process when
 ``with_robot_server=True``.  The server is the standard opentrons robot-server
 FastAPI app, but backed by our ``HardwareProxy`` instead of a fresh hardware
-instance.  nginx on the OT-2 proxies TCP 31950 to the Unix domain socket we
+instance.  nginx on the Flex proxies TCP 31950 to the Unix domain socket we
 bind.
 
-Run against a live robot::
+Run against a live Flex::
 
-    uv run pytest tests/integration/http_api/ --robot 100.108.249.112:50051
+    uv run pytest tests/integration/http_api/ --robot <flex-ip>:50051
+
+Or locally with the in-process robot-server (requires the robot_server package)::
+
+    uv run pytest tests/integration/http_api/ --with-http-server
 
 All tests are marked ``robot_http_only`` and are skipped in the simulator test
 suite.
@@ -27,10 +31,10 @@ def test_health_returns_200(http_client):
 
 
 @pytest.mark.robot_http_only
-def test_health_robot_model_is_ot2(http_client):
-    """GET /health identifies the robot as an OT-2."""
+def test_health_robot_model_is_flex(http_client):
+    """GET /health identifies the robot as a Flex (OT-3 Standard)."""
     data = http_client.get("/health").json()
-    assert data["robot_model"] == "OT-2 Standard"
+    assert data["robot_model"] == "OT-3 Standard"
 
 
 @pytest.mark.robot_http_only

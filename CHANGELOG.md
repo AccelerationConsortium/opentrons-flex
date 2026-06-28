@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - Opentrons Flex (OT-3) port
+
+Adapted from the opentrons-ot2 connector for the Opentrons Flex. The connector now
+wraps the high-level `OT3API` (CAN) instead of the OT-2 `SmoothieDriver` (serial);
+the Flex firmware is not modified.
+
+### Added
+
+- `FlexMotionController` (OT3API wrapper): mount + deck-coordinate motion, plunger
+  aspirate/dispense, status-bar/deck lights
+- `GripperFeature` + `FlexGripperController` — Flex-only gripper (grip/ungrip/home jaw, status)
+- `CalibrationFeature` redesigned around automatic probe-based routines
+  (`ot3_calibration`: pipette offset, gripper jaw, deck) replacing OT-2 Smoothie config writes
+- Defined SiLA errors with OT3API translation: `NotHomedError`, `MovementOutOfBoundsError`,
+  `StallDetectedError`, `GripperNotAttachedError`, `GripActionError`,
+  `CalibrationProbeNotAttachedError`, `CalibrationFailedError`
+- Flex test suite: unit/simulation (OT3 simulator), gRPC + HTTP integration, and a
+  real-CDK SiLA feature-definition test; runs offline via a conftest CDK stub
+- aarch64 wheel build (`Dockerfile.build`, `build-flex-arm-wheels` workflow) and Flex
+  deploy/service/switch-mode scripts
+
+### Changed
+
+- `MotionControlFeature` rewritten around `OT3Mount` (LEFT/RIGHT/GRIPPER) and deck
+  coordinates instead of raw X/Y/Z/A/B/C Smoothie axes
+- `PipetteFeature` reports Flex pipette models via `cache_instruments`/`attached_instruments`
+- In-process robot-server wiring builds `OT3API` (CAN) instead of OT-2 `API` (serial)
+- Deployment targets aarch64 + modern glibc — removed the OT-2 armv7 from-source
+  grpcio/OpenSSL build
+
+### Removed
+
+- `MagneticModuleFeature` / `MagneticModuleController` — the Flex uses the passive
+  Magnetic Block (no controller); magnetic module is unsupported
+- OT-2 Smoothie motion layer, GPIO button/ALSA tone, per-axis motor-current commands
+
 ## [0.4.0] - 2026-05-26
 
 ### Added

@@ -1,5 +1,5 @@
 services:
-  opentrons-ot2:
+  opentrons-flex:
     build: .
     restart: always
     privileged: true

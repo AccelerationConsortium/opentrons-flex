@@ -1,338 +1,222 @@
-# Opentrons OT-2
+# Opentrons Flex
 
-A SiLA2 connector for the Opentrons OT-2 liquid handling robot that also replaces the
-standard Opentrons robot-server HTTP API. Both servers share a single hardware driver
-instance so they cannot conflict over the serial port.
+A SiLA2 connector for the Opentrons **Flex** (OT-3) liquid-handling robot that also
+replaces the standard Opentrons robot-server HTTP API. Both servers share a single
+hardware API instance so they cannot conflict over the CAN bus.
+
+This connector is adapted from the [opentrons-ot2 connector](https://github.com/AccelerationConsortium/opentrons-ot2).
+The key difference: the Flex has no Smoothie serial board — motion, pipettes, the
+gripper and calibration are all driven through the high-level `OT3API`
+(`opentrons.hardware_control.ot3api`) over CAN. The connector wraps that host API; it
+does **not** modify the Flex motor-controller firmware.
 
 ## Architecture
 
-This project runs two servers in the same process when deployed to a real OT-2:
+This project runs two servers in the same process when deployed to a real Flex:
 
 | Server | Protocol | Port | Purpose |
 |--------|----------|------|---------|
 | SiLA2 connector | gRPC | 50051 | Lab automation clients (SiLA Browser, UniteLabs platform) |
-| Opentrons robot-server | HTTP REST | 31950 | Opentrons App, Ground Control, any REST client |
+| Opentrons robot-server | HTTP REST | 31950 | Opentrons App, any REST client |
 
-Both servers are backed by one shared `HardwareControlAPI` wrapped in `HardwareProxy`
-(an `asyncio.Lock` around every serial command). This prevents interleaved writes to
-`/dev/ttyAMA0` and avoids the port-already-open error that would occur if two processes
-each tried to initialise the Smoothie.
+Both servers are backed by one shared `OT3API` (`HardwareControlAPI`) wrapped in
+`HardwareProxy` — an `asyncio.Lock` around every hardware call. This serialises the
+SiLA gRPC server and the in-process HTTP robot-server so their CAN commands cannot
+interleave, and avoids the "hardware already initialised" error two separate
+processes would hit.
 
-The standard `opentrons-robot-server` systemd service is disabled on deployment. Our
+The stock `opentrons-robot-server` systemd service is disabled on deployment. Our
 `sila2-connector` service owns the hardware and starts the HTTP API in-process via
-uvicorn on a Unix domain socket (`/run/aiohttp.sock`). nginx on the OT-2 proxies
-external TCP port 31950 to that socket — so the HTTP API is reachable at
-`http://<robot-ip>:31950` exactly as it would be with the stock `opentrons-robot-server`
-service.
+uvicorn on a Unix domain socket (`/run/aiohttp.sock`). nginx on the Flex proxies
+external TCP port 31950 to that socket, so the HTTP API is reachable at
+`http://<flex-ip>:31950` exactly as with the stock service.
+
+### SiLA features
+
+| Feature | Commands / properties |
+|---------|------------------------|
+| `MotionControlFeature` | `Home`, `HomeMount`, `MoveTo`, `MoveRelative`, `GetPosition`, `Aspirate`, `Dispense`, `BlowOut`, `PrepareForAspirate`, `EmergencyStop`, `Pause`, `Resume`, `SetLights`; `Lights`, `IsSimulating` |
+| `PipetteFeature` | `GetAttachedPipettes` (Flex pipette models, per mount) |
+| `GripperFeature` | `Grip`, `Ungrip`, `HomeJaw`; `Status` (Flex-only instrument) |
+| `CalibrationFeature` | `CalibratePipette`, `CalibrateGripperJaw`, `CalibrateDeck` (automatic probe-based routines) |
+| Module features | `HeaterShaker`, `Thermocycler`, `Temperature` (registered when attached) |
+
+Motion is exposed per **mount** (`LEFT`, `RIGHT`, `GRIPPER`) in deck coordinates
+(x, y, z mm), matching how `OT3API` models the Flex. The **Magnetic Module** is not
+supported on the Flex (it is replaced by the passive Magnetic Block).
 
 **Key source files:**
 
-- `src/unitelabs/opentrons_ot2/__init__.py` — `create_app()` entry point and
-  `_create_app_with_robot_server()` (the in-process HTTP server startup)
-- `src/unitelabs/opentrons_ot2/io/hardware_proxy.py` — `HardwareProxy` shared-lock wrapper
-- `tests/test_create_app_with_robot_server.py` — unit tests for the startup wiring (mocked)
-- `tests/integration/http_api/` — end-to-end HTTP API tests against a live robot
+- `src/unitelabs/opentrons_flex/__init__.py` — `create_app()` and
+  `_create_app_with_robot_server()` (in-process HTTP server startup, OT3API)
+- `src/unitelabs/opentrons_flex/io/flex_motion.py` — `FlexMotionController` (OT3API wrapper)
+- `src/unitelabs/opentrons_flex/io/_errors.py` — defined SiLA errors + OT3API error translation
+- `tests/integration/` — end-to-end gRPC + HTTP tests (simulator or live Flex)
 
-## Getting Started
+## Getting started
 
-For a general introduction to connector development with the UniteLabs CDK, see the [connector development documentation](https://docs.unitelabs.io/connector-development).
-
-### Prerequisites
-
-Ensure that [uv](https://docs.astral.sh/uv/) is installed on your system. You can install it with:
+Requires [uv](https://docs.astral.sh/uv/) (`pipx install uv`).
 
 ```sh
-pipx install uv
+git clone https://github.com/AccelerationConsortium/opentrons-flex.git
+cd opentrons-flex
+uv sync --all-extras
 ```
 
-### Installation
-
-#### Create a Virtual Environment
-
-It is highly recommended to use a virtual environment to manage the dependencies for your connector project. This keeps the dependencies for different connectors isolated from each other. Use the following command to create a virtual environment:
+Run the connector in **simulator** mode (no hardware, OT3 simulator backend):
 
 ```sh
-uv venv
+uv run connector start --app unitelabs.opentrons_flex:create_app -vvv
 ```
 
-Activate the virtual environment:
+The connector reads config from a `config.json` (see `config/flex_config.json` for a
+template). `use_simulator: true` selects the OT3 simulator; `with_robot_server: true`
+additionally starts the in-process HTTP robot-server.
 
-- On **Windows**:
+## Testing
 
-  ```sh
-  .\venv\Scripts\activate.bat
-  ```
-
-- On **macOS**/**Linux**:
-
-  ```sh
-  source venv/bin/activate
-  ```
-
-If you are on a Windows machine, you may additionally wish to set the `UNITELABS_CDK_APP` environment variable to the connector's entry point. This can be done by running the following command:
+The test suite runs **fully offline** against the real opentrons OT3 *simulator* — no
+robot required. It needs `opentrons` and (for the integration/HTTP tests) `httpx`;
+the real `unitelabs-cdk` (public on PyPI) is used when installed, and a lightweight
+stub in `tests/conftest.py` lets the simulation tests run even without it.
 
 ```sh
-set UNITELABS_CDK_APP=unitelabs.opentrons_ot2:create_app
+# Everything except the live-robot HTTP tests (which skip without a target)
+uv run pytest
+
+# Just the unit + simulation tests
+uv run pytest tests/io tests/features
+
+# gRPC integration tests over the wire (in-process SiLA server + OT3 simulator)
+uv run pytest tests/integration -k grpc
 ```
 
-Setting this environment variable will allow you to run varous CLI commands without providing `--app unitelabs.opentrons_ot2:create_app` every time.
+What the suite covers without hardware:
 
-#### Install Required Dependencies
+- **Unit / simulation** (`tests/io`, `tests/features`) — controllers and SiLA features
+  driven against the OT3 simulator; SiLA feature-definition generation with the real CDK.
+- **gRPC integration** (`tests/integration/test_grpc_*`) — real gRPC calls over a
+  dynamic port through the full chain `gRPC → SiLA server → feature → OT3API`, including
+  defined-execution-errors propagating over the wire.
 
-Install the necessary Python packages into your active virtual environment:
+### Testing against a real Flex
+
+Once the connector is deployed and running on a Flex (see **Deploying** below), point
+the same integration tests at it. `--robot HOST:50051` runs the gRPC tests against the
+live SiLA server; `--robot-http HOST:31950` (or `--robot`, which derives it) runs the
+HTTP API tests against the in-process robot-server.
 
 ```sh
-uv pip install unitelabs-opentrons-ot2 \
-  --index-url https://gitlab.com/api/v4/groups/1009252/-/packages/pypi/simple
+# gRPC feature tests against the live Flex (simulator-only cases auto-skip)
+uv run pytest tests/integration -k grpc --robot <flex-ip>:50051
+
+# HTTP robot-server API tests against the live Flex
+uv run pytest tests/integration/http_api --robot-http <flex-ip>:31950
+
+# Both, in one run
+uv run pytest tests/integration --robot <flex-ip>:50051
 ```
 
-If you are working with a private connector repository, authenticate to allow access:
+Tests marked `@pytest.mark.simulator_only` (e.g. "IsSimulating is True") are skipped
+automatically when `--robot` is set. Tests marked `@pytest.mark.robot_http_only` only
+run when an HTTP target is provided. Motion assertions compare against a freshly
+captured `homed_position` fixture rather than hardcoded coordinates, so they hold on
+both the simulator and real firmware.
+
+To exercise the in-process HTTP stack locally (needs the Opentrons `robot_server`
+system package installed in the environment):
 
 ```sh
-uv pip install unitelabs-opentrons-ot2 \
-  --index-url https://<username>:<password>@gitlab.com/api/v4/groups/1009252/-/packages/pypi/simple
+uv run pytest tests/integration/http_api --with-http-server
 ```
 
-#### Configure the Connector
+## Deploying to the Flex
 
-To get information about the configuration values for the connector simply run:
+The Flex host is **aarch64** (ARM64) with a modern glibc. Unlike the OT-2 (armv7l,
+glibc 2.25, which needed grpcio/OpenSSL compiled from source), standard PyPI
+`manylinux_2_17_aarch64` wheels install directly.
 
-- On **Windows**:
-
-  ```sh
-  config show --app unitelabs.opentrons_ot2:create_app
-  ```
-
-- On **macOS**/**Linux**:
-
-  ```sh
-  config show
-  ```
-
-To create a configuration file for our connector we run:
-
-- On **Windows**:
-
-  ```sh
-  config create --app unitelabs.opentrons_ot2:create_app
-  ```
-
-- On **macOS**/**Linux**:
-
-  ```sh
-  config create
-  ```
-
-Used as such this command will create a `config.json` in the current working directory. If you prefer to use yaml for your config file or would like to save the file to a different location, simply add the `--path` argument:
-
-- On **Windows**:
-
-  ```sh
-  config create --app unitelabs.opentrons_ot2:create_app  --path <path to config>
-  ```
-
-- On **macOS**/**Linux**:
-
-  ```sh
-  config create --path <path to config>
-  ```
-
-The file that is created will be populated with default configuration values that you may now edit.
-
-Note: The `cloud_server_endpoint` values are only necessary if you want to use the connector with the UniteLabs platform.
-
-#### Verify the Installation
-
-After installation, you can verify that everything works by starting the connector using the CLI tool included in the dependencies:
-
-Note: This must be done in the activated environment setup in Step 1.
+### 1. Build aarch64 wheels
 
 ```sh
-connector start --app unitelabs.opentrons_ot2:create_app -vvv
+docker buildx build --platform linux/arm64 -f Dockerfile.build \
+    --target export --output type=local,dest=dist_arm .
 ```
 
-If you decided to create your configuration file at a non-default location, you can specify it with the `--config-path` or `-cfg` argument:
+This produces `dist_arm/` (the connector wheel + all runtime deps). The Opentrons
+`opentrons`/`robot_server` system packages are intentionally excluded — the robot
+venv inherits them via `--system-site-packages`.
+
+### 2. Deploy and install the service
 
 ```sh
-connector start --app unitelabs.opentrons_ot2:create_app -cfg <path to config> -vvv
+# Copy wheels + config, create the venv on the robot
+./deploy.sh <flex-ip>
+
+# Disable the stock robot-server and install sila2-connector as a systemd service
+./scripts/install_connector_service.sh <flex-ip>
 ```
 
-In this way one can have multiple configurations for the same connector.
+`config/flex_config.json` is shipped as the robot's `config.json`. For a machine-specific
+override, create `config/flex_config.local.json` (gitignored) and `deploy.sh` will prefer it.
 
-## Deploying to the OT-2
-
-The OT-2 runs a custom embedded Linux with glibc 2.25 and Python 3.10. Standard PyPI
-wheels for C-extension packages are built against much newer glibc versions and will
-fail at import with `GLIBC_X.XX not found`. The two affected packages are:
-
-| Package | PyPI wheel requires | Fix |
-|---------|-------------------|-----|
-| `grpcio` | glibc 2.32+ | Compiled from source on Debian Stretch (glibc 2.24 cap) |
-| `rpds-py <0.30` | glibc 2.34+ | Upgrade to ≥0.30, which ships a `manylinux_2_17_armv7l` wheel (glibc 2.17+) |
-
-The `dist_arm/` directory contains a pre-built bundle of all wheels ready for offline
-installation on the robot.
-
-### Building `dist_arm/`
-
-Trigger the **Build OT-2 ARM Wheels** GitHub Actions workflow (`.github/workflows/build-ot2-arm-wheels.yml`).
-It runs on a native `ubuntu-24.04-arm` runner, so arm32v7 containers execute without
-QEMU emulation. The multi-stage `Dockerfile.build` compiles grpcio from source on
-Debian Buster to keep glibc symbol requirements within what the OT-2 supports, then
-downloads all remaining dependencies as standard wheels.
-
-Download the `ot2-arm-wheels` artifact from the completed run and replace `dist_arm/`.
-
-### Installing on the OT-2
-
-SSH into the robot and copy the `dist_arm/` directory across:
+### 3. Switch modes / iterate
 
 ```sh
-scp -r dist_arm/ root@<ot2-ip>:/root/
+# Switch between the SiLA connector and the stock opentrons robot-server (persists across reboot)
+./scripts/switch_mode.sh <flex-ip> connector
+./scripts/switch_mode.sh <flex-ip> opentrons
+
+# Push Python source changes without rebuilding wheels, then restart the service
+./scripts/deploy_python_changes.sh <flex-ip>
+
+# Tail logs
+ssh root@<flex-ip> 'journalctl -u sila2-connector -f'
 ```
 
-Then on the robot:
+In `connector` mode both interfaces are live: SiLA2 gRPC on `50051` and the opentrons
+HTTP API on `31950` (nginx → `/run/aiohttp.sock`).
 
-```sh
-bash /root/dist_arm/install.sh
-```
+> **Hardware-specific notes (verify on your device):** the systemd unit assumes the
+> stock service is `opentrons-robot-server` and that the opentrons stack auto-detects
+> OT-3 hardware (no OT-2 `RUNNING_ON_PI`/`OT_SMOOTHIE_ID` env is set). The Python minor
+> version of the robot venv is resolved dynamically by the deploy scripts.
 
-Then install the connector as a persistent systemd service (disables the Opentrons robot server):
+## Connecting a client
 
-```sh
-./scripts/install_connector_service.sh <ot2-ip>
-```
+Use the [SiLA Browser](https://gitlab.com/unitelabs/sila2/sila-browser) against
+`<flex-ip>:50051`, or any SiLA2 client. The Opentrons App and any REST client can use
+the HTTP API at `http://<flex-ip>:31950` unchanged.
 
-To deploy Python source changes to a robot that already has the service installed:
+### TLS
 
-```sh
-./scripts/deploy_python_changes.sh <ot2-ip>
-```
-
-Logs:
-
-```sh
-ssh root@<ot2-ip> 'journalctl -u sila2-connector -f'
-```
-
-### Why `--system-site-packages`
-
-The `opentrons` package (and its `opentrons-shared-data` companion) are pre-installed
-as system packages by Opentrons firmware. They are intentionally excluded from
-`dist_arm/` to avoid version conflicts. The venv inherits them via `--system-site-packages`.
-
-## Usage
-
-To interact with the running connector, we recommend using the [SiLA Browser](https://gitlab.com/unitelabs/sila2/sila-browser).
-
-### Encryption
-
-To secure communication between the connector and its clients, you can enable TLS encryption. Start by installing the optional `cryptography` package for generating TLS certificates:
+To secure the SiLA channel, install `cryptography` and generate certificates:
 
 ```sh
 uv pip install cryptography
+certificate generate            # writes cert.pem / key.pem, can update config.json
 ```
 
-To generate a pair of public and private keys, use the following command:
-
-```sh
-certificate generate
-```
-
-Without any arguments this command uses the default config location to get the connector's UUID and host name, required to generate TLS certificates. It will prompt you as to whether or not you want to update your config file to enable TLS encryption on your connector. This prompt can be suppressed with the use of the `--non-interactive` or `-y` flag, which will update the config file with paths to the locally created files without prompting, or with `--embed` or `-e` flag to write the file contents into the config file directly.
-
-You can adjust your config file's host to reflect the machine's hostname, or set it to `localhost` if the connector should only be accessible locally.
-
-If your config file was created at a non-default path, you can provide it with the `--config-path` or `-cfg` option:
-
-```sh
-certificate generate -cfg <path to config>
-```
-
-By default the generate command creates the `cert.pem` and `key.pem` files in your current working directory. You can customize the output directory with the `--target` argument.
-
-If you choose not to update your config file with the paths to your certificates using `--non-interactive` or `-y` or to have the file contents saved directly in your config file with `--embed` or `-e` flag, you will have to modify the config file yourself to set the following values under `sila_server`:
-
-- `certificate_chain` - the path to the `cert.pem` file
-- `private_key` - the path to the `key.pem` file
-- `tls` - a boolean that toggles on/off TLS encryption for the SiLA server
-
-With your updated config file you can once again run:
-
-```sh
-connector start --app unitelabs.opentrons_ot2:create_app -vvv
-```
-
-> **Important:** Never share the `key.pem` file with anyone. Only the `cert.pem` is required for clients to connect to encrypted servers.
+Set `sila_server.tls: true`, `certificate_chain` and `private_key` in the config.
+Never share `key.pem`; clients only need `cert.pem`.
 
 ## Contribute
 
-We welcome contributions to improve our connectors. Follow the steps below to set up your development environment.
-
-### Development Environment
-
-We use [uv][] for Python packaging.
-
-#### Set Up the Environment
-
-Install and configure `uv`:
-
-```sh
-pipx install uv
-```
-
-Note: requires `uv>=0.6.8`.
-
-#### Install the Package
-
-Clone the repository:
-
-```sh
-git clone https://github.com/AccelerationConsortium/sila2-ot2.git
-```
-
-Set up the development environment and start the connector:
-
 ```sh
 uv sync --all-extras
-uv run connector start -vvv
-```
-
-Note: By default, uv will sync all dependencies with every call to `uv run CMD`. To prevent this use `uv run --frozen CMD` or set the environment variable `UV_FROZEN=true`.
-
-#### Install pre-commit Hooks
-
-Set up `pre-commit` hooks to ensure code quality:
-
-```sh
 uv run pre-commit install
-```
-
-#### Running Tests
-
-To run the test suite:
-
-```sh
 uv run pytest
+uv run ruff check src tests
 ```
 
-To run tests with a specific version of python, e.g. Python 3.12:
+Dev mode (auto-reload on source changes):
 
 ```sh
-uv run --python 3.12 --all-extras pytest
-```
-
-#### Dev-Mode
-
-To improve the development experience, we recommend running the connector in developer mode. This will automatically reload the connector whenever changes to the source code are saved.
-
-```sh
-uv run connector dev --app unitelabs.opentrons_ot2:create_app
+uv run connector dev --app unitelabs.opentrons_flex:create_app
 ```
 
 ## Contact
 
-If you found a bug, please use the [issue tracker][issue-tracker].
+Found a bug? Use the [issue tracker](https://github.com/AccelerationConsortium/opentrons-flex/issues).
 
-[issue-tracker]: https://github.com/AccelerationConsortium/sila2-ot2/issues
 [uv]: https://docs.astral.sh/uv/
