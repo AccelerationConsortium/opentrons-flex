@@ -1,5 +1,5 @@
 #!/bin/sh
-# Manage the SiLA2 OT-2 connector service.
+# Manage the SiLA2 Opentrons Flex connector service.
 # Usage: ssh root@<host> "sh /data/start_connector.sh [start|stop|restart|status]"
 # Default action is restart.
 #

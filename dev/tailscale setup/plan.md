@@ -1,6 +1,6 @@
 # Tailscale Setup Plan
 
-Reproduce the existing OT-2 tailscale installation on a new machine via SSH.
+Reproduce the existing robot tailscale installation on a new machine via SSH.
 
 ## Existing setup (reference)
 

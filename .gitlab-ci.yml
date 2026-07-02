@@ -213,10 +213,10 @@ prod:release:
     - if: $CI_PROJECT_ROOT_NAMESPACE == 'unitelabs' && $CI_COMMIT_TAG
 # END of Production and Release
 
-# OT-2 ARM Wheel Build
-# Runs on a native ARM64 runner — arm32v7 executes natively on ARM64 (no QEMU),
-# so grpcio compiles in minutes rather than hours.
-build:ot2-arm-wheels:
+# Flex aarch64 Wheel Build
+# Runs on a native ARM64 runner. The Flex host is aarch64 with a modern glibc, so
+# standard manylinux_2_17_aarch64 wheels install directly — no from-source build.
+build:flex-arm-wheels:
   stage: deploy
   tags:
     - saas-linux-medium-arm64
@@ -227,13 +227,10 @@ build:ot2-arm-wheels:
     DOCKER_DRIVER: overlay2
     DOCKER_TLS_CERTDIR: "/certs"
   script:
-    - docker build --platform linux/arm/v7 -f Dockerfile.build -t ot2-wheel-builder .
-    - id=$(docker create ot2-wheel-builder)
-    - docker cp $id:/output dist_arm
-    - docker rm $id
+    - docker buildx build --platform linux/arm64 -f Dockerfile.build --target export --output type=local,dest=dist_arm .
     - ls -la dist_arm/
   artifacts:
-    name: ot2-arm-wheels
+    name: flex-arm-wheels
     paths:
       - dist_arm/
     expire_in: 4 weeks
@@ -242,4 +239,4 @@ build:ot2-arm-wheels:
       when: manual
     - if: $CI_COMMIT_TAG
       when: manual
-# END of OT-2 ARM Wheel Build
+# END of Flex aarch64 Wheel Build

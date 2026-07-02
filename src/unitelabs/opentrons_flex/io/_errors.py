@@ -9,9 +9,7 @@ regardless of path.
 
 Coverage (source-verified):
 - ModuleNotRespondingError  <- opentrons comm-layer SerialException / NoResponse
-- ModuleOperationError      <- ThermocyclerError, TempDeckError, MagDeckError
-- EngageHeightOutOfRangeError is raised explicitly by the magnetic controller
-  (the magnetic module raises a plain ValueError for an out-of-range height).
+- ModuleOperationError      <- ThermocyclerError, TempDeckError
 
 Known gap: the heater-shaker has no dedicated opentrons exception class, so its
 operational failures surface as comm errors (ModuleNotRespondingError) or, if
@@ -24,11 +22,10 @@ import inspect
 import typing
 
 from opentrons.drivers.asyncio.communication.errors import SerialException
-from opentrons.drivers.mag_deck.driver import MagDeckError
 from opentrons.drivers.temp_deck.driver import TempDeckError
 from opentrons.hardware_control.modules.thermocycler import ThermocyclerError
 
-_OPERATION_ERRORS = (ThermocyclerError, TempDeckError, MagDeckError)
+_OPERATION_ERRORS = (ThermocyclerError, TempDeckError)
 
 
 class ModuleNotRespondingError(Exception):
@@ -46,10 +43,6 @@ class ModuleOperationError(Exception):
     The underlying driver/module message is preserved to aid recovery (e.g.
     re-seat labware, check the module's status indicators, or power-cycle it).
     """
-
-
-class EngageHeightOutOfRangeError(Exception):
-    """The requested magnet engage height is outside the module's allowed range."""
 
 
 # Defined errors every module command can raise; the features pass this to their

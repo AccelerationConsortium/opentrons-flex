@@ -1,6 +1,6 @@
 #!/bin/sh
 # Usage: TS_AUTHKEY=tskey-auth-... ./setup_tailscale.sh <host>
-# Installs Tailscale on a new OT-2 (or identical machine) via SSH.
+# Installs Tailscale on a new robot (or identical machine) via SSH.
 # Requires root SSH access and TS_AUTHKEY set in the environment.
 # Override the default SSH key with SSH_KEY=/path/to/key.
 set -e
@@ -12,7 +12,7 @@ TAILSCALE_VERSION="1.82.0"
 TARBALL="tailscale_${TAILSCALE_VERSION}_arm.tgz"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/ot2_ssh_key}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/robot_ssh_key}"
 
 ssh_cmd() { ssh -i "$SSH_KEY" "root@${HOST}" "$@"; }
 scp_cmd() { scp -O -i "$SSH_KEY" "$1" "root@${HOST}:$2"; }
