@@ -3,7 +3,7 @@
 # Unlike the OT-2 (armv7l, glibc 2.25 — which needed grpcio + OpenSSL compiled
 # from source on Debian Stretch), the Flex host is aarch64 with a modern glibc.
 # PyPI ships manylinux_2_17_aarch64 wheels for grpcio, numpy, etc., so a plain
-# `uv pip download` on an arm64 base produces ready-to-install wheels — no
+# `pip download` on an arm64 base produces ready-to-install wheels — no
 # from-source toolchain build required.
 #
 # Build (on any host with buildx / qemu for arm64):
@@ -30,8 +30,8 @@ ADD src /build/src
 # (see scripts/install.sh --system-site-packages).
 RUN uv build --wheel --out-dir /wheels . && \
     uv pip compile pyproject.toml --output-file /tmp/req.txt && \
-    uv pip download -r /tmp/req.txt --dest /wheels --python-platform aarch64-manylinux2014 --only-binary :all: || \
-    uv pip download -r /tmp/req.txt --dest /wheels
+    (python -m pip download -r /tmp/req.txt --dest /wheels --only-binary :all: || \
+        python -m pip download -r /tmp/req.txt --dest /wheels)
 
 FROM scratch AS export
 COPY --from=wheels /wheels /
