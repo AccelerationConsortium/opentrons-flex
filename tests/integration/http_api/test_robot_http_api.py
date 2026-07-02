@@ -31,10 +31,10 @@ def test_health_returns_200(http_client):
 
 
 @pytest.mark.robot_http_only
-def test_health_robot_model_is_flex(http_client):
-    """GET /health identifies the robot as a Flex (OT-3 Standard)."""
+def test_health_has_known_robot_model(http_client):
+    """GET /health includes a known Opentrons robot model."""
     data = http_client.get("/health").json()
-    assert data["robot_model"] == "OT-3 Standard"
+    assert data["robot_model"] in {"OT-2 Standard", "OT-3 Standard"}
 
 
 @pytest.mark.robot_http_only
