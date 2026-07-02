@@ -233,7 +233,7 @@ async def test_timed_lock_raises_on_timeout() -> None:
     await raw.acquire()  # simulate robot_server holding the lock
 
     tl = _TimedLock(raw, timeout_s=0.05)
-    with pytest.raises(TimeoutError, match="robot_server may be holding the serial port"):
+    with pytest.raises(TimeoutError, match="robot_server may be holding the hardware API"):
         async with tl:
             pass  # should not reach here
 
@@ -246,7 +246,7 @@ async def test_proxy_timeout_raises_on_held_lock(api: API) -> None:
     await shared_lock.acquire()  # simulate robot_server holding the lock
 
     proxy = HardwareProxy(api, lock=shared_lock, lock_timeout_s=0.05)
-    with pytest.raises(TimeoutError, match="robot_server may be holding the serial port"):
+    with pytest.raises(TimeoutError, match="robot_server may be holding the hardware API"):
         await proxy.home()
 
     shared_lock.release()

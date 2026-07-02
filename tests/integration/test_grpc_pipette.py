@@ -6,6 +6,7 @@ import pytest_asyncio
 
 from unitelabs.opentrons_flex.features.motion_control import Mount
 from unitelabs.opentrons_flex.features.pipette import PipetteInfo
+from .observable import call_observable
 
 _PKG = "sila2.ca.accelerationconsortium.robots.pipettefeature.v1"
 _SERVICE = f"{_PKG}.PipetteFeature"
@@ -22,8 +23,11 @@ class _PipetteClient:
         resp_bytes = await stub(req)
         return await self._pb.decode(f"{_PKG}.{method}_Responses", resp_bytes)
 
+    async def _observable(self, method: str, params: dict | None = None) -> dict:
+        return await call_observable(self._ch, self._pb, _SERVICE, _PKG, method, params)
+
     async def get_attached_pipettes(self) -> list[PipetteInfo]:
-        decoded = await self._call("GetAttachedPipettes")
+        decoded = await self._observable("GetAttachedPipettes")
         value = next(iter(decoded.values()))
         assert isinstance(value, list)
         return value

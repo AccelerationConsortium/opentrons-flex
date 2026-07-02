@@ -15,6 +15,7 @@ import pytest
 import pytest_asyncio
 
 from unitelabs.opentrons_flex.features.gripper import GripperStatus
+from .observable import call_observable
 
 _PKG = "sila2.ca.accelerationconsortium.robots.gripperfeature.v1"
 _SERVICE = f"{_PKG}.GripperFeature"
@@ -31,6 +32,9 @@ class _GripperClient:
         resp_bytes = await stub(req)
         return await self._pb.decode(f"{_PKG}.{method}_Responses", resp_bytes)
 
+    async def _observable(self, method: str, params: dict | None = None) -> dict:
+        return await call_observable(self._ch, self._pb, _SERVICE, _PKG, method, params)
+
     async def get_status(self) -> GripperStatus:
         stub = self._ch.unary_unary(f"/{_SERVICE}/Get_Status")
         resp_bytes = await stub(b"")
@@ -38,13 +42,13 @@ class _GripperClient:
         return next(iter(decoded.values()))
 
     async def grip(self, force: float) -> None:
-        await self._call("Grip", {"force": force})
+        await self._observable("Grip", {"force": force})
 
     async def ungrip(self) -> None:
-        await self._call("Ungrip")
+        await self._observable("Ungrip")
 
     async def home_jaw(self) -> None:
-        await self._call("HomeJaw")
+        await self._observable("HomeJaw")
 
 
 @pytest_asyncio.fixture

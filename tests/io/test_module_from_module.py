@@ -12,7 +12,9 @@ from typing import ClassVar
 import pytest
 
 from unitelabs.opentrons_flex.io import (
+    AbsorbanceReaderController,
     DeviceInfo,
+    FlexStackerController,
     HeaterShakerController,
     TemperatureModuleController,
     ThermocyclerController,
@@ -59,6 +61,69 @@ async def test_temperature_from_module_maps_calls():
     assert await ctrl.get_device_info() == DeviceInfo.from_dict(mod.device_info)
     assert await ctrl.is_connected() is True
     await ctrl.disconnect()  # no-op, must not raise
+
+
+# ── Absorbance Reader ─────────────────────────────────────────────────────────
+
+
+class _AbsConfig:
+    measure_mode = type("Mode", (), {"value": "single"})()
+    sample_wavelengths: ClassVar[list[int]] = [450]
+    reference_wavelength = None
+
+
+class _AbsStatus:
+    value = "idle"
+
+
+class _AbsValue:
+    def __init__(self, value):
+        self.value = value
+
+
+class FakeAbsorbanceReader(_Recorder):
+    status = _AbsStatus()
+    lid_status = _AbsValue("on")
+    plate_presence = _AbsValue("present")
+    supported_wavelengths: ClassVar[list[int]] = [450, 600]
+    measurement_config = _AbsConfig()
+    device_info: ClassVar[dict] = {"serial": "AR1", "model": "absorbanceReaderV1", "version": "1.0"}
+
+    async def set_sample_wavelength(self, mode, wavelengths, reference_wavelength):
+        self.record("set_sample_wavelength", mode, wavelengths, reference_wavelength)
+
+    async def start_measure(self):
+        self.record("start_measure")
+        return [[0.1, 0.2], [0.3, 0.4]]
+
+    async def deactivate(self):
+        self.record("deactivate")
+
+
+@pytest.mark.asyncio
+async def test_absorbance_reader_from_module_maps_calls():
+    from opentrons.drivers.types import ABSMeasurementMode
+
+    mod = FakeAbsorbanceReader()
+    ctrl = AbsorbanceReaderController.from_module(mod)
+
+    await ctrl.configure_measurement(ABSMeasurementMode.SINGLE, [450], None)
+    assert ("set_sample_wavelength", (ABSMeasurementMode.SINGLE, [450], None), {}) in mod.calls
+
+    measurement = await ctrl.start_measure()
+    assert [row.values for row in measurement.rows] == [[0.1, 0.2], [0.3, 0.4]]
+    assert ("start_measure", (), {}) in mod.calls
+
+    state = await ctrl.get_state()
+    assert state.status == "idle"
+    assert state.lid_status == "on"
+    assert state.supported_wavelengths == [450, 600]
+
+    await ctrl.deactivate()
+    assert ("deactivate", (), {}) in mod.calls
+
+    assert await ctrl.get_device_info() == DeviceInfo.from_dict(mod.device_info)
+    await ctrl.disconnect()
 
 
 # ── Heater-Shaker ─────────────────────────────────────────────────────────────
@@ -191,6 +256,107 @@ async def test_thermocycler_from_module_maps_calls():
 
     assert await ctrl.get_device_info() == DeviceInfo.from_dict(mod.device_info)
     await ctrl.disconnect()  # no-op
+
+
+# ── Flex Stacker ──────────────────────────────────────────────────────────────
+
+
+class _StackerValue:
+    def __init__(self, value):
+        self.value = value
+
+
+class FakeFlexStacker(_Recorder):
+    status = _StackerValue("idle")
+    latch_state = _StackerValue("closed")
+    platform_state = _StackerValue("extended")
+    hopper_door_state = _StackerValue("closed")
+    install_detected = True
+    initialized = True
+    live_data: ClassVar[dict] = {"data": {"errorDetails": None}}
+    device_info: ClassVar[dict] = {"serial": "FS1", "model": "flexStackerModuleV1", "version": "1.0"}
+
+    def __init__(self):
+        super().__init__()
+        from opentrons.drivers.flex_stacker.types import StackerAxis
+        from opentrons.hardware_control.modules.types import StackerAxisState
+
+        self.limit_switch_status = {
+            StackerAxis.X: StackerAxisState.EXTENDED,
+            StackerAxis.Z: StackerAxisState.RETRACTED,
+            StackerAxis.L: StackerAxisState.EXTENDED,
+        }
+
+    async def home_all(self, ignore_latch=False):
+        self.record("home_all", ignore_latch)
+
+    async def home_axis(self, axis, direction):
+        self.record("home_axis", axis, direction)
+        return True
+
+    async def move_axis(self, axis, direction, distance):
+        self.record("move_axis", axis, direction, distance)
+        return True
+
+    async def open_latch(self):
+        self.record("open_latch")
+        return True
+
+    async def close_latch(self):
+        self.record("close_latch")
+        return True
+
+    async def dispense_labware(self, labware_height, enforce_hopper_lw_sensing=True, enforce_shuttle_lw_sensing=True):
+        self.record("dispense_labware", labware_height, enforce_hopper_lw_sensing, enforce_shuttle_lw_sensing)
+
+    async def store_labware(self, labware_height, enforce_shuttle_lw_sensing=True):
+        self.record("store_labware", labware_height, enforce_shuttle_lw_sensing)
+
+    async def set_led_state(self, power, color=None, pattern=None, duration=None, reps=None):
+        self.record("set_led_state", power, color, pattern, duration, reps)
+
+    async def deactivate(self):
+        self.record("deactivate")
+
+
+@pytest.mark.asyncio
+async def test_flex_stacker_from_module_maps_calls():
+    from opentrons.drivers.flex_stacker.types import Direction, LEDColor, LEDPattern, StackerAxis
+
+    mod = FakeFlexStacker()
+    ctrl = FlexStackerController.from_module(mod)
+
+    await ctrl.home_all(ignore_latch=True)
+    assert ("home_all", (True,), {}) in mod.calls
+
+    assert await ctrl.home_axis(StackerAxis.X, Direction.EXTEND) is True
+    assert await ctrl.move_axis(StackerAxis.Z, Direction.RETRACT, 12.5) is True
+
+    await ctrl.open_latch()
+    await ctrl.close_latch()
+    assert ("open_latch", (), {}) in mod.calls
+    assert ("close_latch", (), {}) in mod.calls
+
+    await ctrl.dispense_labware(14.0, True, False)
+    assert ("dispense_labware", (14.0, True, False), {}) in mod.calls
+
+    await ctrl.store_labware(14.0, True)
+    assert ("store_labware", (14.0, True), {}) in mod.calls
+
+    await ctrl.set_led(0.5, LEDColor.BLUE, LEDPattern.PULSE, 200, -1)
+    assert ("set_led_state", (0.5, LEDColor.BLUE, LEDPattern.PULSE, 200, -1), {}) in mod.calls
+
+    switches = await ctrl.get_limit_switches()
+    assert (switches.x, switches.z, switches.latch) == ("extended", "retracted", "extended")
+
+    state = await ctrl.get_state()
+    assert state.status == "idle"
+    assert state.install_detected is True
+
+    await ctrl.deactivate()
+    assert ("deactivate", (), {}) in mod.calls
+    assert await ctrl.get_device_info() == DeviceInfo.from_dict(mod.device_info)
+    await ctrl.disconnect()
 
 
 # The Magnetic Module is not supported on the Flex, so there is no magnetic

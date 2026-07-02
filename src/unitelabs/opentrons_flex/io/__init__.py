@@ -13,6 +13,8 @@ Controllers:
 - HeaterShakerController:      Heater-Shaker module
 - ThermocyclerController:      Thermocycler module
 - TemperatureModuleController: Temperature module
+- AbsorbanceReaderController:  Absorbance Plate Reader module
+- FlexStackerController:       Flex Stacker module
 
 The Magnetic Module is not supported on the Flex (it is replaced by the passive
 Magnetic Block), so there is no magnetic controller here.
@@ -30,9 +32,20 @@ from ._errors import (
     NotHomedError,
     StallDetectedError,
 )
-from ._types import RPM, DeviceInfo, Temperature
+from ._types import (
+    AbsorbanceMeasurement,
+    AbsorbanceMeasurementRow,
+    AbsorbanceReaderState,
+    DeviceInfo,
+    FlexStackerLimitSwitches,
+    FlexStackerState,
+    RPM,
+    Temperature,
+)
+from .absorbance_reader import AbsorbanceReaderController
 from .calibration import FlexCalibrationController
 from .flex_motion import Axis, FlexMotionController, OT3Mount, Point
+from .flex_stacker import FlexStackerController
 from .gripper import FlexGripperController
 from .hardware_proxy import HardwareProxy
 from .heater_shaker import HeaterShakerController
@@ -43,6 +56,10 @@ from .thermocycler import ThermocyclerController
 __all__ = [
     "COMMON_MODULE_ERRORS",
     "RPM",
+    "AbsorbanceMeasurement",
+    "AbsorbanceMeasurementRow",
+    "AbsorbanceReaderController",
+    "AbsorbanceReaderState",
     "Axis",
     "CalibrationFailedError",
     "CalibrationProbeNotAttachedError",
@@ -50,6 +67,9 @@ __all__ = [
     "FlexCalibrationController",
     "FlexGripperController",
     "FlexMotionController",
+    "FlexStackerController",
+    "FlexStackerLimitSwitches",
+    "FlexStackerState",
     "GripActionError",
     "GripperNotAttachedError",
     "HardwareProxy",

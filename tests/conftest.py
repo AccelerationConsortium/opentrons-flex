@@ -97,11 +97,21 @@ except ImportError:
 
         return wrap
 
+    class _Status:
+        def update(self, **_kwargs):
+            pass
+
+    class _Intermediate:
+        def send(self, *_responses):
+            pass
+
     _sila.Feature = _Feature
     _sila.UnobservableCommand = _passthrough
     _sila.ObservableCommand = _passthrough
     _sila.UnobservableProperty = _passthrough
     _sila.ObservableProperty = _passthrough
+    _sila.Status = _Status
+    _sila.Intermediate = _Intermediate
 
     _constraints = types.ModuleType("unitelabs.cdk.sila.constraints")
     for _name in ("MinimalInclusive", "MaximalInclusive", "MinimalExclusive", "Pattern"):

@@ -11,6 +11,7 @@ from ..io import (
     TemperatureModuleController,
     Temperature,
 )
+from ._progress import OperationProgress, run_observable
 
 # Sourced from opentrons: tempdeck QA-tested range 4-95 C
 # (opentrons/hardware_control/modules/tempdeck.py, protocol_api/module_contexts.py).
@@ -35,8 +36,14 @@ class TemperatureModuleFeature(sila.Feature):
         super().__init__(originator="ca.accelerationconsortium", category="modules")
         self._controller = controller
 
-    @sila.UnobservableCommand(errors=COMMON_MODULE_ERRORS)
-    async def set_temperature(self, temperature_celsius: _TempCelsius) -> Temperature:
+    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    async def set_temperature(
+        self,
+        temperature_celsius: _TempCelsius,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> Temperature:
         """
         Set the target temperature.
 
@@ -46,36 +53,109 @@ class TemperatureModuleFeature(sila.Feature):
         Returns:
             Current and target temperature.
         """
-        await self._controller.set_temperature(temperature_celsius)
+        await run_observable(
+            status,
+            intermediate,
+            f"Setting temperature module target to {temperature_celsius} C.",
+            "Temperature module target set.",
+            "Temperature module target command cancelled.",
+            self._controller.set_temperature(temperature_celsius),
+        )
         return await self._controller.get_temperature()
 
-    @sila.UnobservableCommand(errors=COMMON_MODULE_ERRORS)
-    async def get_temperature(self) -> Temperature:
+    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    async def wait_for_temperature(
+        self,
+        temperature_celsius: _TempCelsius,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> Temperature:
+        """
+        Wait until the module reaches a target temperature.
+
+        Args:
+            temperature_celsius: Temperature in Celsius to wait for.
+
+        Yields:
+            Update: Current temperature wait progress update.
+
+        Returns:
+            Current and target temperature.
+        """
+        await run_observable(
+            status,
+            intermediate,
+            f"Waiting for temperature module to reach {temperature_celsius} C.",
+            "Temperature module reached target temperature.",
+            "Temperature module temperature wait cancelled.",
+            self._controller.wait_for_temperature(temperature_celsius),
+        )
+        return await self._controller.get_temperature()
+
+    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    async def get_temperature(
+        self,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> Temperature:
         """
         Get the current temperature.
 
         Returns:
             Current and target temperature.
         """
-        return await self._controller.get_temperature()
+        return await run_observable(
+            status,
+            intermediate,
+            "Reading temperature module temperature.",
+            "Temperature module temperature read.",
+            "Temperature module temperature read cancelled.",
+            self._controller.get_temperature(),
+        )
 
-    @sila.UnobservableCommand(errors=COMMON_MODULE_ERRORS)
-    async def deactivate(self) -> Temperature:
+    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    async def deactivate(
+        self,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> Temperature:
         """
         Turn off temperature control.
 
         Returns:
             Current temperature after deactivation.
         """
-        await self._controller.deactivate()
+        await run_observable(
+            status,
+            intermediate,
+            "Deactivating temperature module.",
+            "Temperature module deactivated.",
+            "Temperature module deactivation cancelled.",
+            self._controller.deactivate(),
+        )
         return await self._controller.get_temperature()
 
-    @sila.UnobservableCommand(errors=COMMON_MODULE_ERRORS)
-    async def get_device_info(self) -> DeviceInfo:
+    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    async def get_device_info(
+        self,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> DeviceInfo:
         """
         Get device information.
 
         Returns:
             Serial number, model, and firmware version.
         """
-        return await self._controller.get_device_info()
+        return await run_observable(
+            status,
+            intermediate,
+            "Reading temperature module device information.",
+            "Temperature module device information read.",
+            "Temperature module device information read cancelled.",
+            self._controller.get_device_info(),
+        )

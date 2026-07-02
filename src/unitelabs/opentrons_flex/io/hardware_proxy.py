@@ -2,11 +2,8 @@
 Locking proxy for opentrons HardwareControlAPI.
 
 Wraps a HardwareControlAPI instance with an asyncio.Lock so that concurrent
-callers (SiLA2 gRPC server and opentrons HTTP server) cannot interleave serial
-commands to the Smoothie.
-
-See plan/serial_port_sharing.md for why this approach was chosen over a TCP
-proxy or separate-process architecture.
+callers (SiLA2 gRPC server and opentrons HTTP server) cannot interleave hardware
+commands on the Flex CAN bus.
 """
 
 import asyncio
@@ -28,7 +25,7 @@ class _TimedLock:
         try:
             await asyncio.wait_for(self._lock.acquire(), timeout=self._timeout_s)
         except asyncio.TimeoutError:
-            msg = f"Hardware lock not acquired within {self._timeout_s}s — robot_server may be holding the serial port"
+            msg = f"Hardware lock not acquired within {self._timeout_s}s — robot_server may be holding the hardware API"
             raise TimeoutError(msg) from None
 
     async def __aexit__(self, *args: object) -> None:
@@ -41,13 +38,12 @@ class HardwareProxy:
 
     Uses __getattr__ to delegate every attribute access to the wrapped API.
     Async methods are transparently wrapped with an asyncio.Lock so that only
-    one call is in-flight on the serial port at a time. Sync attributes and
-    properties are passed through without locking — none of them send serial
-    bytes directly.
+    one hardware call is in-flight at a time. Sync attributes and properties are
+    passed through without locking.
 
     pause() and resume() are sync methods that schedule internal coroutines via
-    run_coroutine_threadsafe; they bypass the lock but do not touch the serial
-    port directly, so the gap is safe (see plan/inprocess_server_plan.md).
+    run_coroutine_threadsafe; they bypass the lock but do not send bus commands
+    directly.
     """
 
     _api: HardwareControlAPI
@@ -98,7 +94,7 @@ class HardwareProxy:
         """
         Return True if the underlying API is an instance of cls.
 
-        Satisfies ThreadManager.wraps_instance() used by get_ot2_hardware()
-        to distinguish OT-2 (API) from OT-3 (OT3API) hardware routes.
+        Satisfies ThreadManager.wraps_instance() used by robot-server hardware
+        routes to distinguish OT-2 (API) from OT-3 (OT3API).
         """
         return isinstance(self._api, cls)

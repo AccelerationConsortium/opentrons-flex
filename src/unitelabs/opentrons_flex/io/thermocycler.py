@@ -1,8 +1,10 @@
 """Thermocycler module IO wrapper."""
 
+import asyncio
 import logging
 
 from opentrons.drivers.thermocycler.driver import ThermocyclerDriverV2
+from opentrons.hardware_control.modules.types import ThermocyclerStep
 
 from ._module_base import ModuleControllerBase
 from ._types import Temperature
@@ -69,6 +71,7 @@ class ThermocyclerController(ModuleControllerBase):
         temperature: float,
         hold_time: float | None = None,
         volume: float | None = None,
+        ramp_rate: float | None = None,
     ) -> None:
         """
         Set plate (block) temperature (does not wait for the target to be reached).
@@ -77,19 +80,71 @@ class ThermocyclerController(ModuleControllerBase):
             temperature: Target temperature in Celsius.
             hold_time: Optional hold time in seconds.
             volume: Optional sample volume in uL.
+            ramp_rate: Optional ramp rate in C/s.
         """
         if self._module is not None:
-            await self._module.set_target_block_temperature(
-                temperature,
-                hold_time_seconds=hold_time,
-                volume=volume,
-            )
+            kwargs = {"hold_time_seconds": hold_time, "volume": volume}
+            if ramp_rate is not None:
+                kwargs["ramp_rate"] = ramp_rate
+            await self._module.set_target_block_temperature(temperature, **kwargs)
         else:
             await self._driver.set_plate_temperature(
                 temp=temperature,
                 hold_time=hold_time,
                 volume=volume,
+                ramp_rate=ramp_rate,
             )
+
+    async def wait_for_lid_temperature(self) -> None:
+        """Wait until the lid reaches its target temperature."""
+        if self._module is not None:
+            await self._module.wait_for_lid_target()
+        else:
+            while True:
+                temp = await self.get_lid_temperature()
+                if temp.target is None or abs(temp.current - temp.target) <= 0.5:
+                    return
+                await asyncio.sleep(1.0)
+
+    async def wait_for_plate_temperature(self) -> None:
+        """Wait until the plate reaches its target temperature."""
+        if self._module is not None:
+            await self._module.wait_for_block_target()
+        else:
+            while True:
+                temp = await self.get_plate_temperature()
+                if temp.target is None or abs(temp.current - temp.target) <= 0.5:
+                    return
+                await asyncio.sleep(1.0)
+
+    async def execute_profile(
+        self,
+        steps: list[ThermocyclerStep],
+        repetitions: int,
+        volume: float | None = None,
+    ) -> None:
+        """
+        Execute a simple thermocycler profile.
+
+        Args:
+            steps: List of step dictionaries accepted by the opentrons module
+                object, or converted to sequential low-level set/wait calls.
+            repetitions: Number of times to repeat the steps.
+            volume: Optional sample volume in uL.
+        """
+        if self._module is not None:
+            await self._module.cycle_temperatures(steps=steps, repetitions=repetitions, volume=volume)
+            return
+
+        for _ in range(repetitions):
+            for step in steps:
+                await self.set_plate_temperature(
+                    temperature=float(step["temperature"]),
+                    hold_time=step.get("hold_time_seconds"),
+                    volume=volume,
+                    ramp_rate=step.get("ramp_rate"),
+                )
+                await self.wait_for_plate_temperature()
 
     async def get_lid_temperature(self) -> Temperature:
         """Get lid temperature."""

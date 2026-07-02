@@ -15,10 +15,15 @@ import pytest
 
 from unitelabs.opentrons_flex import OpentronsFlexConfig, create_app
 from unitelabs.opentrons_flex.features import (
+    AbsorbanceReaderFeature,
     CalibrationFeature,
+    FlexStackerFeature,
     GripperFeature,
     MotionControlFeature,
     PipetteFeature,
+    HeaterShakerFeature,
+    TemperatureModuleFeature,
+    ThermocyclerFeature,
 )
 
 
@@ -60,6 +65,46 @@ async def test_bare_simulator_registers_no_module_features():
     config = OpentronsFlexConfig(use_simulator=True)
     async with _run_app(config) as registered:
         assert len(registered) == 4
+
+
+@pytest.mark.asyncio
+async def test_attached_flex_modules_register_features():
+    """Every supported Flex active module type registers a matching SiLA feature."""
+    from opentrons.hardware_control.modules.types import ModuleType
+
+    class _Module:
+        def __init__(self, module_type):
+            self.MODULE_TYPE = module_type
+
+    fake_api = AsyncMock()
+    fake_api.attached_modules = [
+        _Module(ModuleType.ABSORBANCE_READER),
+        _Module(ModuleType.FLEX_STACKER),
+        _Module(ModuleType.HEATER_SHAKER),
+        _Module(ModuleType.TEMPERATURE),
+        _Module(ModuleType.THERMOCYCLER),
+    ]
+
+    with (
+        patch(
+            "opentrons.hardware_control.ot3api.OT3API.build_hardware_simulator",
+            AsyncMock(return_value=fake_api),
+        ),
+        patch("unitelabs.opentrons_flex.Connector", return_value=MagicMock()) as mock_connector_cls,
+    ):
+        registered = []
+        mock_connector_cls.return_value.register.side_effect = registered.append
+        gen = create_app(OpentronsFlexConfig(use_simulator=True))
+        await gen.__anext__()
+        with contextlib.suppress(StopAsyncIteration):
+            await gen.__anext__()
+
+    types = [type(f) for f in registered]
+    assert AbsorbanceReaderFeature in types
+    assert FlexStackerFeature in types
+    assert HeaterShakerFeature in types
+    assert TemperatureModuleFeature in types
+    assert ThermocyclerFeature in types
 
 
 @pytest.mark.asyncio

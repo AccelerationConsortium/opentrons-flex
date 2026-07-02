@@ -15,6 +15,7 @@ import pytest
 import pytest_asyncio
 
 from unitelabs.opentrons_flex.features.calibration import GripperJaw, PipetteMount
+from .observable import call_observable
 
 _PKG = "sila2.ca.accelerationconsortium.robots.calibrationfeature.v1"
 _SERVICE = f"{_PKG}.CalibrationFeature"
@@ -31,11 +32,14 @@ class _CalibrationClient:
         resp_bytes = await stub(req)
         return await self._pb.decode(f"{_PKG}.{method}_Responses", resp_bytes)
 
-    async def calibrate_pipette(self, mount: PipetteMount, slot: int = 5) -> dict:
-        return await self._call("CalibratePipette", {"mount": mount, "slot": slot})
+    async def _observable(self, method: str, params: dict) -> dict:
+        return await call_observable(self._ch, self._pb, _SERVICE, _PKG, method, params)
 
-    async def calibrate_gripper_jaw(self, jaw: GripperJaw, slot: int = 5) -> dict:
-        return await self._call("CalibrateGripperJaw", {"jaw": jaw, "slot": slot})
+    async def calibrate_pipette(self, mount: PipetteMount, slot: int) -> dict:
+        return await self._observable("CalibratePipette", {"mount": mount, "slot": slot})
+
+    async def calibrate_gripper_jaw(self, jaw: GripperJaw, slot: int) -> dict:
+        return await self._observable("CalibrateGripperJaw", {"jaw": jaw, "slot": slot})
 
 
 @pytest_asyncio.fixture
@@ -53,7 +57,7 @@ def _details(exc: grpc.aio.AioRpcError) -> bytes:
 async def test_calibrate_pipette_without_pipette_raises_defined_error(client: _CalibrationClient) -> None:
     """CalibratePipette with no pipette surfaces CalibrationFailedError over the wire."""
     with pytest.raises(grpc.aio.AioRpcError) as excinfo:
-        await client.calibrate_pipette(PipetteMount.LEFT)
+        await client.calibrate_pipette(PipetteMount.LEFT, slot=5)
     assert excinfo.value.code() is grpc.StatusCode.ABORTED
     assert b"CalibrationFailedError" in _details(excinfo.value)
 
@@ -63,7 +67,7 @@ async def test_calibrate_pipette_without_pipette_raises_defined_error(client: _C
 async def test_calibrate_gripper_jaw_without_gripper_raises_defined_error(client: _CalibrationClient) -> None:
     """CalibrateGripperJaw with no gripper surfaces a calibration defined error over the wire."""
     with pytest.raises(grpc.aio.AioRpcError) as excinfo:
-        await client.calibrate_gripper_jaw(GripperJaw.FRONT)
+        await client.calibrate_gripper_jaw(GripperJaw.FRONT, slot=5)
     assert excinfo.value.code() is grpc.StatusCode.ABORTED
     details = _details(excinfo.value)
     assert b"CalibrationFailedError" in details or b"CalibrationProbeNotAttachedError" in details

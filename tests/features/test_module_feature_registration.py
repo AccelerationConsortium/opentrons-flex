@@ -12,6 +12,8 @@ import pytest
 from unitelabs.cdk import Connector, SiLAServerConfig
 from unitelabs.opentrons_flex import OpentronsFlexConfig
 from unitelabs.opentrons_flex.features import (
+    AbsorbanceReaderFeature,
+    FlexStackerFeature,
     HeaterShakerFeature,
     TemperatureModuleFeature,
     ThermocyclerFeature,
@@ -26,6 +28,8 @@ _REQUIRES_REAL_CDK = pytest.mark.skipif(
 )
 
 _MODULE_FEATURES = [
+    AbsorbanceReaderFeature,
+    FlexStackerFeature,
     TemperatureModuleFeature,
     HeaterShakerFeature,
     ThermocyclerFeature,

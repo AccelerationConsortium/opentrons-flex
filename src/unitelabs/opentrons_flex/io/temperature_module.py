@@ -1,5 +1,6 @@
 """Temperature Module IO wrapper."""
 
+import asyncio
 import logging
 
 from opentrons.drivers.temp_deck.driver import TempDeckDriver
@@ -50,6 +51,17 @@ class TemperatureModuleController(ModuleControllerBase):
             return Temperature(current=self._module.temperature, target=self._module.target)
         t = await self._driver.get_temperature()
         return Temperature(current=t.current, target=t.target)
+
+    async def wait_for_temperature(self, temperature: float) -> None:
+        """Wait for the module to reach a target temperature."""
+        if self._module is not None:
+            await self._module.await_temperature(temperature)
+        else:
+            while True:
+                current = (await self.get_temperature()).current
+                if abs(current - temperature) <= 0.5:
+                    return
+                await asyncio.sleep(1.0)
 
     async def deactivate(self) -> None:
         """Turn off temperature control."""

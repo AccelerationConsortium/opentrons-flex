@@ -7,7 +7,9 @@ from importlib.metadata import version
 from unitelabs.cdk import Connector, ConnectorBaseConfig, SiLAServerConfig
 
 from .features import (
+    AbsorbanceReaderFeature,
     CalibrationFeature,
+    FlexStackerFeature,
     GripperFeature,
     HeaterShakerFeature,
     MotionControlFeature,
@@ -16,9 +18,11 @@ from .features import (
     ThermocyclerFeature,
 )
 from .io import (
+    AbsorbanceReaderController,
     FlexCalibrationController,
     FlexGripperController,
     FlexMotionController,
+    FlexStackerController,
     HardwareProxy,
     HeaterShakerController,
     TemperatureModuleController,
@@ -83,6 +87,8 @@ def _module_factories() -> dict:
     from opentrons.hardware_control.modules.types import ModuleType
 
     return {
+        ModuleType.ABSORBANCE_READER: (AbsorbanceReaderController, AbsorbanceReaderFeature),
+        ModuleType.FLEX_STACKER: (FlexStackerController, FlexStackerFeature),
         ModuleType.HEATER_SHAKER: (HeaterShakerController, HeaterShakerFeature),
         ModuleType.THERMOCYCLER: (ThermocyclerController, ThermocyclerFeature),
         ModuleType.TEMPERATURE: (TemperatureModuleController, TemperatureModuleFeature),

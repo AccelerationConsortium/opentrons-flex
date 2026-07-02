@@ -1,5 +1,6 @@
 """Heater-Shaker module IO wrapper."""
 
+import asyncio
 import logging
 
 from opentrons.drivers.heater_shaker.driver import HeaterShakerDriver
@@ -51,6 +52,17 @@ class HeaterShakerController(ModuleControllerBase):
             return Temperature(current=self._module.temperature, target=self._module.target_temperature)
         t = await self._driver.get_temperature()
         return Temperature(current=t.current, target=t.target)
+
+    async def wait_for_temperature(self, temperature: float) -> None:
+        """Wait for the heater to reach a target temperature."""
+        if self._module is not None:
+            await self._module.await_temperature(temperature)
+        else:
+            while True:
+                current = (await self.get_temperature()).current
+                if abs(current - temperature) <= 0.5:
+                    return
+                await asyncio.sleep(1.0)
 
     async def deactivate_heater(self) -> None:
         """Turn off the heater."""

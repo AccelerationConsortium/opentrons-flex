@@ -6,6 +6,7 @@ from opentrons.hardware_control.types import OT3Mount
 from unitelabs.cdk import sila
 
 from ..io import FlexMotionController
+from ._progress import OperationProgress, run_observable
 from .motion_control import Mount
 
 
@@ -40,16 +41,29 @@ class PipetteFeature(sila.Feature):
         super().__init__(originator="ca.accelerationconsortium", category="robots")
         self._controller = controller
 
-    @sila.UnobservableCommand()
-    async def get_attached_pipettes(self) -> list[PipetteInfo]:
+    @sila.ObservableCommand()
+    async def get_attached_pipettes(
+        self,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> list[PipetteInfo]:
         """
-        Re-scan both pipette mounts and report what is attached.
+        Re-scan both pipette mounts and report one entry per mount.
 
-        Returns:
-            Two ``PipetteInfo`` entries (LEFT then RIGHT). ``attached`` is False for
-            an empty mount.
+        Empty mounts have ``attached=False`` and empty metadata fields.
+
+        Yields:
+            Update: Current pipette scan progress update.
         """
-        await self._controller.cache_instruments()
+        await run_observable(
+            status,
+            intermediate,
+            "Scanning attached Flex pipettes.",
+            "Attached Flex pipettes scanned.",
+            "Attached Flex pipette scan cancelled.",
+            self._controller.cache_instruments(),
+        )
         instruments = self._controller.attached_instruments
 
         results: list[PipetteInfo] = []

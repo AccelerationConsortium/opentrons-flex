@@ -15,6 +15,7 @@ from ..io import (
     Temperature,
     RPM,
 )
+from ._progress import OperationProgress, run_observable
 
 # Sourced from opentrons: heater-shaker temperature validated 0-95 C
 # (opentrons/protocol_api/module_validation_and_errors.py: HEATER_SHAKER_TEMPERATURE_MAX=95),
@@ -75,8 +76,14 @@ class HeaterShakerFeature(sila.Feature):
         super().__init__(originator="ca.accelerationconsortium", category="modules")
         self._controller = controller
 
-    @sila.UnobservableCommand(errors=COMMON_MODULE_ERRORS)
-    async def set_temperature(self, temperature_celsius: _TempCelsius) -> Temperature:
+    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    async def set_temperature(
+        self,
+        temperature_celsius: _TempCelsius,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> Temperature:
         """
         Set the target temperature.
 
@@ -87,32 +94,99 @@ class HeaterShakerFeature(sila.Feature):
         Returns:
             Current and target temperature.
         """
-        await self._controller.set_temperature(temperature_celsius)
+        await run_observable(
+            status,
+            intermediate,
+            f"Setting heater-shaker temperature target to {temperature_celsius} C.",
+            "Heater-shaker temperature target set.",
+            "Heater-shaker temperature command cancelled.",
+            self._controller.set_temperature(temperature_celsius),
+        )
         return await self._controller.get_temperature()
 
-    @sila.UnobservableCommand(errors=COMMON_MODULE_ERRORS)
-    async def get_temperature(self) -> Temperature:
+    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    async def wait_for_temperature(
+        self,
+        temperature_celsius: _TempCelsius,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> Temperature:
+        """
+        Wait until the heater reaches a target temperature.
+
+        Args:
+            temperature_celsius: Temperature in Celsius to wait for.
+
+        Yields:
+            Update: Current heater wait progress update.
+
+        Returns:
+            Current and target temperature.
+        """
+        await run_observable(
+            status,
+            intermediate,
+            f"Waiting for heater-shaker to reach {temperature_celsius} C.",
+            "Heater-shaker reached target temperature.",
+            "Heater-shaker temperature wait cancelled.",
+            self._controller.wait_for_temperature(temperature_celsius),
+        )
+        return await self._controller.get_temperature()
+
+    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    async def get_temperature(
+        self,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> Temperature:
         """
         Get the current temperature.
 
         Returns:
             Current and target temperature.
         """
-        return await self._controller.get_temperature()
+        return await run_observable(
+            status,
+            intermediate,
+            "Reading heater-shaker temperature.",
+            "Heater-shaker temperature read.",
+            "Heater-shaker temperature read cancelled.",
+            self._controller.get_temperature(),
+        )
 
-    @sila.UnobservableCommand(errors=COMMON_MODULE_ERRORS)
-    async def deactivate_heater(self) -> Temperature:
+    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    async def deactivate_heater(
+        self,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> Temperature:
         """
         Turn off the heater.
 
         Returns:
             Current and target temperature after deactivation.
         """
-        await self._controller.deactivate_heater()
+        await run_observable(
+            status,
+            intermediate,
+            "Deactivating heater-shaker heater.",
+            "Heater-shaker heater deactivated.",
+            "Heater-shaker heater deactivation cancelled.",
+            self._controller.deactivate_heater(),
+        )
         return await self._controller.get_temperature()
 
-    @sila.UnobservableCommand(errors=COMMON_MODULE_ERRORS)
-    async def set_rpm(self, rpm: _Rpm) -> RPM:
+    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    async def set_rpm(
+        self,
+        rpm: _Rpm,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> RPM:
         """
         Set the shaking speed.
 
@@ -123,73 +197,153 @@ class HeaterShakerFeature(sila.Feature):
         Returns:
             Current and target RPM.
         """
-        await self._controller.set_rpm(rpm)
+        await run_observable(
+            status,
+            intermediate,
+            f"Setting heater-shaker speed to {rpm} RPM.",
+            "Heater-shaker speed set.",
+            "Heater-shaker speed command cancelled.",
+            self._controller.set_rpm(rpm),
+        )
         return await self._controller.get_rpm()
 
-    @sila.UnobservableCommand(errors=COMMON_MODULE_ERRORS)
-    async def get_rpm(self) -> RPM:
+    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    async def get_rpm(
+        self,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> RPM:
         """
         Get the current shaking speed.
 
         Returns:
             Current and target RPM.
         """
-        return await self._controller.get_rpm()
+        return await run_observable(
+            status,
+            intermediate,
+            "Reading heater-shaker speed.",
+            "Heater-shaker speed read.",
+            "Heater-shaker speed read cancelled.",
+            self._controller.get_rpm(),
+        )
 
-    @sila.UnobservableCommand(errors=COMMON_MODULE_ERRORS)
-    async def stop_shaking(self) -> RPM:
+    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    async def stop_shaking(
+        self,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> RPM:
         """
         Stop shaking and return to home position.
 
         Returns:
             Current and target RPM after stopping.
         """
-        await self._controller.stop_shaking()
+        await run_observable(
+            status,
+            intermediate,
+            "Stopping heater-shaker shaking.",
+            "Heater-shaker shaking stopped.",
+            "Heater-shaker stop shaking cancelled.",
+            self._controller.stop_shaking(),
+        )
         return await self._controller.get_rpm()
 
-    @sila.UnobservableCommand(errors=COMMON_MODULE_ERRORS)
-    async def open_latch(self) -> LatchStatus:
+    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    async def open_latch(
+        self,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> LatchStatus:
         """
         Open the labware latch.
 
         Returns:
             Latch status after opening.
         """
-        await self._controller.open_latch()
-        status = await self._controller.get_latch_status()
-        return LatchStatus(status.value)
+        await run_observable(
+            status,
+            intermediate,
+            "Opening heater-shaker labware latch.",
+            "Heater-shaker labware latch opened.",
+            "Heater-shaker latch open cancelled.",
+            self._controller.open_latch(),
+        )
+        latch_status = await self._controller.get_latch_status()
+        return LatchStatus(latch_status.value)
 
-    @sila.UnobservableCommand(errors=COMMON_MODULE_ERRORS)
-    async def close_latch(self) -> LatchStatus:
+    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    async def close_latch(
+        self,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> LatchStatus:
         """
         Close the labware latch.
 
         Returns:
             Latch status after closing.
         """
-        await self._controller.close_latch()
-        status = await self._controller.get_latch_status()
-        return LatchStatus(status.value)
+        await run_observable(
+            status,
+            intermediate,
+            "Closing heater-shaker labware latch.",
+            "Heater-shaker labware latch closed.",
+            "Heater-shaker latch close cancelled.",
+            self._controller.close_latch(),
+        )
+        latch_status = await self._controller.get_latch_status()
+        return LatchStatus(latch_status.value)
 
-    @sila.UnobservableCommand(errors=COMMON_MODULE_ERRORS)
-    async def get_latch_status(self) -> LatchStatus:
+    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    async def get_latch_status(
+        self,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> LatchStatus:
         """
         Get the current latch status.
 
         Returns:
             Latch status (idle_open, idle_closed, opening, closing, etc.).
         """
-        status = await self._controller.get_latch_status()
-        return LatchStatus(status.value)
+        latch_status = await run_observable(
+            status,
+            intermediate,
+            "Reading heater-shaker latch status.",
+            "Heater-shaker latch status read.",
+            "Heater-shaker latch status read cancelled.",
+            self._controller.get_latch_status(),
+        )
+        return LatchStatus(latch_status.value)
 
-    @sila.UnobservableCommand(errors=COMMON_MODULE_ERRORS)
-    async def get_status(self) -> HeaterShakerStatus:
+    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    async def get_status(
+        self,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> HeaterShakerStatus:
         """
         Get complete module status.
 
         Returns:
             Temperature, RPM, and latch status.
         """
+        await run_observable(
+            status,
+            intermediate,
+            "Reading heater-shaker status.",
+            "Heater-shaker status read.",
+            "Heater-shaker status read cancelled.",
+            self._controller.is_connected(),
+        )
         temp = await self._controller.get_temperature()
         rpm = await self._controller.get_rpm()
         latch = await self._controller.get_latch_status()
@@ -202,12 +356,24 @@ class HeaterShakerFeature(sila.Feature):
             latch_status=LatchStatus(latch.value),
         )
 
-    @sila.UnobservableCommand(errors=COMMON_MODULE_ERRORS)
-    async def get_device_info(self) -> DeviceInfo:
+    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    async def get_device_info(
+        self,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> DeviceInfo:
         """
         Get device information.
 
         Returns:
             Serial number, model, and firmware version.
         """
-        return await self._controller.get_device_info()
+        return await run_observable(
+            status,
+            intermediate,
+            "Reading heater-shaker device information.",
+            "Heater-shaker device information read.",
+            "Heater-shaker device information read cancelled.",
+            self._controller.get_device_info(),
+        )

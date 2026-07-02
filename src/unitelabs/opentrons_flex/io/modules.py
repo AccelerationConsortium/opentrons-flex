@@ -3,7 +3,7 @@ Module detection via /dev/ot_module* symlinks.
 
 Uses the same glob + regex approach as opentrons.hardware_control.module_control.
 Module names match each driver class's name() classmethod:
-  magdeck, tempdeck, thermocycler, heatershaker
+  tempdeck, thermocycler, heatershaker, absorbancereader, flexstacker
 """
 
 import logging
@@ -16,6 +16,8 @@ log = logging.getLogger(__name__)
 # The Flex does not support the Magnetic Module (replaced by the passive Magnetic
 # Block), so ``magdeck`` is intentionally absent here.
 _MODULE_NAME_MAP = {
+    "absorbancereader": "absorbance_reader",
+    "flexstacker": "flex_stacker",
     "tempdeck": "temperature",
     "thermocycler": "thermocycler",
     "heatershaker": "heater_shaker",
@@ -49,6 +51,6 @@ def scan_module_ports() -> dict[str, str]:
             found[module_type] = str(p)
 
     if not found:
-        log.info("No OT-2 modules detected in /dev")
+        log.info("No Flex modules detected in /dev")
 
     return found

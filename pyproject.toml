@@ -2,7 +2,7 @@
 name = "unitelabs-opentrons-flex"
 version = "0.5.0"
 description = "A SiLA2 connector for the Opentrons Flex liquid handling robot"
-readme = "README.md"
+readme = {text = "A SiLA2 connector for Opentrons Flex motion, pipettes, gripper, calibration, and supported Flex modules.", content-type = "text/plain"}
 authors = [{name = "Acceleration Consortium", email = "developers@accelerationconsortium.ca"},]
 maintainers = [
    {name = "Acceleration Consortium", email ="developers@accelerationconsortium.ca"},
@@ -34,7 +34,7 @@ dependencies=[
 
 [project.urls]
 repository = "https://github.com/AccelerationConsortium/opentrons-flex"
-documentation = "https://github.com/AccelerationConsortium/opentrons-flex/-/README.md"
+documentation = "https://github.com/AccelerationConsortium/opentrons-flex"
 "Bug Tracker" = "https://github.com/AccelerationConsortium/opentrons-flex/-/issues"
 
 [project.optional-dependencies]

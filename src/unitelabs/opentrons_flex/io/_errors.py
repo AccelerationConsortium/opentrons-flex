@@ -23,9 +23,26 @@ import typing
 
 from opentrons.drivers.asyncio.communication.errors import SerialException
 from opentrons.drivers.temp_deck.driver import TempDeckError
+from opentrons.hardware_control.modules.errors import AbsorbanceReaderDisconnectedError
 from opentrons.hardware_control.modules.thermocycler import ThermocyclerError
+from opentrons_shared_data.errors.exceptions import (
+    FlexStackerHopperLabwareError,
+    FlexStackerShuttleLabwareError,
+    FlexStackerShuttleMissingError,
+    FlexStackerShuttleNotEmptyError,
+    FlexStackerStallError,
+)
 
-_OPERATION_ERRORS = (ThermocyclerError, TempDeckError)
+_OPERATION_ERRORS = (
+    ThermocyclerError,
+    TempDeckError,
+    AbsorbanceReaderDisconnectedError,
+    FlexStackerHopperLabwareError,
+    FlexStackerShuttleLabwareError,
+    FlexStackerShuttleMissingError,
+    FlexStackerShuttleNotEmptyError,
+    FlexStackerStallError,
+)
 
 
 class ModuleNotRespondingError(Exception):

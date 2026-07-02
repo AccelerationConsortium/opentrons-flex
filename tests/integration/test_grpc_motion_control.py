@@ -17,6 +17,7 @@ import pytest
 import pytest_asyncio
 
 from unitelabs.opentrons_flex.features.motion_control import Lights, Mount, Position
+from .observable import call_observable
 
 _PKG = "sila2.ca.accelerationconsortium.robots.motioncontrolfeature.v1"
 _SERVICE = f"{_PKG}.MotionControlFeature"
@@ -45,23 +46,26 @@ class _MotionClient:
         resp_bytes = await stub(req)
         return await self._pb.decode(f"{_PKG}.{method}_Responses", resp_bytes)
 
+    async def _observable(self, method: str, params: dict | None = None) -> dict:
+        return await call_observable(self._ch, self._pb, _SERVICE, _PKG, method, params)
+
     async def _get_property(self, name: str) -> dict:
         stub = self._ch.unary_unary(f"/{_SERVICE}/{name}")
         resp_bytes = await stub(b"")
         return await self._pb.decode(f"{_PKG}.{name}_Responses", resp_bytes)
 
     async def home(self) -> None:
-        await self._call("Home")
+        await self._observable("Home")
 
     async def home_mount(self, mount: Mount) -> None:
-        await self._call("HomeMount", {"mount": mount})
+        await self._observable("HomeMount", {"mount": mount})
 
     async def get_position(self, mount: Mount) -> Position:
-        return self._single(await self._call("GetPosition", {"mount": mount}), Position)
+        return self._single(await self._observable("GetPosition", {"mount": mount}), Position)
 
     async def move_to(self, mount: Mount, x: float, y: float, z: float, speed: float = 0.0) -> Position:
         return self._single(
-            await self._call("MoveTo", {"mount": mount, "x": x, "y": y, "z": z, "speed": speed}),
+            await self._observable("MoveTo", {"mount": mount, "x": x, "y": y, "z": z, "speed": speed}),
             Position,
         )
 
@@ -69,7 +73,7 @@ class _MotionClient:
         self, mount: Mount, delta_x: float, delta_y: float, delta_z: float, speed: float = 0.0
     ) -> Position:
         return self._single(
-            await self._call(
+            await self._observable(
                 "MoveRelative",
                 {"mount": mount, "delta_x": delta_x, "delta_y": delta_y, "delta_z": delta_z, "speed": speed},
             ),
@@ -77,16 +81,16 @@ class _MotionClient:
         )
 
     async def set_lights(self, button: bool, rails: bool) -> Lights:
-        return self._single(await self._call("SetLights", {"button": button, "rails": rails}), Lights)
+        return self._single(await self._observable("SetLights", {"button": button, "rails": rails}), Lights)
 
     async def emergency_stop(self) -> str:
-        return next(iter((await self._call("EmergencyStop")).values()))
+        return next(iter((await self._observable("EmergencyStop")).values()))
 
     async def pause(self) -> str:
-        return next(iter((await self._call("Pause")).values()))
+        return next(iter((await self._observable("Pause")).values()))
 
     async def resume(self) -> str:
-        return next(iter((await self._call("Resume")).values()))
+        return next(iter((await self._observable("Resume")).values()))
 
     async def get_lights(self) -> Lights:
         return self._single(await self._get_property("Get_Lights"), Lights)
