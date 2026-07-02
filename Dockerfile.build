@@ -30,8 +30,8 @@ ADD src /build/src
 # (see scripts/install.sh --system-site-packages).
 RUN uv build --wheel --out-dir /wheels . && \
     uv pip compile pyproject.toml --output-file /tmp/req.txt && \
-    (python -m pip download -r /tmp/req.txt --dest /wheels --only-binary :all: || \
-        python -m pip download -r /tmp/req.txt --dest /wheels)
+    (python -m pip download --no-deps -r /tmp/req.txt --dest /wheels --only-binary :all: || \
+        python -m pip download --no-deps -r /tmp/req.txt --dest /wheels)
 
 FROM scratch AS export
 COPY --from=wheels /wheels /
