@@ -17,12 +17,13 @@ from the robot-server through an ``asyncio.Lock``. This controller is handed the
 
 import asyncio
 import logging
+from dataclasses import dataclass
 
 from opentrons.hardware_control import HardwareControlAPI
-from opentrons.hardware_control.types import Axis, OT3Mount
+from opentrons.hardware_control.types import Axis, DoorState, EstopState, OT3Mount
 from opentrons.types import Point
 
-from ._errors import translate_motion_errors
+from ._errors import MachineErrorStateError, translate_motion_errors
 from .hardware_proxy import _TimedLock
 
 log = logging.getLogger(__name__)
@@ -33,6 +34,30 @@ _MOUNT_AXES: dict[OT3Mount, list[Axis]] = {
     OT3Mount.RIGHT: [Axis.Z_R, Axis.P_R],
     OT3Mount.GRIPPER: [Axis.Z_G, Axis.G],
 }
+
+# E-stop states that mean the robot is in a hardware error state. DISENGAGED is
+# healthy; NOT_PRESENT is treated as healthy too (the simulator and some rigs
+# report no E-stop hardware) so it is surfaced for information but never fails a
+# move. Motor/encoder "status ok" is deliberately NOT used here: it reads False
+# simply because an axis is not homed yet, which is a normal pre-home condition,
+# not an error.
+_ESTOP_ERROR_STATES: frozenset[EstopState] = frozenset({EstopState.PHYSICALLY_ENGAGED, EstopState.LOGICALLY_ENGAGED})
+
+
+@dataclass(frozen=True)
+class MachineState:
+    """
+    Snapshot of the Flex safety/error state, independent of any single move.
+
+    ``is_error_state`` is the single question a caller asks after a movement
+    command: did the robot silently enter an error state even though the command
+    returned? ``estop`` and ``door_open`` provide the underlying detail.
+    """
+
+    estop: str  # EstopState name: DISENGAGED | PHYSICALLY_ENGAGED | LOGICALLY_ENGAGED | NOT_PRESENT
+    door_open: bool
+    is_error_state: bool
+    message: str  # operator-facing description + resolution hint; empty when healthy
 
 
 class FlexMotionController:
@@ -113,6 +138,35 @@ class FlexMotionController:
         """Whether the underlying API is a simulator backend."""
         return bool(self._api.is_simulator)
 
+    # ------------------------------------------------------- error / safety state
+
+    def machine_status(self) -> MachineState:
+        """
+        Return the robot's current safety/error state (E-stop, door).
+
+        Reads cached hardware state only (no CAN I/O and no lock), so it is safe
+        to call while a move is holding the lock. This is the query a caller runs
+        after a movement command to confirm the robot did not silently enter an
+        error state even though the command returned successfully.
+        """
+        estop = self._api.get_estop_state()
+        door_open = self._api.door_state == DoorState.OPEN
+        is_error = estop in _ESTOP_ERROR_STATES
+        message = f"E-stop is {estop.name}. Release the E-stop and re-home before continuing." if is_error else ""
+        return MachineState(estop=estop.name, door_open=door_open, is_error_state=is_error, message=message)
+
+    def _assert_machine_ok(self) -> None:
+        """
+        Raise ``MachineErrorStateError`` if the robot has entered a hardware error state.
+
+        Called at the end of each motion command so a move that "succeeded" at the
+        OT3API level but left the machine E-stopped is reported as a failure rather
+        than a silent success.
+        """
+        state = self.machine_status()
+        if state.is_error_state:
+            raise MachineErrorStateError(state.message)
+
     # ------------------------------------------------------------------ motion
 
     @translate_motion_errors
@@ -120,6 +174,7 @@ class FlexMotionController:
         """Home the given axes (all axes when ``None``)."""
         async with self._lock:
             await self._api.home(axes=axes)
+            self._assert_machine_ok()
 
     async def home_mount(self, mount: OT3Mount) -> None:
         """Home only the axes belonging to one mount."""
@@ -130,14 +185,18 @@ class FlexMotionController:
         """Move ``mount`` to an absolute deck ``point`` and return the resulting position."""
         async with self._lock:
             await self._api.move_to(mount=mount, abs_position=point, speed=speed)
-            return await self._api.gantry_position(mount, refresh=True)
+            result = await self._api.gantry_position(mount, refresh=True)
+            self._assert_machine_ok()
+            return result
 
     @translate_motion_errors
     async def move_rel(self, mount: OT3Mount, delta: Point, speed: float | None = None) -> Point:
         """Move ``mount`` by ``delta`` and return the resulting position."""
         async with self._lock:
             await self._api.move_rel(mount=mount, delta=delta, speed=speed)
-            return await self._api.gantry_position(mount, refresh=True)
+            result = await self._api.gantry_position(mount, refresh=True)
+            self._assert_machine_ok()
+            return result
 
     async def gantry_position(self, mount: OT3Mount) -> Point:
         """Return the current position of ``mount``."""
@@ -216,4 +275,4 @@ class FlexMotionController:
 
 
 # Re-export for callers that map SiLA enums to Opentrons types.
-__all__ = ["Axis", "FlexMotionController", "OT3Mount", "Point"]
+__all__ = ["Axis", "FlexMotionController", "MachineState", "OT3Mount", "Point"]

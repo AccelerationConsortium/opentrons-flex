@@ -13,10 +13,10 @@ import asyncio
 import pytest
 import pytest_asyncio
 from opentrons.hardware_control.ot3api import OT3API
-from opentrons.hardware_control.types import OT3Mount
+from opentrons.hardware_control.types import DoorState, EstopState, OT3Mount
 from opentrons.types import Point
 
-from unitelabs.opentrons_flex.io import FlexMotionController
+from unitelabs.opentrons_flex.io import FlexMotionController, MachineErrorStateError, MachineState
 
 
 @pytest_asyncio.fixture
@@ -75,3 +75,78 @@ async def test_pause_resume_stop_do_not_raise(controller: FlexMotionController):
     controller.resume()
     await controller.stop()
 
+
+# ------------------------------------------------------ machine error state (Pitfall #2)
+
+
+async def test_machine_status_healthy_on_simulator(controller: FlexMotionController):
+    """A fresh simulator reports a healthy, non-error machine state."""
+    state = controller.machine_status()
+    assert isinstance(state, MachineState)
+    assert state.estop == "DISENGAGED"
+    assert state.door_open is False
+    assert state.is_error_state is False
+    assert state.message == ""
+
+
+async def test_machine_status_reports_estop_engaged(controller: FlexMotionController, monkeypatch: pytest.MonkeyPatch):
+    """When the E-stop is engaged, machine_status flags an error state with a hint."""
+    monkeypatch.setattr(controller._api, "get_estop_state", lambda: EstopState.PHYSICALLY_ENGAGED)
+
+    state = controller.machine_status()
+    assert state.estop == "PHYSICALLY_ENGAGED"
+    assert state.is_error_state is True
+    assert "re-home" in state.message.lower()
+
+
+async def test_machine_status_reports_open_door(controller: FlexMotionController, monkeypatch: pytest.MonkeyPatch):
+    """An open door is surfaced for information but is not on its own an error state."""
+    monkeypatch.setattr(type(controller._api), "door_state", property(lambda self: DoorState.OPEN))
+
+    state = controller.machine_status()
+    assert state.door_open is True
+    assert state.is_error_state is False
+
+
+async def test_not_present_estop_is_not_an_error(controller: FlexMotionController, monkeypatch: pytest.MonkeyPatch):
+    """NOT_PRESENT (no E-stop hardware / simulator) must not be treated as an error."""
+    monkeypatch.setattr(controller._api, "get_estop_state", lambda: EstopState.NOT_PRESENT)
+
+    state = controller.machine_status()
+    assert state.estop == "NOT_PRESENT"
+    assert state.is_error_state is False
+
+
+async def test_move_to_raises_when_machine_enters_error_state(
+    controller: FlexMotionController, monkeypatch: pytest.MonkeyPatch
+):
+    """A move that "succeeds" but leaves the robot E-stopped must not return silently."""
+    await controller.home()
+    start = await controller.gantry_position(OT3Mount.LEFT)
+
+    # Simulate the E-stop becoming engaged during/after the move.
+    monkeypatch.setattr(controller._api, "get_estop_state", lambda: EstopState.LOGICALLY_ENGAGED)
+
+    with pytest.raises(MachineErrorStateError):
+        await controller.move_to(OT3Mount.LEFT, Point(x=start.x - 5, y=start.y - 5, z=start.z - 5))
+
+
+async def test_move_rel_raises_when_machine_enters_error_state(
+    controller: FlexMotionController, monkeypatch: pytest.MonkeyPatch
+):
+    """MoveRelative surfaces a hidden error state the same way MoveTo does."""
+    await controller.home()
+    monkeypatch.setattr(controller._api, "get_estop_state", lambda: EstopState.PHYSICALLY_ENGAGED)
+
+    with pytest.raises(MachineErrorStateError):
+        await controller.move_rel(OT3Mount.LEFT, Point(x=-1, y=-1, z=-1))
+
+
+async def test_home_raises_when_machine_enters_error_state(
+    controller: FlexMotionController, monkeypatch: pytest.MonkeyPatch
+):
+    """Home surfaces a hidden error state rather than reporting a false success."""
+    monkeypatch.setattr(controller._api, "get_estop_state", lambda: EstopState.PHYSICALLY_ENGAGED)
+
+    with pytest.raises(MachineErrorStateError):
+        await controller.home()

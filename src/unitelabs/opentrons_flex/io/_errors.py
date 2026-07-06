@@ -127,6 +127,18 @@ class StallDetectedError(Exception):
     """
 
 
+class MachineErrorStateError(Exception):
+    """
+    The move was accepted but the robot has silently entered a hardware error state.
+
+    A movement command can return without raising while the machine has already
+    entered an error state (for example the E-stop became engaged mid-move). This
+    error surfaces that hidden condition so callers never treat such a move as
+    successful. Clear the fault (release the E-stop), then re-home before
+    continuing. The underlying hardware state is preserved to aid diagnosis.
+    """
+
+
 def translate_motion_errors(
     fn: typing.Callable[..., typing.Awaitable[object]],
 ) -> typing.Callable[..., typing.Awaitable[object]]:

@@ -22,6 +22,7 @@ from unitelabs.cdk.sila import constraints
 
 from ..io import (
     FlexMotionController,
+    MachineErrorStateError,
     MovementOutOfBoundsError,
     NotHomedError,
     StallDetectedError,
@@ -30,8 +31,13 @@ from ._progress import OperationPhase, OperationProgress, report_progress, run_o
 
 # Expected failure modes for any commanded move; declared on the SiLA commands so
 # clients receive Defined Execution Errors (with recovery hints) rather than
-# opaque undefined errors.
-_MOVE_ERRORS = [NotHomedError, MovementOutOfBoundsError, StallDetectedError]
+# opaque undefined errors. ``MachineErrorStateError`` covers the case where a move
+# returns but the robot has silently entered a hardware error state (e.g. E-stop).
+_MOVE_ERRORS = [NotHomedError, MovementOutOfBoundsError, StallDetectedError, MachineErrorStateError]
+
+# Possible E-stop states surfaced by MachineStatus. A Set constraint (AGENTS.md:
+# model status with strings + Set, not integers) documents the closed vocabulary.
+_ESTOP_STATES = ("DISENGAGED", "PHYSICALLY_ENGAGED", "LOGICALLY_ENGAGED", "NOT_PRESENT")
 
 
 class Mount(enum.Enum):
@@ -64,6 +70,21 @@ class Lights:
 
     button: bool
     rails: bool
+
+
+@dataclass
+class MachineStatus:
+    """
+    The robot's safety/error state, independent of any single command.
+
+    Query this after a movement command to confirm the robot did not silently
+    enter an error state even though the command returned successfully.
+    """
+
+    estop: typing.Annotated[str, constraints.Set(_ESTOP_STATES)]
+    door_open: bool
+    is_error_state: bool
+    message: str
 
 
 def _to_position(point: Point) -> Position:
@@ -467,3 +488,21 @@ class MotionControlFeature(sila.Feature):
     def is_simulating(self) -> bool:
         """Whether the connector is driving the OT3 simulator rather than real hardware."""
         return self._controller.is_simulating
+
+    @sila.UnobservableProperty()
+    def machine_status(self) -> MachineStatus:
+        """
+        Return the robot safety/error state (E-stop, door) independent of any move.
+
+        A movement command can return successfully while the robot has silently
+        entered a hardware error state. Read this property after each movement to
+        confirm the move genuinely succeeded: ``is_error_state`` is True when the
+        robot is in an error state that requires operator intervention.
+        """
+        state = self._controller.machine_status()
+        return MachineStatus(
+            estop=state.estop,
+            door_open=state.door_open,
+            is_error_state=state.is_error_state,
+            message=state.message,
+        )

@@ -33,7 +33,7 @@ Motion is exposed per **mount** (`LEFT`, `RIGHT`, `GRIPPER`) in deck coordinates
 
 | Feature | Commands / properties |
 |---------|------------------------|
-| `MotionControlFeature` | `Home`, `HomeMount`, `MoveTo`, `MoveRelative`, `GetPosition`, `Aspirate`, `Dispense`, `BlowOut`, `PrepareForAspirate`, `EmergencyStop`, `Pause`, `Resume`, `SetLights`; `Lights`, `IsSimulating` |
+| `MotionControlFeature` | `Home`, `HomeMount`, `MoveTo`, `MoveRelative`, `GetPosition`, `Aspirate`, `Dispense`, `BlowOut`, `PrepareForAspirate`, `EmergencyStop`, `Pause`, `Resume`, `SetLights`; `Lights`, `IsSimulating`, `MachineStatus` |
 | `PipetteFeature` | `GetAttachedPipettes` (Flex pipette models, per mount) |
 | `GripperFeature` | `Grip`, `Ungrip`, `HomeJaw`; `Status` |
 | `CalibrationFeature` | `CalibratePipette`, `CalibrateGripperJaw`, `CalibrateDeck` (automatic probe-based routines) |
@@ -205,6 +205,35 @@ uv run --extra test python -m pytest tests/integration --robot <robot-ip>:50051
 Tests marked `@pytest.mark.simulator_only` are skipped automatically when `--robot` is
 set. Position assertions compare against a freshly captured `homed_position` fixture
 rather than hardcoded coordinates, so they hold on both the simulator and real firmware.
+
+Every integration run prints its **mode/target/device** header and records
+`mode` / `sila_target` / `http_target` / `device_id` to each test's junit
+properties, so a result is never ambiguous about whether it hit the simulator or
+a real robot (a `hardware_only` test that somehow runs in smoketest mode fails
+loudly rather than passing against the simulator).
+
+### Hardware-in-the-loop (HITL) motion tests
+
+`tests/integration/hardware/` holds Stage-4 HITL tests that run **only** against a
+real Flex (`--robot`/`--robot-http`) and are skipped otherwise. They issue only
+small, reversible moves (home, a 5 mm Z jog up-and-back, lights) and — crucially —
+query `MachineStatus` **after every movement** to assert the robot did not
+silently enter a hardware error state (E-stop engaged, etc.). A move that
+returns is not assumed to have succeeded; the connector's post-move guard raises
+`MachineErrorStateError` on a hidden fault, and the HITL client re-checks from
+the outside.
+
+```sh
+uv run --extra test python -m pytest tests/integration/hardware --robot <robot-ip>:50051 -v
+```
+
+### HTTP ↔ SiLA parity matrix
+
+`docs/parity_matrix.md` (source: `docs/parity_matrix.json`) records which
+Opentrons HTTP API functions have a first-class SiLA2 equivalent
+(supported / unclear / unsupported). `tests/integration/http_api/test_parity_matrix.py`
+validates the matrix and, under `--with-http-server`, cross-checks its HTTP paths
+against the live robot-server OpenAPI so the matrix cannot silently drift.
 
 ## Deploying to the Flex
 

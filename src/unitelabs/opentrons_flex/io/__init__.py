@@ -26,6 +26,7 @@ from ._errors import (
     CalibrationProbeNotAttachedError,
     GripActionError,
     GripperNotAttachedError,
+    MachineErrorStateError,
     ModuleNotRespondingError,
     ModuleOperationError,
     MovementOutOfBoundsError,
@@ -44,7 +45,7 @@ from ._types import (
 )
 from .absorbance_reader import AbsorbanceReaderController
 from .calibration import FlexCalibrationController
-from .flex_motion import Axis, FlexMotionController, OT3Mount, Point
+from .flex_motion import Axis, FlexMotionController, MachineState, OT3Mount, Point
 from .flex_stacker import FlexStackerController
 from .gripper import FlexGripperController
 from .hardware_proxy import HardwareProxy
@@ -74,6 +75,8 @@ __all__ = [
     "GripperNotAttachedError",
     "HardwareProxy",
     "HeaterShakerController",
+    "MachineErrorStateError",
+    "MachineState",
     "ModuleNotRespondingError",
     "ModuleOperationError",
     "MovementOutOfBoundsError",

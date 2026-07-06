@@ -23,6 +23,7 @@ import asyncio
 import contextlib
 import socket
 import sys
+import logging
 import threading
 import time
 from collections.abc import Generator
@@ -37,8 +38,12 @@ import pytest_asyncio
 from unitelabs.cdk import SiLAServerConfig
 from unitelabs.opentrons_flex import OpentronsFlexConfig, create_app
 
+log = logging.getLogger("opentrons_flex.tests")
+
 _HTTP_API_PORT = 31950
 _HTTP_API_VERSION_HEADER = "Opentrons-Version"
+
+_SIMULATOR_DEVICE_ID = "ot3-simulator"
 
 
 @dataclass(frozen=True)
@@ -48,6 +53,23 @@ class SimulatorStack:
     http_url: str
     grpc_address: str
     protobuf: object
+
+
+@dataclass(frozen=True)
+class RunContext:
+    """
+    Explicit record of *where* and *how* a test is running (Pitfall #1 guard).
+
+    Generated code can silently run "hardware" tests against the simulator (or
+    vice-versa). Every integration test records this context to its junit output
+    and the log so each result is unambiguous about ``mode`` (smoketest vs
+    hardware), the ``target`` it hit, and the ``device_id`` / config in use.
+    """
+
+    mode: str  # "smoketest" | "hardware"
+    sila_target: str  # gRPC address actually used
+    http_target: str  # HTTP base URL actually used, or "n/a"
+    device_id: str  # stable device identity: robot host, or "ot3-simulator"
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -79,14 +101,53 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
+def _is_hardware_run(config: pytest.Config) -> bool:
+    """Whether this session targets a real robot (a --robot / --robot-http host is set)."""
+    return bool(config.getoption("--robot") or config.getoption("--robot-http"))
+
+
+def _compute_run_context(config: pytest.Config) -> RunContext:
+    """Derive the explicit mode/target/device record for this session (Pitfall #1)."""
+    robot = config.getoption("--robot")
+    robot_http = config.getoption("--robot-http")
+    with_http = bool(config.getoption("--with-http-server"))
+
+    if _is_hardware_run(config):
+        host = (robot or robot_http).split(":")[0]
+        sila_target = robot or f"{host}:50051"
+        if robot_http:
+            http_target = robot_http if ":" in robot_http else f"{robot_http}:{_HTTP_API_PORT}"
+        else:
+            http_target = f"{host}:{_HTTP_API_PORT}"
+        return RunContext(mode="hardware", sila_target=sila_target, http_target=http_target, device_id=host)
+
+    return RunContext(
+        mode="smoketest",
+        sila_target="in-process OT3API simulator",
+        http_target="in-process robot-server (simulator)" if with_http else "n/a",
+        device_id=_SIMULATOR_DEVICE_ID,
+    )
+
+
+def pytest_report_header(config: pytest.Config) -> list[str]:
+    """Print the run mode/target/device at the top of the session (Pitfall #1)."""
+    ctx = _compute_run_context(config)
+    return [
+        f"opentrons-flex integration mode={ctx.mode} device_id={ctx.device_id} "
+        f"sila={ctx.sila_target} http={ctx.http_target}"
+    ]
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     has_robot = bool(config.getoption("--robot"))
     has_robot_http = bool(config.getoption("--robot-http")) or has_robot or bool(config.getoption("--with-http-server"))
     has_smoketest_http = bool(config.getoption("--with-http-server"))
+    has_hardware = _is_hardware_run(config)
 
     skip_sim = pytest.mark.skip(reason="simulator-only test, skipped when --robot is set")
     skip_http = pytest.mark.skip(reason="robot_http_only test, requires --robot-http, --robot, or --with-http-server")
     skip_smoketest_http = pytest.mark.skip(reason="smoketest_http_only test, requires --with-http-server")
+    skip_hardware = pytest.mark.skip(reason="hardware_only test, requires --robot or --robot-http (a real Flex)")
 
     for item in items:
         if has_robot and item.get_closest_marker("simulator_only"):
@@ -95,6 +156,46 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip_http)
         if not has_smoketest_http and item.get_closest_marker("smoketest_http_only"):
             item.add_marker(skip_smoketest_http)
+        if not has_hardware and item.get_closest_marker("hardware_only"):
+            item.add_marker(skip_hardware)
+
+
+@pytest.fixture(scope="session")
+def run_context(request: pytest.FixtureRequest) -> RunContext:
+    """Session-wide record of the mode/target/device this run is exercising."""
+    return _compute_run_context(request.config)
+
+
+@pytest.fixture(autouse=True)
+def _record_run_context(request: pytest.FixtureRequest, run_context: RunContext, record_property) -> None:
+    """
+    Attach mode/target/device_id to every integration test's result (Pitfall #1).
+
+    Guards against the "silently ran against the wrong target" trap: the mode,
+    target and device_id are written to the junit ``<properties>`` for each test
+    and logged, so no result is ambiguous about whether it hit the simulator or a
+    real device. A ``hardware_only`` test is also asserted to actually be running
+    in hardware mode so it can never pass by accident against the simulator.
+    """
+    record_property("mode", run_context.mode)
+    record_property("sila_target", run_context.sila_target)
+    record_property("http_target", run_context.http_target)
+    record_property("device_id", run_context.device_id)
+
+    if request.node.get_closest_marker("hardware_only") and run_context.mode != "hardware":
+        pytest.fail(
+            "hardware_only test reached execution in smoketest mode — "
+            "movement results would be against the simulator, not a real device."
+        )
+
+    log.info(
+        "RUN mode=%s device_id=%s sila=%s http=%s :: %s",
+        run_context.mode,
+        run_context.device_id,
+        run_context.sila_target,
+        run_context.http_target,
+        request.node.nodeid,
+    )
 
 
 @pytest.fixture(scope="session")

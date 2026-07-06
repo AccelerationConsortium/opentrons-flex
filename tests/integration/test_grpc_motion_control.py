@@ -16,7 +16,7 @@ import grpc.aio
 import pytest
 import pytest_asyncio
 
-from unitelabs.opentrons_flex.features.motion_control import Lights, Mount, Position
+from unitelabs.opentrons_flex.features.motion_control import Lights, MachineStatus, Mount, Position
 from .observable import call_observable
 
 _PKG = "sila2.ca.accelerationconsortium.robots.motioncontrolfeature.v1"
@@ -97,6 +97,9 @@ class _MotionClient:
 
     async def get_is_simulating(self) -> bool:
         return next(iter((await self._get_property("Get_IsSimulating")).values()))
+
+    async def get_machine_status(self) -> MachineStatus:
+        return self._single(await self._get_property("Get_MachineStatus"), MachineStatus)
 
 
 @pytest_asyncio.fixture
@@ -205,3 +208,28 @@ async def test_emergency_stop_returns_status_string(client: _MotionClient) -> No
     """EmergencyStop returns a status string mentioning the required re-home."""
     msg = await client.emergency_stop()
     assert "re-home" in msg.lower()
+
+
+# ── machine error state (Pitfall #2) ───────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_machine_status_decodes_over_the_wire(client: _MotionClient) -> None:
+    """Get_MachineStatus decodes to a MachineStatus dataclass over gRPC."""
+    status = await client.get_machine_status()
+    assert isinstance(status, MachineStatus)
+    assert status.estop in {"DISENGAGED", "PHYSICALLY_ENGAGED", "LOGICALLY_ENGAGED", "NOT_PRESENT"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.simulator_only
+async def test_machine_status_after_move_reports_no_error(client: _MotionClient, homed_position: Position) -> None:
+    """After a successful move the simulator reports no hidden error state.
+
+    This is the assertion every hardware movement test should also make: a move
+    that returned successfully must be paired with a machine-status check so a
+    silent error state cannot masquerade as success.
+    """
+    await client.move_to(Mount.LEFT, homed_position.x - 10.0, homed_position.y - 10.0, homed_position.z - 10.0)
+    status = await client.get_machine_status()
+    assert status.is_error_state is False, status.message

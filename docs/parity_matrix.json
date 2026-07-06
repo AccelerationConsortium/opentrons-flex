@@ -1,0 +1,182 @@
+{
+  "description": "Feature-parity matrix: Opentrons robot-server HTTP API <-> SiLA2 connector. The connector re-exposes the full opentrons robot-server HTTP surface unchanged, so every HTTP route remains available; this matrix records which HTTP functions ALSO have a first-class SiLA2 equivalent. sila_support: 'supported' = SiLA equivalent exists and is exercised against the simulator; 'unclear' = a SiLA path exists but full parity needs hardware confirmation; 'unsupported' = intentionally HTTP-only (no SiLA equivalent by design).",
+  "sila_support_values": ["supported", "unsupported", "unclear"],
+  "entries": [
+    {
+      "group": "Health",
+      "http_method": "GET",
+      "http_path": "/health",
+      "http_available": true,
+      "core": true,
+      "sila_feature": "MotionControlFeature",
+      "sila_element": "IsSimulating (+ SiLA server metadata)",
+      "sila_support": "supported",
+      "notes": "Liveness + robot model over HTTP; SiLA exposes IsSimulating and server identity. Full field parity (api_version, fw) is HTTP-only."
+    },
+    {
+      "group": "Instruments",
+      "http_method": "GET",
+      "http_path": "/pipettes",
+      "http_available": true,
+      "core": true,
+      "sila_feature": "PipetteFeature",
+      "sila_element": "GetAttachedPipettes",
+      "sila_support": "supported",
+      "notes": "Per-mount attached pipette models."
+    },
+    {
+      "group": "Modules",
+      "http_method": "GET",
+      "http_path": "/modules",
+      "http_available": true,
+      "core": true,
+      "sila_feature": "HeaterShaker/Thermocycler/Temperature/AbsorbanceReader/FlexStacker",
+      "sila_element": "dynamic feature registration on attach",
+      "sila_support": "supported",
+      "notes": "Attached modules register dedicated SiLA features at startup; HTTP /modules lists them."
+    },
+    {
+      "group": "Lights",
+      "http_method": "GET",
+      "http_path": "/robot/lights",
+      "http_available": true,
+      "core": true,
+      "sila_feature": "MotionControlFeature",
+      "sila_element": "Lights (property)",
+      "sila_support": "supported",
+      "notes": "Status-bar + deck light state."
+    },
+    {
+      "group": "Lights",
+      "http_method": "POST",
+      "http_path": "/robot/lights",
+      "http_available": true,
+      "core": true,
+      "sila_feature": "MotionControlFeature",
+      "sila_element": "SetLights",
+      "sila_support": "supported",
+      "notes": "Toggle status-bar / deck lights."
+    },
+    {
+      "group": "Motion",
+      "http_method": "POST",
+      "http_path": "/robot/home",
+      "http_available": true,
+      "core": true,
+      "sila_feature": "MotionControlFeature",
+      "sila_element": "Home / HomeMount",
+      "sila_support": "supported",
+      "notes": "Whole-robot or per-mount homing (observable, cancellable)."
+    },
+    {
+      "group": "Motion",
+      "http_method": "POST",
+      "http_path": "/robot/move",
+      "http_available": true,
+      "core": false,
+      "sila_feature": "MotionControlFeature",
+      "sila_element": "MoveTo / MoveRelative",
+      "sila_support": "unclear",
+      "notes": "SiLA move is per-mount deck coordinates; HTTP /robot/move semantics differ. Confirm parity on hardware."
+    },
+    {
+      "group": "Safety",
+      "http_method": "GET",
+      "http_path": "/robot/control/estopStatus",
+      "http_available": true,
+      "core": false,
+      "sila_feature": "MotionControlFeature",
+      "sila_element": "MachineStatus",
+      "sila_support": "unclear",
+      "notes": "E-stop/door surfaced via MachineStatus; exact HTTP path + payload parity to confirm on hardware. Drives Pitfall #2 post-move error-state check."
+    },
+    {
+      "group": "Liquid handling",
+      "http_method": "n/a",
+      "http_path": "",
+      "http_available": false,
+      "core": false,
+      "sila_feature": "MotionControlFeature",
+      "sila_element": "Aspirate / Dispense / BlowOut / PrepareForAspirate",
+      "sila_support": "supported",
+      "notes": "Primitive plunger moves exist only on SiLA; there is no direct low-level HTTP aspirate/dispense route (HTTP uses the protocol engine)."
+    },
+    {
+      "group": "Gripper",
+      "http_method": "n/a",
+      "http_path": "",
+      "http_available": false,
+      "core": false,
+      "sila_feature": "GripperFeature",
+      "sila_element": "Grip / Ungrip / HomeJaw / Status",
+      "sila_support": "supported",
+      "notes": "Flex gripper primitives exposed on SiLA; HTTP exposes gripper only via the protocol engine."
+    },
+    {
+      "group": "Calibration",
+      "http_method": "n/a",
+      "http_path": "",
+      "http_available": false,
+      "core": false,
+      "sila_feature": "CalibrationFeature",
+      "sila_element": "CalibratePipette / CalibrateGripperJaw / CalibrateDeck",
+      "sila_support": "unclear",
+      "notes": "Automatic probe-based routines on SiLA; HTTP calibration endpoints differ in shape. Confirm on hardware with a probe attached."
+    },
+    {
+      "group": "Motion",
+      "http_method": "GET",
+      "http_path": "/robot/positions",
+      "http_available": true,
+      "core": false,
+      "sila_feature": "MotionControlFeature",
+      "sila_element": "GetPosition",
+      "sila_support": "supported",
+      "notes": "SiLA GetPosition returns per-mount deck coordinates; HTTP /robot/positions returns preset named positions (deprecated)."
+    },
+    {
+      "group": "Server settings",
+      "http_method": "GET",
+      "http_path": "/settings",
+      "http_available": true,
+      "core": false,
+      "sila_feature": null,
+      "sila_element": null,
+      "sila_support": "unsupported",
+      "notes": "Server/robot configuration is intentionally HTTP-only; per AGENTS.md, transport/server config is not modelled as a SiLA feature."
+    },
+    {
+      "group": "Identify",
+      "http_method": "POST",
+      "http_path": "/identify",
+      "http_available": true,
+      "core": false,
+      "sila_feature": null,
+      "sila_element": null,
+      "sila_support": "unsupported",
+      "notes": "Blink-to-identify is HTTP-only; the equivalent operator action on SiLA is SetLights."
+    },
+    {
+      "group": "Protocol engine",
+      "http_method": "POST",
+      "http_path": "/runs",
+      "http_available": true,
+      "core": false,
+      "sila_feature": null,
+      "sila_element": null,
+      "sila_support": "unsupported",
+      "notes": "The connector exposes motion/liquid primitives, not the Opentrons protocol/run engine. Full protocol orchestration stays on HTTP (or the UniteLabs workflow layer)."
+    },
+    {
+      "group": "Protocol engine",
+      "http_method": "POST",
+      "http_path": "/protocols",
+      "http_available": true,
+      "core": false,
+      "sila_feature": null,
+      "sila_element": null,
+      "sila_support": "unsupported",
+      "notes": "Protocol upload/management is HTTP-only by design."
+    }
+  ]
+}
