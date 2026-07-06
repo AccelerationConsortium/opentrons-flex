@@ -134,6 +134,14 @@ async def test_home_then_get_position_returns_a_position(client: _MotionClient) 
 
 
 @pytest.mark.asyncio
+async def test_home_mount_then_get_position_returns_a_position(client: _MotionClient) -> None:
+    """HomeMount is exposed over gRPC and leaves the addressed mount queryable."""
+    await client.home_mount(Mount.LEFT)
+    pos = await client.get_position(Mount.LEFT)
+    assert isinstance(pos, Position)
+
+
+@pytest.mark.asyncio
 async def test_home_position_is_reproducible(client: _MotionClient, homed_position: Position) -> None:
     """A second home returns the same coordinates as the first."""
     await client.home()

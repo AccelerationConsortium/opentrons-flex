@@ -16,14 +16,18 @@ This is used in CI to exercise the full HTTP+gRPC stack without real hardware.
 Markers:
   simulator_only  — skipped when --robot is set
   robot_http_only — skipped unless --robot-http, --robot, or --with-http-server is set
+  smoketest_http_only — skipped unless --with-http-server starts the local simulator HTTP stack
 """
 
 import asyncio
 import contextlib
 import socket
+import sys
 import threading
 import time
 from collections.abc import Generator
+from dataclasses import dataclass
+from unittest.mock import MagicMock
 
 import grpc.aio
 import httpx
@@ -35,6 +39,15 @@ from unitelabs.opentrons_flex import OpentronsFlexConfig, create_app
 
 _HTTP_API_PORT = 31950
 _HTTP_API_VERSION_HEADER = "Opentrons-Version"
+
+
+@dataclass(frozen=True)
+class SimulatorStack:
+    """Addresses for a local connector stack running in smoketest/simulator mode."""
+
+    http_url: str
+    grpc_address: str
+    protobuf: object
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -69,15 +82,19 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     has_robot = bool(config.getoption("--robot"))
     has_robot_http = bool(config.getoption("--robot-http")) or has_robot or bool(config.getoption("--with-http-server"))
+    has_smoketest_http = bool(config.getoption("--with-http-server"))
 
     skip_sim = pytest.mark.skip(reason="simulator-only test, skipped when --robot is set")
     skip_http = pytest.mark.skip(reason="robot_http_only test, requires --robot-http, --robot, or --with-http-server")
+    skip_smoketest_http = pytest.mark.skip(reason="smoketest_http_only test, requires --with-http-server")
 
     for item in items:
         if has_robot and item.get_closest_marker("simulator_only"):
             item.add_marker(skip_sim)
         if not has_robot_http and item.get_closest_marker("robot_http_only"):
             item.add_marker(skip_http)
+        if not has_smoketest_http and item.get_closest_marker("smoketest_http_only"):
+            item.add_marker(skip_smoketest_http)
 
 
 @pytest.fixture(scope="session")
@@ -86,41 +103,65 @@ def robot_address(request: pytest.FixtureRequest) -> str | None:
 
 
 @pytest.fixture(scope="session")
-def _simulator_http_url(request: pytest.FixtureRequest) -> Generator[str | None, None, None]:
-    """Start the connector with simulator + robot-server on a free TCP port.
+def is_smoketest_http(request: pytest.FixtureRequest) -> bool:
+    """Whether tests are using the local simulator HTTP stack."""
+    return bool(request.config.getoption("--with-http-server"))
+
+
+@pytest.fixture(scope="session")
+def simulator_stack(request: pytest.FixtureRequest) -> Generator[SimulatorStack | None, None, None]:
+    """Start the connector with simulator + robot-server on free local ports.
 
     Runs the asyncio event loop in a background thread so the server stays up
-    for the full test session while sync test fixtures can still access the URL.
-    Yields None when --with-http-server is not set.
+    for the full test session while sync test fixtures can still access the HTTP
+    URL. Yields None when --with-http-server is not set.
     """
     if not request.config.getoption("--with-http-server"):
         yield None
         return
+    rs_app = sys.modules.get("robot_server.app")
+    if rs_app is not None and isinstance(getattr(rs_app, "app", None), MagicMock):
+        pytest.skip("--with-http-server requires the real opentrons robot_server package")
 
-    def _free_port() -> int:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("127.0.0.1", 0))
-            return s.getsockname()[1]
+    def _free_ports(count: int) -> list[int]:
+        sockets: list[socket.socket] = []
+        try:
+            for _ in range(count):
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.bind(("127.0.0.1", 0))
+                sockets.append(s)
+            return [s.getsockname()[1] for s in sockets]
+        finally:
+            for s in sockets:
+                s.close()
 
-    http_port = _free_port()
+    http_port, grpc_port = _free_ports(2)
     base_url = f"http://127.0.0.1:{http_port}"
 
     ready: threading.Event = threading.Event()
     stop: threading.Event = threading.Event()
     exc: list[BaseException] = []
+    stack: list[SimulatorStack] = []
 
     async def _serve() -> None:
         config = OpentronsFlexConfig(
             use_simulator=True,
             with_robot_server=True,
             robot_server_tcp_port=http_port,
-            sila_server=SiLAServerConfig(hostname="127.0.0.1", port=0, tls=False),
+            sila_server=SiLAServerConfig(hostname="127.0.0.1", port=grpc_port, tls=False),
             cloud_server_endpoint=None,
             discovery=None,
         )
         gen = create_app(config)
         connector = await gen.__anext__()
         await connector.start()
+        stack.append(
+            SimulatorStack(
+                http_url=base_url,
+                grpc_address=connector.sila_server._address,
+                protobuf=connector.sila_server.protobuf,
+            )
+        )
         ready.set()
         await asyncio.to_thread(stop.wait)
         await connector.stop()
@@ -162,10 +203,16 @@ def _simulator_http_url(request: pytest.FixtureRequest) -> Generator[str | None,
             pass
         time.sleep(1)
 
-    yield base_url
+    yield stack[0]
 
     stop.set()
     thread.join(timeout=15)
+
+
+@pytest.fixture(scope="session")
+def _simulator_http_url(simulator_stack: SimulatorStack | None) -> str | None:
+    """HTTP base URL for the local simulator stack."""
+    return simulator_stack.http_url if simulator_stack else None
 
 
 @pytest.fixture(scope="session")

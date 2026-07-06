@@ -168,12 +168,21 @@ uv run --extra test python -m pytest tests/io tests/features
 
 # gRPC integration tests over the wire (in-process SiLA server + OT3 simulator)
 uv run --extra test python -m pytest tests/integration -k grpc
+
+# Full local smoketest: SiLA gRPC + in-process robot-server HTTP API, both backed
+# by the OT3 simulator. This is the CI/CD end-to-end path before real hardware.
+uv run --extra test python -m pytest tests/integration --with-http-server -v
 ```
 
 The suite covers the controllers and SiLA features driven against the OT3 simulator,
 SiLA feature-definition generation, and real gRPC calls through the full chain
 `gRPC → SiLA server → feature → hardware API`, including defined-execution errors
 propagating over the wire.
+
+`config/smoketest_config.json` is the local no-hardware config. It keeps
+`use_simulator=true`, `with_robot_server=true`, and cloud/discovery disabled. The
+deployment config in `config/flex_config.json` remains explicitly live-hardware
+(`use_simulator=false`) so simulator and robot runs do not blur together.
 
 ### Testing against a real Flex
 

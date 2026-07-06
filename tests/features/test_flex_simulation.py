@@ -13,11 +13,15 @@ import pytest
 import pytest_asyncio
 from opentrons.hardware_control.ot3api import OT3API
 
+from unitelabs.opentrons_flex.features.calibration import CalibrationFeature, GripperJaw, PipetteMount
 from unitelabs.opentrons_flex.features.gripper import GripperFeature
 from unitelabs.opentrons_flex.features.motion_control import Lights, MotionControlFeature, Mount, Position
 from unitelabs.opentrons_flex.features._progress import OperationProgress
 from unitelabs.opentrons_flex.features.pipette import PipetteFeature
 from unitelabs.opentrons_flex.io import (
+    CalibrationFailedError,
+    CalibrationProbeNotAttachedError,
+    FlexCalibrationController,
     FlexGripperController,
     FlexMotionController,
     GripperNotAttachedError,
@@ -66,6 +70,11 @@ async def gripper(api: OT3API) -> GripperFeature:
     return GripperFeature(FlexGripperController.from_api(api, lock=asyncio.Lock()))
 
 
+@pytest_asyncio.fixture
+async def calibration(api: OT3API) -> CalibrationFeature:
+    return CalibrationFeature(FlexCalibrationController.from_api(api, lock=asyncio.Lock()))
+
+
 # ── Motion ──────────────────────────────────────────────────────────────────
 
 
@@ -77,6 +86,35 @@ async def test_home_and_get_position(motion: MotionControlFeature):
     assert isinstance(pos, Position)
     assert status.updates
     assert intermediate.messages
+
+
+async def test_home_mount_reports_progress(motion: MotionControlFeature):
+    status, intermediate = _obs()
+    await motion.home_mount(Mount.LEFT, status=status, intermediate=intermediate)
+    assert status.updates[-1]["progress"] == pytest.approx(1.0)
+    assert intermediate.messages[-1].message == "LEFT mount home completed."
+
+
+async def test_move_to_returns_requested_position(motion: MotionControlFeature):
+    status, intermediate = _obs()
+    await motion.home(status=status, intermediate=intermediate)
+    status, intermediate = _obs()
+    start = await motion.get_position(Mount.LEFT, status=status, intermediate=intermediate)
+    target = Position(x=start.x - 10, y=start.y - 10, z=start.z - 5)
+    status, intermediate = _obs()
+    moved = await motion.move_to(
+        Mount.LEFT,
+        x=target.x,
+        y=target.y,
+        z=target.z,
+        speed=0.0,
+        status=status,
+        intermediate=intermediate,
+    )
+    assert moved.x == pytest.approx(target.x)
+    assert moved.y == pytest.approx(target.y)
+    assert moved.z == pytest.approx(target.z)
+    assert intermediate.messages[-1].message == "LEFT absolute move completed."
 
 
 async def test_move_relative_returns_offset_position(motion: MotionControlFeature):
@@ -106,6 +144,22 @@ async def test_set_lights_returns_lights(motion: MotionControlFeature):
     assert isinstance(result, Lights)
 
 
+@pytest.mark.parametrize(("button", "rails"), [(True, False), (False, True), (True, True), (False, False)])
+async def test_lights_return_typed_state_and_rails_roundtrip(
+    motion: MotionControlFeature,
+    button: bool,
+    rails: bool,
+):
+    status, intermediate = _obs()
+    result = await motion.set_lights(button=button, rails=rails, status=status, intermediate=intermediate)
+    # The OT3 simulator does not persist the status-bar button state, but it
+    # does persist rail lights. Real button-light verification belongs in live
+    # smoke testing.
+    assert isinstance(result.button, bool)
+    assert result.rails is rails
+    assert await motion.lights() == result
+
+
 # ── Pipette ─────────────────────────────────────────────────────────────────
 
 
@@ -122,6 +176,17 @@ async def test_no_pipette_reports_not_attached(pipette: PipetteFeature):
     assert all(p.model == "" for p in pipettes)  # no sentinel garbage when absent
 
 
+async def test_empty_pipette_metadata_is_operator_safe(pipette: PipetteFeature):
+    status, intermediate = _obs()
+    pipettes = await pipette.get_attached_pipettes(status=status, intermediate=intermediate)
+    assert all(p.name == "" for p in pipettes)
+    assert all(p.pipette_id == "" for p in pipettes)
+    assert all(p.channels == 0 for p in pipettes)
+    assert all(p.min_volume == 0.0 for p in pipettes)
+    assert all(p.max_volume == 0.0 for p in pipettes)
+    assert all(p.has_tip is False for p in pipettes)
+
+
 # ── Gripper ─────────────────────────────────────────────────────────────────
 
 
@@ -132,6 +197,45 @@ async def test_grip_without_gripper_raises(gripper: GripperFeature):
     assert intermediate.messages
 
 
+# ── Calibration ─────────────────────────────────────────────────────────────
+
+
+async def test_calibrate_pipette_without_probe_raises_defined_error(calibration: CalibrationFeature):
+    status, intermediate = _obs()
+    with pytest.raises((CalibrationProbeNotAttachedError, CalibrationFailedError)):
+        await calibration.calibrate_pipette(
+            PipetteMount.LEFT,
+            slot=5,
+            status=status,
+            intermediate=intermediate,
+        )
+    assert intermediate.messages[0].message == "Starting LEFT pipette calibration."
+
+
+async def test_calibrate_gripper_jaw_without_probe_raises_defined_error(calibration: CalibrationFeature):
+    status, intermediate = _obs()
+    with pytest.raises((CalibrationProbeNotAttachedError, CalibrationFailedError)):
+        await calibration.calibrate_gripper_jaw(
+            GripperJaw.FRONT,
+            slot=5,
+            status=status,
+            intermediate=intermediate,
+        )
+    assert intermediate.messages[0].message == "Starting FRONT gripper jaw calibration."
+
+
+async def test_calibrate_deck_without_probe_raises_defined_error(calibration: CalibrationFeature):
+    status, intermediate = _obs()
+    with pytest.raises((CalibrationProbeNotAttachedError, CalibrationFailedError)):
+        await calibration.calibrate_deck(
+            PipetteMount.LEFT,
+            pipette_id="simulated-pipette",
+            status=status,
+            intermediate=intermediate,
+        )
+    assert intermediate.messages[0].message == "Starting deck calibration with LEFT."
+
+
 # ── Wiring ──────────────────────────────────────────────────────────────────
 
 
@@ -139,7 +243,9 @@ async def test_features_construct_without_error(api: OT3API):
     lock = asyncio.Lock()
     motion = FlexMotionController.from_api(api, lock=lock)
     gripper = FlexGripperController.from_api(api, lock=lock)
+    calibration = FlexCalibrationController.from_api(api, lock=lock)
     # Construction runs each feature's SiLA metadata setup (real CDK) or the stub.
     assert MotionControlFeature(motion) is not None
     assert PipetteFeature(motion) is not None
     assert GripperFeature(gripper) is not None
+    assert CalibrationFeature(calibration) is not None
