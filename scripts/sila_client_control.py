@@ -1,13 +1,32 @@
+"""End-to-end smoke test for the Opentrons Flex SiLA connector against a live robot.
+
+Connects to a running Flex SiLA gRPC server and exercises the MotionControl,
+Gripper, and Pipette features through a representative workflow: status check,
+homing, a gripper labware-transport pass (slots C3 -> C2), and a pipette
+sample-prep pass (slots C1 -> C2). All gantry moves stay high above the deck
+(dry run), so no labware contact is required. Plunger steps (aspirate/dispense)
+only run if a tip is physically attached.
+
+Usage:
+    python scripts/sila_client_control.py --host 169.254.105.239 [--port 50051]
+
+    # host can also be supplied via the FLEX_SILA_HOST env var:
+    FLEX_SILA_HOST=169.254.105.239 python scripts/sila_client_control.py
+
+Find the robot's IP in the Opentrons App (Settings -> Networking) or on the
+robot's touchscreen. The default SiLA port is 50051.
+"""
+
+import argparse
 import asyncio
+import os
 import sys
 import base64
 import grpc.aio
 from sila.server import CommandConfirmation, CommandExecutionUUID
 from unitelabs.cdk import SiLAServerConfig
 from unitelabs.opentrons_flex import OpentronsFlexConfig, create_app
-from unitelabs.opentrons_flex.features.motion_control import Mount, Position
-from unitelabs.opentrons_flex.features.gripper import GripperStatus
-from unitelabs.opentrons_flex.features.pipette import PipetteInfo
+from unitelabs.opentrons_flex.features.motion_control import Mount
 
 _PKG = "sila2.ca.accelerationconsortium.robots.motioncontrolfeature.v1"
 _SERVICE = f"{_PKG}.MotionControlFeature"
@@ -50,11 +69,9 @@ async def call_observable(
                 raise TimeoutError(f"{method} did not finish within {timeout_s}s") from exc
             await asyncio.sleep(0.05)
 
-async def main():
-    robot_ip = "169.254.105.239"
-    port = 50051
+async def main(robot_ip: str, port: int):
     address = f"{robot_ip}:{port}"
-    
+
     print("Initializing protobuf codec locally...")
     # Start a mock connector locally just to compile the protobuf codec
     config = OpentronsFlexConfig(
@@ -283,5 +300,28 @@ async def main():
         except StopAsyncIteration:
             pass
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run an end-to-end SiLA workflow against a live Opentrons Flex.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("FLEX_SILA_HOST"),
+        help="Robot SiLA server IP/hostname (or set FLEX_SILA_HOST).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("FLEX_SILA_PORT", "50051")),
+        help="Robot SiLA server port.",
+    )
+    args = parser.parse_args()
+    if not args.host:
+        parser.error("robot host is required: pass --host <ip> or set FLEX_SILA_HOST")
+    return args
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    _args = _parse_args()
+    asyncio.run(main(_args.host, _args.port))
