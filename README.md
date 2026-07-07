@@ -187,24 +187,26 @@ deployment config in `config/flex_config.json` remains explicitly live-hardware
 ### Testing against a real Flex
 
 Once the connector is deployed and running on a Flex (see **Deploying** below), point
-the same integration tests at it. `--robot HOST:50051` runs the gRPC tests against the
-live SiLA server; `--robot-http HOST:31950` runs the HTTP API tests against the
-in-process robot-server.
+the read-only smoke tests at it first. `--robot HOST:50051` targets the live SiLA
+server; `--robot-http HOST:31950` targets the in-process robot-server.
+
+Do **not** run the full simulator gRPC suite against a real robot. Tests that home,
+move, actuate lights, pause/resume, emergency-stop, grip/ungrip, or calibrate are
+simulator-only unless they live under `tests/integration/hardware/`, where each
+movement is intentionally small and paired with a `MachineStatus` check.
 
 ```sh
-# gRPC feature tests against the live Flex (simulator-only cases auto-skip)
-uv run --extra test python -m pytest tests/integration -k grpc --robot <robot-ip>:50051
+# Read-only gRPC smoke tests against the live Flex
+uv run --extra test python -m pytest tests/integration/test_grpc_motion_control.py \
+    -k "is_simulating or machine_status" --robot <robot-ip>:50051 -v
 
 # HTTP robot-server API tests against the live Flex
 uv run --extra test python -m pytest tests/integration/http_api --robot-http <robot-ip>:31950
-
-# Both, in one run
-uv run --extra test python -m pytest tests/integration --robot <robot-ip>:50051
 ```
 
 Tests marked `@pytest.mark.simulator_only` are skipped automatically when `--robot` is
-set. Position assertions compare against a freshly captured `homed_position` fixture
-rather than hardcoded coordinates, so they hold on both the simulator and real firmware.
+set. Hardware motion is validated through the explicit HITL suite below, not through
+the broad simulator integration suite.
 
 Every integration run prints its **mode/target/device** header and records
 `mode` / `sila_target` / `http_target` / `device_id` to each test's junit

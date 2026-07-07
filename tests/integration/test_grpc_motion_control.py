@@ -129,6 +129,7 @@ async def test_is_simulating_is_true(client: _MotionClient) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.simulator_only
 async def test_home_then_get_position_returns_a_position(client: _MotionClient) -> None:
     """Home, then GetPosition decodes to a Position dataclass over the wire."""
     await client.home()
@@ -137,6 +138,7 @@ async def test_home_then_get_position_returns_a_position(client: _MotionClient) 
 
 
 @pytest.mark.asyncio
+@pytest.mark.simulator_only
 async def test_home_mount_then_get_position_returns_a_position(client: _MotionClient) -> None:
     """HomeMount is exposed over gRPC and leaves the addressed mount queryable."""
     await client.home_mount(Mount.LEFT)
@@ -145,6 +147,7 @@ async def test_home_mount_then_get_position_returns_a_position(client: _MotionCl
 
 
 @pytest.mark.asyncio
+@pytest.mark.simulator_only
 async def test_home_position_is_reproducible(client: _MotionClient, homed_position: Position) -> None:
     """A second home returns the same coordinates as the first."""
     await client.home()
@@ -158,6 +161,7 @@ async def test_home_position_is_reproducible(client: _MotionClient, homed_positi
 
 
 @pytest.mark.asyncio
+@pytest.mark.simulator_only
 async def test_move_to_sets_absolute_position(client: _MotionClient, homed_position: Position) -> None:
     """MoveTo returns the requested absolute coordinates."""
     target_x = homed_position.x - 20.0
@@ -170,6 +174,7 @@ async def test_move_to_sets_absolute_position(client: _MotionClient, homed_posit
 
 
 @pytest.mark.asyncio
+@pytest.mark.simulator_only
 async def test_move_relative_accumulates(client: _MotionClient, homed_position: Position) -> None:
     """Two relative Y moves of -10 mm produce Y = homed_Y - 20 mm."""
     await client.move_relative(Mount.LEFT, 0.0, -10.0, 0.0)
@@ -181,6 +186,7 @@ async def test_move_relative_accumulates(client: _MotionClient, homed_position: 
 
 
 @pytest.mark.asyncio
+@pytest.mark.simulator_only
 async def test_set_lights_returns_lights(client: _MotionClient) -> None:
     """SetLights decodes to a Lights dataclass over the wire."""
     result = await client.set_lights(button=True, rails=False)
@@ -197,6 +203,7 @@ async def test_get_lights_property(client: _MotionClient) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.simulator_only
 async def test_pause_and_resume_return_status_strings(client: _MotionClient) -> None:
     """Pause and Resume return human-readable status strings."""
     assert isinstance(await client.pause(), str)
@@ -204,6 +211,7 @@ async def test_pause_and_resume_return_status_strings(client: _MotionClient) -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.simulator_only
 async def test_emergency_stop_returns_status_string(client: _MotionClient) -> None:
     """EmergencyStop returns a status string mentioning the required re-home."""
     msg = await client.emergency_stop()
