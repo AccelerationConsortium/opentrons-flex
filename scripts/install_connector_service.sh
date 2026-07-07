@@ -37,6 +37,7 @@ ExecStart=/var/sila2_flex/bin/connector start --app unitelabs.opentrons_flex:cre
 # The opentrons stack auto-detects OT-3 (Flex) hardware on the device; no OT-2
 # Smoothie/Pi env (RUNNING_ON_PI, OT_SMOOTHIE_ID) is set. Add any Flex-specific
 # OT_* env here if a future opentrons release requires it.
+Environment=PYTHONPATH=/opt/opentrons-robot-server
 Environment=PYTHONPYCACHEPREFIX=/var/cache/sila2-pycache
 Restart=on-failure
 RestartSec=5

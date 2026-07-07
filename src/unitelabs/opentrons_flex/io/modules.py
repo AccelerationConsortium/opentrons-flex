@@ -48,7 +48,7 @@ def scan_module_ports() -> dict[str, str]:
         module_type = _MODULE_NAME_MAP.get(name)
         if module_type:
             log.info("Detected module '%s' at %s", module_type, p)
-            found[module_type] = str(p)
+            found[module_type] = p.as_posix()
 
     if not found:
         log.info("No Flex modules detected in /dev")

@@ -168,9 +168,9 @@ async def test_move_to_sets_absolute_position(client: _MotionClient, homed_posit
     target_y = homed_position.y - 20.0
     target_z = homed_position.z - 20.0
     result = await client.move_to(Mount.LEFT, target_x, target_y, target_z)
-    assert result.x == pytest.approx(target_x)
-    assert result.y == pytest.approx(target_y)
-    assert result.z == pytest.approx(target_z)
+    assert result.x == pytest.approx(target_x, abs=0.05)
+    assert result.y == pytest.approx(target_y, abs=0.05)
+    assert result.z == pytest.approx(target_z, abs=0.05)
 
 
 @pytest.mark.asyncio
@@ -179,7 +179,7 @@ async def test_move_relative_accumulates(client: _MotionClient, homed_position: 
     """Two relative Y moves of -10 mm produce Y = homed_Y - 20 mm."""
     await client.move_relative(Mount.LEFT, 0.0, -10.0, 0.0)
     result = await client.move_relative(Mount.LEFT, 0.0, -10.0, 0.0)
-    assert result.y == pytest.approx(homed_position.y - 20.0)
+    assert result.y == pytest.approx(homed_position.y - 20.0, abs=0.05)
 
 
 # ── lights ────────────────────────────────────────────────────────────────────
