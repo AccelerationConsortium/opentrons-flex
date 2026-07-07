@@ -134,12 +134,12 @@ async def test_small_z_jog_roundtrip_then_no_hidden_error(motion: _HitlMotion) -
 
     start = await motion.get_position(Mount.LEFT)
 
-    up = await motion.move_relative(Mount.LEFT, 0.0, 0.0, _JOG_MM)
-    await motion.assert_machine_ok("after +Z jog")
-    assert up.z == pytest.approx(start.z + _JOG_MM, abs=0.5)
-
-    back = await motion.move_relative(Mount.LEFT, 0.0, 0.0, -_JOG_MM)
+    down = await motion.move_relative(Mount.LEFT, 0.0, 0.0, -_JOG_MM)
     await motion.assert_machine_ok("after -Z jog")
+    assert down.z == pytest.approx(start.z - _JOG_MM, abs=0.5)
+
+    back = await motion.move_relative(Mount.LEFT, 0.0, 0.0, _JOG_MM)
+    await motion.assert_machine_ok("after +Z jog")
     assert back.z == pytest.approx(start.z, abs=0.5)
 
 
