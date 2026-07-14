@@ -12,12 +12,13 @@ import asyncio
 import pytest
 import pytest_asyncio
 from opentrons.hardware_control.ot3api import OT3API
+from opentrons.hardware_control.types import OT3Mount
 
 from unitelabs.opentrons_flex.features.calibration import CalibrationFeature, GripperJaw, PipetteMount
 from unitelabs.opentrons_flex.features.gripper import GripperFeature
 from unitelabs.opentrons_flex.features.motion_control import Lights, MotionControlFeature, Mount, Position
 from unitelabs.opentrons_flex.features._progress import OperationProgress
-from unitelabs.opentrons_flex.features.pipette import PipetteFeature
+from unitelabs.opentrons_flex.features.pipette import PipetteFeature, PipetteMount as TipPipetteMount, TipPresence
 from unitelabs.opentrons_flex.io import (
     CalibrationFailedError,
     CalibrationProbeNotAttachedError,
@@ -63,6 +64,18 @@ async def motion(api: OT3API) -> MotionControlFeature:
 @pytest_asyncio.fixture
 async def pipette(api: OT3API) -> PipetteFeature:
     return PipetteFeature(FlexMotionController.from_api(api, lock=asyncio.Lock()))
+
+
+@pytest_asyncio.fixture
+async def attached_pipette() -> PipetteFeature:
+    api = await OT3API.build_hardware_simulator(
+        attached_instruments={
+            OT3Mount.LEFT: {"model": "p1000_single_v3.0", "id": "sim-left"},
+        }
+    )
+    await api.home()
+    yield PipetteFeature(FlexMotionController.from_api(api, lock=asyncio.Lock()))
+    await api.clean_up()
 
 
 @pytest_asyncio.fixture
@@ -185,6 +198,37 @@ async def test_empty_pipette_metadata_is_operator_safe(pipette: PipetteFeature):
     assert all(p.min_volume == 0.0 for p in pipettes)
     assert all(p.max_volume == 0.0 for p in pipettes)
     assert all(p.has_tip is False for p in pipettes)
+
+
+async def test_tip_lifecycle_round_trip(attached_pipette: PipetteFeature):
+    status, intermediate = _obs()
+    assert (
+        await attached_pipette.get_tip_presence(TipPipetteMount.LEFT, status=status, intermediate=intermediate)
+        is TipPresence.ABSENT
+    )
+
+    status, intermediate = _obs()
+    picked_up = await attached_pipette.pick_up_tip(
+        TipPipetteMount.LEFT,
+        tip_length=95.6,
+        presses=1,
+        increment=0.0,
+        prep_after=False,
+        status=status,
+        intermediate=intermediate,
+    )
+    assert picked_up is TipPresence.PRESENT
+    assert intermediate.messages[-1].message == "Tip pickup on LEFT verified."
+
+    status, intermediate = _obs()
+    dropped = await attached_pipette.drop_tip(
+        TipPipetteMount.LEFT,
+        home_after=False,
+        status=status,
+        intermediate=intermediate,
+    )
+    assert dropped is TipPresence.ABSENT
+    assert intermediate.messages[-1].message == "Tip drop on LEFT verified."
 
 
 # ── Gripper ─────────────────────────────────────────────────────────────────

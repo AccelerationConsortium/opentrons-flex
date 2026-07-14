@@ -20,10 +20,10 @@ import logging
 from dataclasses import dataclass
 
 from opentrons.hardware_control import HardwareControlAPI
-from opentrons.hardware_control.types import Axis, DoorState, EstopState, OT3Mount
+from opentrons.hardware_control.types import Axis, DoorState, EstopState, OT3Mount, TipStateType
 from opentrons.types import Point
 
-from ._errors import MachineErrorStateError, translate_motion_errors
+from ._errors import MachineErrorStateError, TipStateError, translate_motion_errors, translate_tip_errors
 from .hardware_proxy import _TimedLock
 
 log = logging.getLogger(__name__)
@@ -254,6 +254,51 @@ class FlexMotionController:
         async with self._lock:
             await self._api.blow_out(mount=mount, volume=volume)
 
+    @translate_tip_errors
+    @translate_motion_errors
+    async def pick_up_tip(
+        self,
+        mount: OT3Mount,
+        tip_length: float,
+        presses: int | None = None,
+        increment: float | None = None,
+        prep_after: bool = True,
+    ) -> TipStateType:
+        """Pick up a tip at the current position and verify that it is present."""
+        async with self._lock:
+            await self._api.pick_up_tip(
+                mount=mount,
+                tip_length=tip_length,
+                presses=presses,
+                increment=increment,
+                prep_after=prep_after,
+            )
+            state = await self._api.get_tip_presence_status(mount)
+            self._assert_machine_ok()
+            if state is not TipStateType.PRESENT:
+                msg = f"Tip pickup completed but {mount.name} sensor reported {state.name}."
+                raise TipStateError(msg)
+            return state
+
+    @translate_tip_errors
+    @translate_motion_errors
+    async def drop_tip(self, mount: OT3Mount, home_after: bool = False) -> TipStateType:
+        """Drop the attached tip at the current position and verify that it is absent."""
+        async with self._lock:
+            await self._api.drop_tip(mount=mount, home_after=home_after)
+            state = await self._api.get_tip_presence_status(mount)
+            self._assert_machine_ok()
+            if state is not TipStateType.ABSENT:
+                msg = f"Tip drop completed but {mount.name} sensor reported {state.name}."
+                raise TipStateError(msg)
+            return state
+
+    @translate_tip_errors
+    async def get_tip_presence(self, mount: OT3Mount) -> TipStateType:
+        """Return the tip-presence sensor state for a pipette mount."""
+        async with self._lock:
+            return await self._api.get_tip_presence_status(mount)
+
     # ------------------------------------------------------------------ lights
 
     async def set_lights(self, button: bool | None = None, rails: bool | None = None) -> None:
@@ -275,4 +320,4 @@ class FlexMotionController:
 
 
 # Re-export for callers that map SiLA enums to Opentrons types.
-__all__ = ["Axis", "FlexMotionController", "MachineState", "OT3Mount", "Point"]
+__all__ = ["Axis", "FlexMotionController", "MachineState", "OT3Mount", "Point", "TipStateType"]

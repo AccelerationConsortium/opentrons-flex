@@ -31,7 +31,11 @@ from ._errors import (
     ModuleOperationError,
     MovementOutOfBoundsError,
     NotHomedError,
+    PipetteNotAttachedError,
     StallDetectedError,
+    TipDropError,
+    TipPickupError,
+    TipStateError,
 )
 from ._types import (
     AbsorbanceMeasurement,
@@ -45,7 +49,7 @@ from ._types import (
 )
 from .absorbance_reader import AbsorbanceReaderController
 from .calibration import FlexCalibrationController
-from .flex_motion import Axis, FlexMotionController, MachineState, OT3Mount, Point
+from .flex_motion import Axis, FlexMotionController, MachineState, OT3Mount, Point, TipStateType
 from .flex_stacker import FlexStackerController
 from .gripper import FlexGripperController
 from .hardware_proxy import HardwareProxy
@@ -82,10 +86,15 @@ __all__ = [
     "MovementOutOfBoundsError",
     "NotHomedError",
     "OT3Mount",
+    "PipetteNotAttachedError",
     "Point",
     "StallDetectedError",
     "Temperature",
     "TemperatureModuleController",
     "ThermocyclerController",
+    "TipDropError",
+    "TipPickupError",
+    "TipStateError",
+    "TipStateType",
     "scan_module_ports",
 ]

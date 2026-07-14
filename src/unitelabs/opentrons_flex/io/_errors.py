@@ -139,6 +139,77 @@ class MachineErrorStateError(Exception):
     """
 
 
+# ---------------------------------------------------------------------------
+# Pipette tip lifecycle defined errors
+# ---------------------------------------------------------------------------
+
+
+class PipetteNotAttachedError(Exception):
+    """
+    No pipette is attached to the requested mount.
+
+    Attach a Flex pipette, re-scan instruments, and retry the tip operation.
+    """
+
+
+class TipPickupError(Exception):
+    """
+    The pipette failed to pick up a tip at its current position.
+
+    Check pipette alignment, tip compatibility, and tip-rack seating, then move
+    to the intended tip well and retry.
+    """
+
+
+class TipDropError(Exception):
+    """
+    The pipette failed to release its attached tip.
+
+    Check the drop location and for a jammed tip, then clear any obstruction and
+    retry from a safe position.
+    """
+
+
+class TipStateError(Exception):
+    """
+    The measured tip state did not match the requested tip operation.
+
+    Inspect the pipette and tip sensor, reconcile the physical tip state, and
+    re-home before retrying if a collision or unexpected attachment occurred.
+    """
+
+
+def translate_tip_errors(
+    fn: typing.Callable[..., typing.Awaitable[object]],
+) -> typing.Callable[..., typing.Awaitable[object]]:
+    """Wrap an async tip method, translating OT3API exceptions to defined errors."""
+
+    @functools.wraps(fn)
+    async def wrapper(*args: object, **kwargs: object) -> object:
+        from opentrons.hardware_control.types import FailedTipStateCheck
+        from opentrons.types import PipetteNotAttachedError as OpentronsPipetteNotAttachedError
+        from opentrons_shared_data.errors.exceptions import (
+            TipDropFailedError,
+            TipPickupFailedError,
+            UnexpectedTipAttachError,
+            UnexpectedTipRemovalError,
+            UnmatchedTipPresenceStates,
+        )
+
+        try:
+            return await fn(*args, **kwargs)
+        except OpentronsPipetteNotAttachedError as e:
+            raise PipetteNotAttachedError(str(e)) from e
+        except (TipPickupFailedError, UnexpectedTipAttachError) as e:
+            raise TipPickupError(str(e)) from e
+        except (TipDropFailedError, UnexpectedTipRemovalError) as e:
+            raise TipDropError(str(e)) from e
+        except (UnmatchedTipPresenceStates, FailedTipStateCheck) as e:
+            raise TipStateError(str(e)) from e
+
+    return wrapper
+
+
 def translate_motion_errors(
     fn: typing.Callable[..., typing.Awaitable[object]],
 ) -> typing.Callable[..., typing.Awaitable[object]]:

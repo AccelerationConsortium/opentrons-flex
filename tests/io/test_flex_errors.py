@@ -11,10 +11,14 @@ import pytest
 import pytest_asyncio
 from opentrons.hardware_control.errors import OutOfBoundsMove
 from opentrons.hardware_control.ot3api import OT3API
+from opentrons.hardware_control.types import FailedTipStateCheck, TipStateType
+from opentrons.types import PipetteNotAttachedError as OpentronsPipetteNotAttachedError
 from opentrons_shared_data.errors.exceptions import (
     PositionEstimationInvalidError,
     PositionUnknownError,
     StallOrCollisionDetectedError,
+    TipDropFailedError,
+    TipPickupFailedError,
 )
 
 from unitelabs.opentrons_flex.io import FlexGripperController, GripperNotAttachedError
@@ -23,8 +27,13 @@ from unitelabs.opentrons_flex.io._errors import (
     CalibrationProbeNotAttachedError,
     MovementOutOfBoundsError,
     NotHomedError,
+    PipetteNotAttachedError,
     StallDetectedError,
+    TipDropError,
+    TipPickupError,
+    TipStateError,
     translate_motion_errors,
+    translate_tip_errors,
 )
 from unitelabs.opentrons_flex.io.calibration import FlexCalibrationController
 
@@ -49,6 +58,33 @@ async def test_translate_motion_errors(raised: Exception, expected: type[Excepti
 
 async def test_translate_motion_errors_passes_through_unrelated():
     @translate_motion_errors
+    async def boom():
+        raise ValueError("unrelated")
+
+    with pytest.raises(ValueError, match="unrelated"):
+        await boom()
+
+
+@pytest.mark.parametrize(
+    ("raised", "expected"),
+    [
+        (OpentronsPipetteNotAttachedError("missing"), PipetteNotAttachedError),
+        (TipPickupFailedError("pickup failed"), TipPickupError),
+        (TipDropFailedError("drop failed"), TipDropError),
+        (FailedTipStateCheck(TipStateType.PRESENT, TipStateType.ABSENT), TipStateError),
+    ],
+)
+async def test_translate_tip_errors(raised: Exception, expected: type[Exception]):
+    @translate_tip_errors
+    async def boom():
+        raise raised
+
+    with pytest.raises(expected):
+        await boom()
+
+
+async def test_translate_tip_errors_passes_through_unrelated():
+    @translate_tip_errors
     async def boom():
         raise ValueError("unrelated")
 

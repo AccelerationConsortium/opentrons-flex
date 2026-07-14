@@ -102,6 +102,17 @@
       "notes": "Primitive plunger moves exist only on SiLA; there is no direct low-level HTTP aspirate/dispense route (HTTP uses the protocol engine)."
     },
     {
+      "group": "Tip handling",
+      "http_method": "n/a",
+      "http_path": "",
+      "http_available": false,
+      "core": false,
+      "sila_feature": "PipetteFeature",
+      "sila_element": "PickUpTip / DropTip / GetTipPresence",
+      "sila_support": "supported",
+      "notes": "Sensor-verified tip lifecycle primitives at the current pipette position; deck/well navigation remains the caller's responsibility. HTTP performs tip handling through the protocol engine."
+    },
+    {
       "group": "Gripper",
       "http_method": "n/a",
       "http_path": "",
