@@ -34,7 +34,8 @@ Motion is exposed per **mount** (`LEFT`, `RIGHT`, `GRIPPER`) in deck coordinates
 | Feature | Commands / properties |
 |---------|------------------------|
 | `MotionControlFeature` | `Home`, `HomeMount`, `MoveTo`, `MoveRelative`, `GetPosition`, `Aspirate`, `Dispense`, `BlowOut`, `PrepareForAspirate`, `EmergencyStop`, `Pause`, `Resume`, `SetLights`; `Lights`, `IsSimulating`, `MachineStatus` |
-| `PipetteFeature` | `GetAttachedPipettes`, `PickUpTip`, `DropTip`, `GetTipPresence` (per mount) |
+| `PipetteFeature` | `GetAttachedPipettes` (one structured result per mount) |
+| `TipController` | Atomic move + `PickUpTip` / `DropTip`, `GetTipPresence`; sensor verification and defined recovery errors (use `MotionControlFeature.EmergencyStop` for a global halt) |
 | `GripperFeature` | `Grip`, `Ungrip`, `HomeJaw`; `Status` |
 | `CalibrationFeature` | `CalibratePipette`, `CalibrateGripperJaw`, `CalibrateDeck` (automatic probe-based routines) |
 | Module features | `HeaterShaker`, `Thermocycler`, `Temperature`, `AbsorbanceReader`, `FlexStacker` (registered when attached) |

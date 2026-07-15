@@ -13,12 +13,14 @@ import pytest
 from opentrons.hardware_control.ot3api import OT3API
 
 from unitelabs.cdk import Connector, SiLAServerConfig
+from sila.framework.fdl import Serializer
 from unitelabs.opentrons_flex import OpentronsFlexConfig
 from unitelabs.opentrons_flex.features import (
     CalibrationFeature,
     GripperFeature,
     MotionControlFeature,
     PipetteFeature,
+    TipController,
 )
 from unitelabs.opentrons_flex.io import (
     FlexCalibrationController,
@@ -48,10 +50,43 @@ async def test_core_features_generate_sila_definitions():
         discovery=None,
     )
     connector = Connector(config)
-    connector.register(MotionControlFeature(motion))
-    connector.register(PipetteFeature(motion))
-    connector.register(GripperFeature(gripper))
-    connector.register(CalibrationFeature(calibration))
+    motion_feature = MotionControlFeature(motion)
+    connector.register(motion_feature)
+    pipette = PipetteFeature(motion)
+    tip = TipController(motion)
+    connector.register(pipette)
+    connector.register(tip)
+    gripper_feature = GripperFeature(gripper)
+    calibration_feature = CalibrationFeature(calibration)
+    connector.register(gripper_feature)
+    connector.register(calibration_feature)
+
+    pipette_fdl = Serializer.serialize(pipette.serialize)
+    tip_fdl = Serializer.serialize(tip.serialize)
+
+    assert '<Feature SiLA2Version="1.1" FeatureVersion="1.0"' in tip_fdl
+    assert "<Identifier>TipController</Identifier>" in tip_fdl
+    assert "<Identifier>PickUpTip</Identifier>" in tip_fdl
+    assert "<Identifier>DropTip</Identifier>" in tip_fdl
+    assert "<Identifier>GetTipPresence</Identifier>" in tip_fdl
+    assert "<Identifier>Stop</Identifier>" not in tip_fdl
+    assert "<Observable>No</Observable>" in tip_fdl
+    assert "<Identifier>TipLength</Identifier>" in tip_fdl
+    assert "<Identifier>Location</Identifier>" in tip_fdl
+    assert "<Label>mm</Label>" in tip_fdl
+    assert "<Factor>0.001</Factor>" in tip_fdl
+    assert "<Identifier>TipPresence</Identifier>" in tip_fdl
+    assert "Current lifecycle phase of the operation." in tip_fdl
+    assert "Operator-facing progress or recovery message." in tip_fdl
+    assert "PickUpTip" not in pipette_fdl
+    gripper_fdl = Serializer.serialize(gripper_feature.serialize)
+    calibration_fdl = Serializer.serialize(calibration_feature.serialize)
+    motion_fdl = Serializer.serialize(motion_feature.serialize)
+    assert 'FeatureVersion="1.1"' in motion_fdl
+    assert 'FeatureVersion="1.1"' in gripper_fdl
+    assert 'FeatureVersion="1.1"' in calibration_fdl
+    assert "<Identifier>NotHomedError</Identifier>" in gripper_fdl
+    assert "<Identifier>NotHomedError</Identifier>" in calibration_fdl
 
     await connector.start()
     try:

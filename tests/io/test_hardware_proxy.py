@@ -21,6 +21,7 @@ from opentrons.hardware_control.types import Axis, MotionChecks
 from opentrons_shared_data.errors.exceptions import PositionUnknownError
 from opentrons.drivers.smoothie_drivers.simulator import SimulatingDriver
 
+from unitelabs.opentrons_flex.io import NotHomedError
 from unitelabs.opentrons_flex.io.hardware_proxy import HardwareProxy, _TimedLock
 
 
@@ -181,6 +182,97 @@ async def test_from_api_shares_api_and_lock(api: API) -> None:
 
     assert controller._lock._lock is proxy._lock._lock is shared_lock
     assert controller._api is api
+    assert controller._recovery_state is proxy._recovery_state
+
+
+async def test_proxy_halt_and_full_home_update_shared_recovery_state(api: API) -> None:
+    """HTTP-side halt/home must be visible to the SiLA-side controller."""
+    from unitelabs.opentrons_flex.io import FlexMotionController
+
+    shared_lock = asyncio.Lock()
+    proxy = HardwareProxy(api, lock=shared_lock)
+    controller = FlexMotionController.from_api(api, lock=shared_lock)
+
+    await proxy.halt()
+    assert controller._recovery_state.rehome_required
+
+    with pytest.raises(NotHomedError, match="Fully re-home"):
+        await proxy.home([Axis.X])
+    assert controller._recovery_state.rehome_required
+
+    await proxy.home()
+    assert not controller._recovery_state.rehome_required
+
+
+async def test_proxy_halt_bypasses_busy_shared_lock(api: API) -> None:
+    shared_lock = asyncio.Lock()
+    proxy = HardwareProxy(api, lock=shared_lock)
+    await shared_lock.acquire()
+    try:
+        await asyncio.wait_for(proxy.halt(), timeout=0.1)
+    finally:
+        shared_lock.release()
+
+
+async def test_proxy_halt_gates_http_motion_until_full_home(api: API) -> None:
+    proxy = HardwareProxy(api)
+    await proxy.home()
+    await proxy.halt()
+
+    with pytest.raises(NotHomedError, match="Fully re-home"):
+        await proxy.move_to(types.Mount.LEFT, types.Point(0, 0, 0))
+
+    await proxy.home()
+    await proxy.move_to(types.Mount.LEFT, types.Point(0, 0, 0))
+
+
+async def test_cancelled_proxy_halt_finishes_before_propagating(
+    api: API,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proxy = HardwareProxy(api)
+    halt_started = asyncio.Event()
+    release_halt = asyncio.Event()
+
+    async def blocked_halt() -> None:
+        halt_started.set()
+        await release_halt.wait()
+
+    monkeypatch.setattr(api, "halt", blocked_halt)
+    halt_task = asyncio.create_task(proxy.halt())
+    await halt_started.wait()
+    halt_task.cancel()
+    await asyncio.sleep(0)
+    assert not halt_task.done()
+    release_halt.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await halt_task
+    assert proxy._recovery_state.rehome_required
+
+
+async def test_proxy_halt_during_full_home_keeps_recovery_gate(
+    api: API,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared_lock = asyncio.Lock()
+    proxy = HardwareProxy(api, lock=shared_lock)
+    home_started = asyncio.Event()
+    release_home = asyncio.Event()
+
+    async def blocked_home(*args: object, **kwargs: object) -> None:
+        home_started.set()
+        await release_home.wait()
+
+    monkeypatch.setattr(api, "home", blocked_home)
+    home_task = asyncio.create_task(proxy.home())
+    await home_started.wait()
+    await proxy.halt()
+    release_home.set()
+    with pytest.raises(asyncio.CancelledError):
+        await home_task
+
+    assert proxy._recovery_state.rehome_required
 
 
 # ── Lock serialisation ────────────────────────────────────────────────────────

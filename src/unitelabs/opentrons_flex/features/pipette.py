@@ -1,24 +1,11 @@
-"""SiLA2 feature for Opentrons Flex pipette detection and tip lifecycle."""
+"""SiLA2 feature for Opentrons Flex pipette detection."""
 
-import enum
-import typing
 from dataclasses import dataclass
 
-from opentrons.hardware_control.types import OT3Mount, TipStateType
+from opentrons.hardware_control.types import OT3Mount
 from unitelabs.cdk import sila
-from unitelabs.cdk.sila import constraints
 
-from ..io import (
-    FlexMotionController,
-    MachineErrorStateError,
-    MovementOutOfBoundsError,
-    NotHomedError,
-    PipetteNotAttachedError,
-    StallDetectedError,
-    TipDropError,
-    TipPickupError,
-    TipStateError,
-)
+from ..io import FlexMotionController
 from ._progress import OperationProgress, run_observable
 from .motion_control import Mount
 
@@ -44,40 +31,11 @@ class PipetteInfo:
     has_tip: bool
 
 
-_PIPETTE_INFO_MOUNTS = {Mount.LEFT: OT3Mount.LEFT, Mount.RIGHT: OT3Mount.RIGHT}
-
-_TIP_MOTION_ERRORS = [
-    NotHomedError,
-    MovementOutOfBoundsError,
-    StallDetectedError,
-    MachineErrorStateError,
-]
-_TIP_STATE_ERRORS = [PipetteNotAttachedError, TipStateError]
-
-
-class TipPresence(enum.Enum):
-    """Physical tip-presence state reported by the pipette sensor."""
-
-    ABSENT = "ABSENT"
-    PRESENT = "PRESENT"
-
-
-class PipetteMount(enum.Enum):
-    """A Flex mount that can hold a pipette."""
-
-    LEFT = "LEFT"
-    RIGHT = "RIGHT"
-
-
-_PIPETTE_MOUNTS = {PipetteMount.LEFT: OT3Mount.LEFT, PipetteMount.RIGHT: OT3Mount.RIGHT}
-
-
-def _tip_presence(state: TipStateType) -> TipPresence:
-    return TipPresence[state.name]
+_PIPETTE_MOUNTS = {Mount.LEFT: OT3Mount.LEFT, Mount.RIGHT: OT3Mount.RIGHT}
 
 
 class PipetteFeature(sila.Feature):
-    """SiLA2 feature reporting pipettes and controlling their tip lifecycle."""
+    """SiLA2 feature reporting the pipettes attached to the Flex mounts."""
 
     def __init__(self, controller: FlexMotionController):
         super().__init__(originator="ca.accelerationconsortium", category="robots")
@@ -109,7 +67,7 @@ class PipetteFeature(sila.Feature):
         instruments = self._controller.attached_instruments
 
         results: list[PipetteInfo] = []
-        for mount, ot3_mount in _PIPETTE_INFO_MOUNTS.items():
+        for mount, ot3_mount in _PIPETTE_MOUNTS.items():
             info = instruments.get(ot3_mount) or {}
             model = info.get("model") or ""
             results.append(
@@ -126,109 +84,3 @@ class PipetteFeature(sila.Feature):
                 )
             )
         return results
-
-    @sila.ObservableCommand(errors=[*_TIP_MOTION_ERRORS, TipPickupError, *_TIP_STATE_ERRORS])
-    async def pick_up_tip(
-        self,
-        mount: PipetteMount,
-        tip_length: typing.Annotated[float, constraints.MinimalExclusive(0.0)],
-        presses: typing.Annotated[int, constraints.MinimalInclusive(0)],
-        increment: typing.Annotated[float, constraints.MinimalInclusive(0.0)],
-        prep_after: bool,
-        *,
-        status: sila.Status,
-        intermediate: sila.Intermediate[OperationProgress],
-    ) -> TipPresence:
-        """
-        Pick up a tip at the pipette's current deck position and verify it.
-
-        The caller must first move the pipette into the intended tip well. A
-        ``presses`` or ``increment`` value of 0 selects the hardware default.
-
-        Args:
-            mount: Pipette mount to operate (LEFT or RIGHT).
-            tip_length: Physical tip length in millimetres.
-            presses: Number of pickup presses, or 0 for the hardware default.
-            increment: Additional pickup depth per press in mm, or 0 for default.
-            prep_after: Prepare the plunger for aspiration after pickup.
-
-        Yields:
-            Update: Current tip-pickup progress update.
-
-        Returns:
-            PRESENT after the hardware sensor verifies the pickup.
-        """
-        state = await run_observable(
-            status,
-            intermediate,
-            f"Picking up a tip on {mount.value} at the current position.",
-            f"Tip pickup on {mount.value} verified.",
-            f"Tip pickup on {mount.value} cancelled.",
-            self._controller.pick_up_tip(
-                _PIPETTE_MOUNTS[mount],
-                tip_length=tip_length,
-                presses=presses if presses > 0 else None,
-                increment=increment if increment > 0 else None,
-                prep_after=prep_after,
-            ),
-        )
-        return _tip_presence(state)
-
-    @sila.ObservableCommand(errors=[*_TIP_MOTION_ERRORS, TipDropError, *_TIP_STATE_ERRORS])
-    async def drop_tip(
-        self,
-        mount: PipetteMount,
-        home_after: bool,
-        *,
-        status: sila.Status,
-        intermediate: sila.Intermediate[OperationProgress],
-    ) -> TipPresence:
-        """
-        Drop the attached tip at the pipette's current position and verify it.
-
-        The caller is responsible for first moving to a safe trash or return-tip
-        location.
-
-        Args:
-            mount: Pipette mount to operate (LEFT or RIGHT).
-            home_after: Home the pipette plunger after releasing the tip.
-
-        Yields:
-            Update: Current tip-drop progress update.
-
-        Returns:
-            ABSENT after the hardware sensor verifies the drop.
-        """
-        state = await run_observable(
-            status,
-            intermediate,
-            f"Dropping the tip on {mount.value} at the current position.",
-            f"Tip drop on {mount.value} verified.",
-            f"Tip drop on {mount.value} cancelled.",
-            self._controller.drop_tip(_PIPETTE_MOUNTS[mount], home_after=home_after),
-        )
-        return _tip_presence(state)
-
-    @sila.ObservableCommand(errors=_TIP_STATE_ERRORS)
-    async def get_tip_presence(
-        self,
-        mount: PipetteMount,
-        *,
-        status: sila.Status,
-        intermediate: sila.Intermediate[OperationProgress],
-    ) -> TipPresence:
-        """
-        Read the tip-presence sensor on one pipette mount.
-
-        Yields:
-            Update: Current tip-state read progress update.
-        """
-        state = await run_observable(
-            status,
-            intermediate,
-            f"Reading tip presence on {mount.value}.",
-            f"Tip presence on {mount.value} read.",
-            f"Tip presence read on {mount.value} cancelled.",
-            self._controller.get_tip_presence(_PIPETTE_MOUNTS[mount]),
-        )
-        return _tip_presence(state)

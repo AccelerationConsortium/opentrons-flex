@@ -30,6 +30,7 @@ from unitelabs.opentrons_flex.features import (
     GripperFeature,
     MotionControlFeature,
     PipetteFeature,
+    TipController,
 )
 from unitelabs.opentrons_flex.io import HardwareProxy
 
@@ -193,6 +194,7 @@ async def test_core_features_registered():
         types_ = [type(f) for f in r.registered]
         assert MotionControlFeature in types_
         assert PipetteFeature in types_
+        assert TipController in types_
         assert GripperFeature in types_
         assert CalibrationFeature in types_
 

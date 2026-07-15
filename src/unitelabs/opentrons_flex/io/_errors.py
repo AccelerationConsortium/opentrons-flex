@@ -106,7 +106,9 @@ class NotHomedError(Exception):
     """
     The robot's position is unknown, so the move was refused.
 
-    Home the robot (or the affected mount) before requesting a move.
+    Home the robot (or the affected mount) before requesting a move. If a halt
+    interrupted gripper motion, fully home the robot and then run HomeJaw before
+    resuming other hardware actuation.
     """
 
 
@@ -170,6 +172,15 @@ class TipDropError(Exception):
     """
 
 
+class TipNotAttachedError(Exception):
+    """
+    The requested drop was refused because no tip is attached.
+
+    Confirm the physical tip state and perform a verified pickup before retrying
+    the drop operation.
+    """
+
+
 class TipStateError(Exception):
     """
     The measured tip state did not match the requested tip operation.
@@ -199,13 +210,17 @@ def translate_tip_errors(
         try:
             return await fn(*args, **kwargs)
         except OpentronsPipetteNotAttachedError as e:
-            raise PipetteNotAttachedError(str(e)) from e
+            msg = f"{e} Attach a Flex pipette, re-scan instruments, and retry."
+            raise PipetteNotAttachedError(msg) from e
         except (TipPickupFailedError, UnexpectedTipAttachError) as e:
-            raise TipPickupError(str(e)) from e
+            msg = f"{e} Check alignment, tip compatibility, and tip-rack seating before retrying."
+            raise TipPickupError(msg) from e
         except (TipDropFailedError, UnexpectedTipRemovalError) as e:
-            raise TipDropError(str(e)) from e
+            msg = f"{e} Check the drop location and clear any jam before retrying from a safe position."
+            raise TipDropError(msg) from e
         except (UnmatchedTipPresenceStates, FailedTipStateCheck) as e:
-            raise TipStateError(str(e)) from e
+            msg = f"{e} Inspect the pipette and reconcile the physical tip state before retrying."
+            raise TipStateError(msg) from e
 
     return wrapper
 

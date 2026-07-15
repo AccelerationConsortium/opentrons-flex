@@ -16,6 +16,7 @@ from .features import (
     PipetteFeature,
     TemperatureModuleFeature,
     ThermocyclerFeature,
+    TipController,
 )
 from .io import (
     AbsorbanceReaderController,
@@ -103,6 +104,7 @@ def _register_core_features(
 ) -> None:
     connector.register(MotionControlFeature(motion))
     connector.register(PipetteFeature(motion))
+    connector.register(TipController(motion))
     connector.register(GripperFeature(gripper))
     connector.register(CalibrationFeature(calibration))
 

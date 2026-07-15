@@ -116,6 +116,19 @@ except ImportError:
     _constraints = types.ModuleType("unitelabs.cdk.sila.constraints")
     for _name in ("MinimalInclusive", "MaximalInclusive", "MinimalExclusive", "Pattern"):
         setattr(_constraints, _name, lambda *_a, **_k: object())
+
+    class _Unit:
+        class SI:
+            METER = "Metre"
+
+        class Component:
+            def __init__(self, *_a, **_k):
+                pass
+
+        def __init__(self, *_a, **_k):
+            pass
+
+    _constraints.Unit = _Unit
     _sila.constraints = _constraints
 
     sys.modules["unitelabs.cdk"] = _cdk

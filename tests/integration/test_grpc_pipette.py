@@ -1,6 +1,4 @@
-"""End-to-end gRPC integration tests for the Flex PipetteFeature (simulate mode)."""
-
-import base64
+"""End-to-end gRPC integration tests for Flex pipette discovery."""
 
 import grpc
 import grpc.aio
@@ -8,7 +6,7 @@ import pytest
 import pytest_asyncio
 
 from unitelabs.opentrons_flex.features.motion_control import Mount
-from unitelabs.opentrons_flex.features.pipette import PipetteInfo, PipetteMount, TipPresence
+from unitelabs.opentrons_flex.features.pipette import PipetteInfo
 from .observable import call_observable
 
 _PKG = "sila2.ca.accelerationconsortium.robots.pipettefeature.v1"
@@ -34,23 +32,6 @@ class _PipetteClient:
         value = next(iter(decoded.values()))
         assert isinstance(value, list)
         return value
-
-    async def get_tip_presence(self, mount: PipetteMount) -> TipPresence:
-        decoded = await self._observable("GetTipPresence", {"mount": mount})
-        return next(iter(decoded.values()))
-
-    async def pick_up_tip(self, mount: PipetteMount) -> TipPresence:
-        decoded = await self._observable(
-            "PickUpTip",
-            {
-                "mount": mount,
-                "tip_length": 95.6,
-                "presses": 0,
-                "increment": 0.0,
-                "prep_after": False,
-            },
-        )
-        return next(iter(decoded.values()))
 
 
 @pytest_asyncio.fixture
@@ -80,18 +61,3 @@ async def test_bare_simulator_reports_no_pipettes(client: _PipetteClient) -> Non
     result = await client.get_attached_pipettes()
     assert all(p.attached is False for p in result)
     assert all(p.model == "" for p in result)
-
-
-@pytest.mark.asyncio
-@pytest.mark.simulator_only
-async def test_get_tip_presence_reports_absent_over_wire(client: _PipetteClient) -> None:
-    assert await client.get_tip_presence(PipetteMount.LEFT) is TipPresence.ABSENT
-
-
-@pytest.mark.asyncio
-@pytest.mark.simulator_only
-async def test_pick_up_tip_without_pipette_raises_defined_error(client: _PipetteClient) -> None:
-    with pytest.raises(grpc.aio.AioRpcError) as excinfo:
-        await client.pick_up_tip(PipetteMount.LEFT)
-    assert excinfo.value.code() is grpc.StatusCode.ABORTED
-    assert b"PipetteNotAttachedError" in base64.b64decode(excinfo.value.details() or "")

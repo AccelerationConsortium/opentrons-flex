@@ -6,9 +6,10 @@ from .flex_stacker import FlexStackerFeature
 from .gripper import GripperFeature
 from .heater_shaker import HeaterShakerFeature
 from .motion_control import Lights, MotionControlFeature, Mount, Position
-from .pipette import PipetteFeature, PipetteInfo, PipetteMount, TipPresence
+from .pipette import PipetteFeature, PipetteInfo
 from .temperature import TemperatureModuleFeature
 from .thermocycler import ThermocyclerFeature
+from .tip_controller import PipetteMount, TipController, TipLocation, TipPresence
 
 __all__ = [
     "AbsorbanceReaderFeature",
@@ -25,5 +26,7 @@ __all__ = [
     "Position",
     "TemperatureModuleFeature",
     "ThermocyclerFeature",
+    "TipController",
+    "TipLocation",
     "TipPresence",
 ]

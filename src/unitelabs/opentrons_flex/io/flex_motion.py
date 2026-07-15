@@ -17,14 +17,32 @@ from the robot-server through an ``asyncio.Lock``. This controller is handed the
 
 import asyncio
 import logging
+import math
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from functools import partial
+from typing import cast
 
 from opentrons.hardware_control import HardwareControlAPI
-from opentrons.hardware_control.types import Axis, DoorState, EstopState, OT3Mount, TipStateType
+from opentrons.hardware_control.motion_utilities import machine_from_deck, target_position_from_absolute
+from opentrons.hardware_control.types import Axis, DoorState, EstopState, MotionChecks, OT3Mount, TipStateType
+from opentrons.hardware_control.util import check_motion_bounds
 from opentrons.types import Point
+from opentrons_shared_data.robot.types import RobotType
 
-from ._errors import MachineErrorStateError, TipStateError, translate_motion_errors, translate_tip_errors
+from ._errors import (
+    MachineErrorStateError,
+    NotHomedError,
+    PipetteNotAttachedError,
+    TipNotAttachedError,
+    TipPickupError,
+    TipStateError,
+    translate_motion_errors,
+    translate_tip_errors,
+)
 from .hardware_proxy import _TimedLock
+from .recovery_state import HardwareRecoveryState, recovery_state_for
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +60,7 @@ _MOUNT_AXES: dict[OT3Mount, list[Axis]] = {
 # simply because an axis is not homed yet, which is a normal pre-home condition,
 # not an error.
 _ESTOP_ERROR_STATES: frozenset[EstopState] = frozenset({EstopState.PHYSICALLY_ENGAGED, EstopState.LOGICALLY_ENGAGED})
+MAX_SUPPORTED_TIP_LENGTH_MM = 100.0
 
 
 @dataclass(frozen=True)
@@ -88,6 +107,7 @@ class FlexMotionController:
         self._api = api
         raw_lock = lock if lock is not None else asyncio.Lock()
         self._lock: _TimedLock = _TimedLock(raw_lock, lock_timeout_s)
+        self._recovery_state: HardwareRecoveryState = recovery_state_for(api)
 
     @classmethod
     async def build(
@@ -167,14 +187,48 @@ class FlexMotionController:
         if state.is_error_state:
             raise MachineErrorStateError(state.message)
 
+    async def _finish_cancelled_actuation(self) -> None:
+        """Halt a cancelled multi-step actuation before its hardware lock is released."""
+        self._recovery_state.mark_halted()
+        halt = asyncio.create_task(self._api.halt())
+        while not halt.done():
+            try:
+                await asyncio.shield(halt)
+            except asyncio.CancelledError:
+                continue
+        try:
+            await halt
+        except Exception:
+            log.exception("Failed to halt after hardware-operation cancellation")
+
+    @asynccontextmanager
+    async def _active_operation(self) -> AsyncIterator[int]:
+        """Register an actuation for immediate cancellation by EmergencyStop."""
+        generation = self._recovery_state.generation
+        task = self._recovery_state.register_current_operation()
+        try:
+            yield generation
+        except asyncio.CancelledError:
+            self._recovery_state.unregister_operation(task)
+            await self._finish_cancelled_actuation()
+            raise
+        finally:
+            self._recovery_state.unregister_operation(task)
+
     # ------------------------------------------------------------------ motion
 
     @translate_motion_errors
     async def home(self, axes: list[Axis] | None = None) -> None:
         """Home the given axes (all axes when ``None``)."""
         async with self._lock:
-            await self._api.home(axes=axes)
-            self._assert_machine_ok()
+            if axes is not None:
+                self._assert_operation_ready()
+            async with self._active_operation() as generation:
+                await self._api.home(axes=axes)
+                self._assert_operation_generation(generation)
+                if axes is None:
+                    self._recovery_state.mark_fully_homed(generation)
+                self._assert_machine_ok()
 
     async def home_mount(self, mount: OT3Mount) -> None:
         """Home only the axes belonging to one mount."""
@@ -184,19 +238,30 @@ class FlexMotionController:
     async def move_to(self, mount: OT3Mount, point: Point, speed: float | None = None) -> Point:
         """Move ``mount`` to an absolute deck ``point`` and return the resulting position."""
         async with self._lock:
-            await self._api.move_to(mount=mount, abs_position=point, speed=speed)
-            result = await self._api.gantry_position(mount, refresh=True)
-            self._assert_machine_ok()
-            return result
+            self._assert_operation_ready()
+            async with self._active_operation() as generation:
+                self._validate_tip_location(point)
+                self._validate_absolute_target(mount, point)
+                await self._api.move_to(mount=mount, abs_position=point, speed=speed)
+                self._assert_operation_generation(generation)
+                result = await self._api.gantry_position(mount, refresh=True)
+                self._assert_operation_generation(generation)
+                self._assert_machine_ok()
+                return result
 
     @translate_motion_errors
     async def move_rel(self, mount: OT3Mount, delta: Point, speed: float | None = None) -> Point:
         """Move ``mount`` by ``delta`` and return the resulting position."""
         async with self._lock:
-            await self._api.move_rel(mount=mount, delta=delta, speed=speed)
-            result = await self._api.gantry_position(mount, refresh=True)
-            self._assert_machine_ok()
-            return result
+            self._assert_operation_ready()
+            async with self._active_operation() as generation:
+                self._validate_tip_location(delta)
+                await self._api.move_rel(mount=mount, delta=delta, speed=speed, check_bounds=MotionChecks.BOTH)
+                self._assert_operation_generation(generation)
+                result = await self._api.gantry_position(mount, refresh=True)
+                self._assert_operation_generation(generation)
+                self._assert_machine_ok()
+                return result
 
     async def gantry_position(self, mount: OT3Mount) -> Point:
         """Return the current position of ``mount``."""
@@ -204,9 +269,20 @@ class FlexMotionController:
             return await self._api.gantry_position(mount, refresh=True)
 
     async def stop(self) -> None:
-        """Halt all motion. A re-home is required before further motion."""
-        async with self._lock:
-            await self._api.halt()
+        """Halt all motion without waiting for the operation lock."""
+        self._recovery_state.mark_halted()
+        # Emergency stop must be able to pre-empt the command currently holding
+        # the shared lock. All ordinary hardware operations remain serialized.
+        halt = asyncio.create_task(self._api.halt())
+        cancelled = False
+        while not halt.done():
+            try:
+                await asyncio.shield(halt)
+            except asyncio.CancelledError:
+                cancelled = True
+        await halt
+        if cancelled:
+            raise asyncio.CancelledError
 
     def pause(self) -> None:
         """Pause execution (does not touch the bus directly; no lock needed)."""
@@ -218,6 +294,7 @@ class FlexMotionController:
         """Resume execution after a pause."""
         from opentrons.hardware_control.types import PauseType
 
+        self._assert_operation_ready()
         self._api.resume(PauseType.PAUSE)
 
     # --------------------------------------------------------------- pipettes
@@ -235,68 +312,257 @@ class FlexMotionController:
     async def prepare_for_aspirate(self, mount: OT3Mount, rate: float = 1.0) -> None:
         """Position the plunger at bottom, ready to aspirate."""
         async with self._lock:
-            await self._api.prepare_for_aspirate(mount=mount, rate=rate)
+            self._assert_operation_ready()
+            async with self._active_operation() as generation:
+                await self._api.prepare_for_aspirate(mount=mount, rate=rate)
+                self._assert_operation_generation(generation)
 
     async def aspirate(self, mount: OT3Mount, volume: float | None = None, rate: float = 1.0) -> None:
         """Aspirate ``volume`` µL on ``mount`` (full available volume when ``None``)."""
         async with self._lock:
-            await self._api.aspirate(mount=mount, volume=volume, rate=rate)
+            self._assert_operation_ready()
+            async with self._active_operation() as generation:
+                await self._api.aspirate(mount=mount, volume=volume, rate=rate)
+                self._assert_operation_generation(generation)
 
     async def dispense(
         self, mount: OT3Mount, volume: float | None = None, rate: float = 1.0, push_out: float | None = None
     ) -> None:
         """Dispense ``volume`` µL on ``mount`` (current volume when ``None``)."""
         async with self._lock:
-            await self._api.dispense(mount=mount, volume=volume, rate=rate, push_out=push_out)
+            self._assert_operation_ready()
+            async with self._active_operation() as generation:
+                await self._api.dispense(mount=mount, volume=volume, rate=rate, push_out=push_out)
+                self._assert_operation_generation(generation)
 
     async def blow_out(self, mount: OT3Mount, volume: float | None = None) -> None:
         """Blow out any residual liquid on ``mount``."""
         async with self._lock:
-            await self._api.blow_out(mount=mount, volume=volume)
+            self._assert_operation_ready()
+            async with self._active_operation() as generation:
+                await self._api.blow_out(mount=mount, volume=volume)
+                self._assert_operation_generation(generation)
+
+    def _assert_pipette_attached(self, mount: OT3Mount) -> None:
+        """Raise a stable defined error before querying a missing sensor."""
+        if self._api.hardware_instruments.get(mount.to_mount()) is None:
+            msg = f"No pipette is attached to {mount.name}. Attach a Flex pipette, re-scan instruments, and retry."
+            raise PipetteNotAttachedError(msg)
+
+    def _assert_operation_ready(self) -> None:
+        if not self._recovery_state.operation_ready:
+            msg = f"The robot is recovery-gated. {self._recovery_state.operator_guidance} before retrying."
+            raise NotHomedError(msg)
+
+    def _assert_operation_generation(self, generation: int) -> None:
+        """Abort before the next actuation if a concurrent halt invalidated the operation."""
+        if generation != self._recovery_state.generation:
+            raise asyncio.CancelledError
+
+    @staticmethod
+    def _validate_tip_location(location: Point) -> None:
+        if not all(math.isfinite(value) for value in (location.x, location.y, location.z)):
+            msg = "tip operation location coordinates must all be finite"
+            raise ValueError(msg)
+
+    def _validate_absolute_target(self, mount: OT3Mount, location: Point) -> None:
+        """Reject deck targets outside transformed Flex machine-axis bounds."""
+        target_position = target_position_from_absolute(
+            mount,
+            location,
+            partial(self._api.critical_point_for),
+            Point(*self._api._config.left_mount_offset),
+            Point(*self._api._config.right_mount_offset),
+            Point(*self._api._config.gripper_mount_offset),
+        )
+        machine_position = machine_from_deck(
+            deck_pos=target_position,
+            attitude=self._api._robot_calibration.deck_calibration.attitude,
+            offset=self._api._robot_calibration.carriage_offset,
+            robot_type=cast(RobotType, "OT-3 Standard"),
+        )
+        machine_axes = {axis: machine_position[axis] for axis in target_position if axis in Axis.gantry_axes()}
+        check_motion_bounds(
+            machine_axes,
+            target_position,
+            self._api._backend.axis_bounds,
+            MotionChecks.BOTH,
+        )
+
+    def _synchronize_tip_model(
+        self,
+        mount: OT3Mount,
+        state: TipStateType,
+        known_tip_length: float | None,
+    ) -> None:
+        """Make the Opentrons critical-point model match the physical tip sensor."""
+        instrument = self._api.hardware_instruments.get(mount.to_mount())
+        if instrument is None:
+            msg = f"No pipette is attached to {mount.name} during reconciliation."
+            raise PipetteNotAttachedError(msg)
+        if state is TipStateType.PRESENT:
+            reconciled_tip_length = known_tip_length or float(instrument.current_tip_length)
+            if not math.isfinite(reconciled_tip_length) or reconciled_tip_length <= 0:
+                msg = f"Cannot reconcile the attached tip length on {mount.name}."
+                raise TipStateError(msg)
+            if not instrument.has_tip:
+                self._api.add_tip(mount, reconciled_tip_length)
+        elif state is TipStateType.ABSENT:
+            if instrument.has_tip:
+                self._api.remove_tip(mount)
+        else:
+            msg = f"Tip sensor returned {state.name} on {mount.name} during reconciliation."
+            raise TipStateError(msg)
+
+    async def _halt_cancelled_tip_operation(self, mount: OT3Mount, known_tip_length: float | None) -> None:
+        """Halt and reconcile physical/software tip state before releasing the lock."""
+        self._recovery_state.mark_halted()
+        self._recovery_state.require_tip_reconciliation(mount.name)
+        try:
+            await self._api.halt()
+        except Exception:
+            log.exception("Failed to halt %s after tip-operation cancellation", mount.name)
+        try:
+            state = await self._api.get_tip_presence_status(mount)
+            self._synchronize_tip_model(mount, state, known_tip_length)
+        except Exception:
+            log.exception("Failed to reconcile %s tip state after cancellation", mount.name)
+        else:
+            self._recovery_state.mark_tip_reconciled(mount.name)
+            log.warning(
+                "%s tip operation cancelled; sensor reports %s, software state was synchronized, "
+                "and a full home is required",
+                mount.name,
+                state.name,
+            )
+
+    async def _finish_cancel_recovery(self, mount: OT3Mount, known_tip_length: float | None) -> None:
+        """Finish safety recovery even if the client sends repeated cancellation."""
+        recovery = asyncio.create_task(self._halt_cancelled_tip_operation(mount, known_tip_length))
+        while not recovery.done():
+            try:
+                await asyncio.shield(recovery)
+            except asyncio.CancelledError:
+                continue
+        await recovery
 
     @translate_tip_errors
     @translate_motion_errors
     async def pick_up_tip(
         self,
         mount: OT3Mount,
+        location: Point,
         tip_length: float,
-        presses: int | None = None,
-        increment: float | None = None,
         prep_after: bool = True,
     ) -> TipStateType:
-        """Pick up a tip at the current position and verify that it is present."""
+        """Atomically move to ``location``, pick up a tip, and verify it."""
+        if not math.isfinite(tip_length) or not 0.0 < tip_length <= MAX_SUPPORTED_TIP_LENGTH_MM:
+            msg = f"tip_length must be finite, greater than 0 mm, and at most {MAX_SUPPORTED_TIP_LENGTH_MM:g} mm"
+            raise ValueError(msg)
+        self._validate_tip_location(location)
         async with self._lock:
-            await self._api.pick_up_tip(
-                mount=mount,
-                tip_length=tip_length,
-                presses=presses,
-                increment=increment,
-                prep_after=prep_after,
-            )
-            state = await self._api.get_tip_presence_status(mount)
-            self._assert_machine_ok()
-            if state is not TipStateType.PRESENT:
-                msg = f"Tip pickup completed but {mount.name} sensor reported {state.name}."
-                raise TipStateError(msg)
-            return state
+            operation_task: asyncio.Task[object] | None = None
+            try:
+                self._assert_operation_ready()
+                generation = self._recovery_state.generation
+                operation_task = self._recovery_state.register_current_operation()
+                self._assert_pipette_attached(mount)
+                initial_state = await self._api.get_tip_presence_status(mount)
+                self._assert_operation_generation(generation)
+                if initial_state is not TipStateType.ABSENT:
+                    msg = (
+                        f"A tip is already attached to {mount.name}. Reconcile the physical tip state "
+                        "before attempting another pickup."
+                    )
+                    raise TipPickupError(msg)
+                self._validate_absolute_target(mount, location)
+                await self._api.move_to(mount=mount, abs_position=location)
+                self._assert_operation_generation(generation)
+                self._assert_machine_ok()
+                await self._api.pick_up_tip(
+                    mount=mount,
+                    tip_length=tip_length,
+                    presses=None,
+                    increment=None,
+                    prep_after=prep_after,
+                )
+                self._assert_operation_generation(generation)
+                state = await self._api.get_tip_presence_status(mount)
+                self._assert_operation_generation(generation)
+                self._assert_machine_ok()
+                if state is not TipStateType.PRESENT:
+                    try:
+                        self._synchronize_tip_model(mount, state, tip_length)
+                    except Exception:
+                        self._recovery_state.require_tip_reconciliation(mount.name)
+                        log.exception("Failed to reconcile %s after pickup verification failed", mount.name)
+                    msg = f"Tip pickup completed but {mount.name} sensor reported {state.name}."
+                    raise TipStateError(msg)
+                return state
+            except asyncio.CancelledError:
+                if operation_task is not None:
+                    self._recovery_state.unregister_operation(operation_task)
+                await self._finish_cancel_recovery(mount, tip_length)
+                raise
+            finally:
+                if operation_task is not None:
+                    self._recovery_state.unregister_operation(operation_task)
 
     @translate_tip_errors
     @translate_motion_errors
-    async def drop_tip(self, mount: OT3Mount, home_after: bool = False) -> TipStateType:
-        """Drop the attached tip at the current position and verify that it is absent."""
+    async def drop_tip(self, mount: OT3Mount, location: Point, home_after: bool = False) -> TipStateType:
+        """Atomically move to ``location``, drop the tip, and verify it."""
+        self._validate_tip_location(location)
         async with self._lock:
-            await self._api.drop_tip(mount=mount, home_after=home_after)
-            state = await self._api.get_tip_presence_status(mount)
-            self._assert_machine_ok()
-            if state is not TipStateType.ABSENT:
-                msg = f"Tip drop completed but {mount.name} sensor reported {state.name}."
-                raise TipStateError(msg)
-            return state
+            known_tip_length: float | None = None
+            operation_task: asyncio.Task[object] | None = None
+            try:
+                self._assert_operation_ready()
+                generation = self._recovery_state.generation
+                operation_task = self._recovery_state.register_current_operation()
+                self._assert_pipette_attached(mount)
+                initial_state = await self._api.get_tip_presence_status(mount)
+                self._assert_operation_generation(generation)
+                if initial_state is not TipStateType.PRESENT:
+                    msg = f"No tip is attached to {mount.name}. Perform a verified pickup before retrying the drop."
+                    raise TipNotAttachedError(msg)
+                instrument = self._api.hardware_instruments[mount.to_mount()]
+                known_tip_length = float(instrument.current_tip_length)
+                if not math.isfinite(known_tip_length) or known_tip_length <= 0:
+                    msg = f"{mount.name} sensor reports a tip but the software tip length is unavailable."
+                    raise TipStateError(msg)
+                self._validate_absolute_target(mount, location)
+                await self._api.move_to(mount=mount, abs_position=location)
+                self._assert_operation_generation(generation)
+                self._assert_machine_ok()
+                await self._api.drop_tip(mount=mount, home_after=home_after)
+                self._assert_operation_generation(generation)
+                state = await self._api.get_tip_presence_status(mount)
+                self._assert_operation_generation(generation)
+                self._assert_machine_ok()
+                if state is not TipStateType.ABSENT:
+                    try:
+                        self._synchronize_tip_model(mount, state, known_tip_length)
+                    except Exception:
+                        self._recovery_state.require_tip_reconciliation(mount.name)
+                        log.exception("Failed to reconcile %s after drop verification failed", mount.name)
+                    msg = f"Tip drop completed but {mount.name} sensor reported {state.name}."
+                    raise TipStateError(msg)
+                return state
+            except asyncio.CancelledError:
+                if operation_task is not None:
+                    self._recovery_state.unregister_operation(operation_task)
+                await self._finish_cancel_recovery(mount, known_tip_length)
+                raise
+            finally:
+                if operation_task is not None:
+                    self._recovery_state.unregister_operation(operation_task)
 
     @translate_tip_errors
     async def get_tip_presence(self, mount: OT3Mount) -> TipStateType:
         """Return the tip-presence sensor state for a pipette mount."""
         async with self._lock:
+            self._assert_pipette_attached(mount)
             return await self._api.get_tip_presence_status(mount)
 
     # ------------------------------------------------------------------ lights

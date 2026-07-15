@@ -18,7 +18,9 @@ from unitelabs.opentrons_flex.features.calibration import CalibrationFeature, Gr
 from unitelabs.opentrons_flex.features.gripper import GripperFeature
 from unitelabs.opentrons_flex.features.motion_control import Lights, MotionControlFeature, Mount, Position
 from unitelabs.opentrons_flex.features._progress import OperationProgress
-from unitelabs.opentrons_flex.features.pipette import PipetteFeature, PipetteMount as TipPipetteMount, TipPresence
+from unitelabs.opentrons_flex.features.pipette import PipetteFeature
+from unitelabs.opentrons_flex.features.tip_controller import PipetteMount as TipPipetteMount
+from unitelabs.opentrons_flex.features.tip_controller import TipController, TipLocation, TipPresence
 from unitelabs.opentrons_flex.io import (
     CalibrationFailedError,
     CalibrationProbeNotAttachedError,
@@ -26,6 +28,9 @@ from unitelabs.opentrons_flex.io import (
     FlexGripperController,
     FlexMotionController,
     GripperNotAttachedError,
+    NotHomedError,
+    PipetteNotAttachedError,
+    TipNotAttachedError,
 )
 
 
@@ -67,14 +72,14 @@ async def pipette(api: OT3API) -> PipetteFeature:
 
 
 @pytest_asyncio.fixture
-async def attached_pipette() -> PipetteFeature:
+async def attached_tip_controller() -> TipController:
     api = await OT3API.build_hardware_simulator(
         attached_instruments={
             OT3Mount.LEFT: {"model": "p1000_single_v3.0", "id": "sim-left"},
         }
     )
     await api.home()
-    yield PipetteFeature(FlexMotionController.from_api(api, lock=asyncio.Lock()))
+    yield TipController(FlexMotionController.from_api(api, lock=asyncio.Lock()))
     await api.clean_up()
 
 
@@ -200,19 +205,16 @@ async def test_empty_pipette_metadata_is_operator_safe(pipette: PipetteFeature):
     assert all(p.has_tip is False for p in pipettes)
 
 
-async def test_tip_lifecycle_round_trip(attached_pipette: PipetteFeature):
-    status, intermediate = _obs()
-    assert (
-        await attached_pipette.get_tip_presence(TipPipetteMount.LEFT, status=status, intermediate=intermediate)
-        is TipPresence.ABSENT
-    )
+async def test_tip_lifecycle_round_trip(attached_tip_controller: TipController):
+    assert await attached_tip_controller.get_tip_presence(TipPipetteMount.LEFT) is TipPresence.ABSENT
+    point = await attached_tip_controller._controller.gantry_position(OT3Mount.LEFT)
+    location = TipLocation(x=point.x, y=point.y, z=point.z)
 
     status, intermediate = _obs()
-    picked_up = await attached_pipette.pick_up_tip(
+    picked_up = await attached_tip_controller.pick_up_tip(
         TipPipetteMount.LEFT,
+        location=location,
         tip_length=95.6,
-        presses=1,
-        increment=0.0,
         prep_after=False,
         status=status,
         intermediate=intermediate,
@@ -220,15 +222,54 @@ async def test_tip_lifecycle_round_trip(attached_pipette: PipetteFeature):
     assert picked_up is TipPresence.PRESENT
     assert intermediate.messages[-1].message == "Tip pickup on LEFT verified."
 
+    point = await attached_tip_controller._controller.gantry_position(OT3Mount.LEFT)
+    location = TipLocation(x=point.x, y=point.y, z=point.z)
     status, intermediate = _obs()
-    dropped = await attached_pipette.drop_tip(
+    dropped = await attached_tip_controller.drop_tip(
         TipPipetteMount.LEFT,
+        location=location,
         home_after=False,
         status=status,
         intermediate=intermediate,
     )
     assert dropped is TipPresence.ABSENT
     assert intermediate.messages[-1].message == "Tip drop on LEFT verified."
+
+
+async def test_tip_state_without_pipette_is_defined_error(api: OT3API):
+    feature = TipController(FlexMotionController.from_api(api, lock=asyncio.Lock()))
+    with pytest.raises(PipetteNotAttachedError):
+        await feature.get_tip_presence(TipPipetteMount.LEFT)
+
+
+async def test_drop_without_tip_is_defined_error(attached_tip_controller: TipController):
+    point = await attached_tip_controller._controller.gantry_position(OT3Mount.LEFT)
+    status, intermediate = _obs()
+    with pytest.raises(TipNotAttachedError):
+        await attached_tip_controller.drop_tip(
+            TipPipetteMount.LEFT,
+            location=TipLocation(x=point.x, y=point.y, z=point.z),
+            home_after=False,
+            status=status,
+            intermediate=intermediate,
+        )
+
+
+async def test_global_stop_requires_full_rehome_before_next_tip_operation(attached_tip_controller: TipController):
+    point = await attached_tip_controller._controller.gantry_position(OT3Mount.LEFT)
+    location = TipLocation(x=point.x, y=point.y, z=point.z)
+    await attached_tip_controller._controller.stop()
+
+    status, intermediate = _obs()
+    with pytest.raises(NotHomedError, match="Fully re-home"):
+        await attached_tip_controller.pick_up_tip(
+            TipPipetteMount.LEFT,
+            location=location,
+            tip_length=95.6,
+            prep_after=False,
+            status=status,
+            intermediate=intermediate,
+        )
 
 
 # ── Gripper ─────────────────────────────────────────────────────────────────
@@ -291,5 +332,6 @@ async def test_features_construct_without_error(api: OT3API):
     # Construction runs each feature's SiLA metadata setup (real CDK) or the stub.
     assert MotionControlFeature(motion) is not None
     assert PipetteFeature(motion) is not None
+    assert TipController(motion) is not None
     assert GripperFeature(gripper) is not None
     assert CalibrationFeature(calibration) is not None

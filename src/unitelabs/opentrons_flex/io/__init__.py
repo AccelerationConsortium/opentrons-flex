@@ -34,6 +34,7 @@ from ._errors import (
     PipetteNotAttachedError,
     StallDetectedError,
     TipDropError,
+    TipNotAttachedError,
     TipPickupError,
     TipStateError,
 )
@@ -93,6 +94,7 @@ __all__ = [
     "TemperatureModuleController",
     "ThermocyclerController",
     "TipDropError",
+    "TipNotAttachedError",
     "TipPickupError",
     "TipStateError",
     "TipStateType",

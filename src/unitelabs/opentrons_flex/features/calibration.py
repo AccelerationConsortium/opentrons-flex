@@ -11,8 +11,8 @@ Returns measured offsets as structured data — never a boolean "success" — an
 raises defined errors (probe missing, calibration failed) the operator can act on.
 """
 
-import enum
 import asyncio
+import enum
 from dataclasses import dataclass
 
 from opentrons.hardware_control.types import OT3Mount
@@ -22,6 +22,7 @@ from ..io import (
     CalibrationFailedError,
     CalibrationProbeNotAttachedError,
     FlexCalibrationController,
+    NotHomedError,
 )
 from ._progress import OperationPhase, OperationProgress, report_progress
 
@@ -57,10 +58,10 @@ class CalibrationFeature(sila.Feature):
     """SiLA2 feature for Flex automatic pipette, gripper-jaw, and deck calibration."""
 
     def __init__(self, controller: FlexCalibrationController):
-        super().__init__(originator="ca.accelerationconsortium", category="robots")
+        super().__init__(originator="ca.accelerationconsortium", category="robots", version="1.1")
         self._controller = controller
 
-    @sila.ObservableCommand(errors=[CalibrationProbeNotAttachedError, CalibrationFailedError])
+    @sila.ObservableCommand(errors=[CalibrationProbeNotAttachedError, CalibrationFailedError, NotHomedError])
     async def calibrate_pipette(
         self,
         mount: PipetteMount,
@@ -111,7 +112,7 @@ class CalibrationFeature(sila.Feature):
         )
         return Offset(x=x, y=y, z=z)
 
-    @sila.ObservableCommand(errors=[CalibrationProbeNotAttachedError, CalibrationFailedError])
+    @sila.ObservableCommand(errors=[CalibrationProbeNotAttachedError, CalibrationFailedError, NotHomedError])
     async def calibrate_gripper_jaw(
         self,
         jaw: GripperJaw,
@@ -165,7 +166,7 @@ class CalibrationFeature(sila.Feature):
         )
         return Offset(x=x, y=y, z=z)
 
-    @sila.ObservableCommand(errors=[CalibrationProbeNotAttachedError, CalibrationFailedError])
+    @sila.ObservableCommand(errors=[CalibrationProbeNotAttachedError, CalibrationFailedError, NotHomedError])
     async def calibrate_deck(
         self,
         mount: PipetteMount,

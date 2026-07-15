@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from unitelabs.cdk import sila
 from unitelabs.cdk.sila import constraints
 
-from ..io import FlexGripperController, GripActionError, GripperNotAttachedError
+from ..io import FlexGripperController, GripActionError, GripperNotAttachedError, NotHomedError
 from ._progress import OperationPhase, OperationProgress, report_progress
 
 # Flex gripper grip force range in Newtons (documented operating envelope).
@@ -40,10 +40,10 @@ class GripperFeature(sila.Feature):
     """SiLA2 feature for the Flex gripper: grip, ungrip, and home the jaw."""
 
     def __init__(self, controller: FlexGripperController):
-        super().__init__(originator="ca.accelerationconsortium", category="robots")
+        super().__init__(originator="ca.accelerationconsortium", category="robots", version="1.1")
         self._controller = controller
 
-    @sila.ObservableCommand(errors=[GripperNotAttachedError, GripActionError])
+    @sila.ObservableCommand(errors=[GripperNotAttachedError, GripActionError, NotHomedError])
     async def grip(
         self,
         force: _GripForce,
@@ -68,7 +68,7 @@ class GripperFeature(sila.Feature):
             raise
         report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, "Gripper grip completed.")
 
-    @sila.ObservableCommand(errors=[GripperNotAttachedError, GripActionError])
+    @sila.ObservableCommand(errors=[GripperNotAttachedError, GripActionError, NotHomedError])
     async def ungrip(
         self,
         *,
@@ -89,7 +89,7 @@ class GripperFeature(sila.Feature):
             raise
         report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, "Gripper release completed.")
 
-    @sila.ObservableCommand(errors=[GripperNotAttachedError, GripActionError])
+    @sila.ObservableCommand(errors=[GripperNotAttachedError, GripActionError, NotHomedError])
     async def home_jaw(
         self,
         *,

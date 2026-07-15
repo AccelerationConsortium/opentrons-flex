@@ -24,6 +24,7 @@ from unitelabs.opentrons_flex.features import (
     HeaterShakerFeature,
     TemperatureModuleFeature,
     ThermocyclerFeature,
+    TipController,
 )
 
 
@@ -44,11 +45,17 @@ async def _run_app(config: OpentronsFlexConfig):
 
 @pytest.mark.asyncio
 async def test_simulate_registers_core_features():
-    """Simulator mode registers exactly the four core features, in order."""
+    """Simulator mode registers exactly the five core features, in order."""
     config = OpentronsFlexConfig(use_simulator=True)
     async with _run_app(config) as registered:
         types = [type(f) for f in registered]
-        assert types == [MotionControlFeature, PipetteFeature, GripperFeature, CalibrationFeature]
+        assert types == [
+            MotionControlFeature,
+            PipetteFeature,
+            TipController,
+            GripperFeature,
+            CalibrationFeature,
+        ]
 
 
 @pytest.mark.asyncio
@@ -64,7 +71,7 @@ async def test_bare_simulator_registers_no_module_features():
     """With no attached modules, only the core features register."""
     config = OpentronsFlexConfig(use_simulator=True)
     async with _run_app(config) as registered:
-        assert len(registered) == 4
+        assert len(registered) == 5
 
 
 @pytest.mark.asyncio
