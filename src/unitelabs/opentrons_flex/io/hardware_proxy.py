@@ -10,11 +10,16 @@ import asyncio
 import functools
 import inspect
 import typing
+from collections.abc import Mapping
 
 from opentrons.hardware_control import HardwareControlAPI
+from opentrons.hardware_control.types import Axis, OT3Mount
 
 from ._errors import NotHomedError
 from .recovery_state import HardwareRecoveryState, recovery_state_for
+
+if typing.TYPE_CHECKING:
+    from .labware_state import LabwareMovementState
 
 _RECOVERY_SAFE_CALLS = frozenset(
     {
@@ -65,17 +70,20 @@ class HardwareProxy:
     _api: HardwareControlAPI
     _lock: _TimedLock
     _recovery_state: HardwareRecoveryState
+    _labware_state: "LabwareMovementState | None"
 
     def __init__(
         self,
         api: HardwareControlAPI,
         lock: asyncio.Lock | None = None,
         lock_timeout_s: float | None = None,
+        labware_state: "LabwareMovementState | None" = None,
     ) -> None:
         object.__setattr__(self, "_api", api)
         raw_lock = lock if lock is not None else asyncio.Lock()
         object.__setattr__(self, "_lock", _TimedLock(raw_lock, lock_timeout_s))
         object.__setattr__(self, "_recovery_state", recovery_state_for(api))
+        object.__setattr__(self, "_labware_state", labware_state)
 
     def __setattr__(self, name: str, value: object) -> None:
         setattr(self._api, name, value)
@@ -117,6 +125,8 @@ class HardwareProxy:
             @functools.wraps(attr)
             async def locked(*args: object, **kwargs: object) -> object:
                 async with self._lock:
+                    if self._labware_state is not None and _is_direct_gripper_actuation(name, args, kwargs):
+                        self._labware_state.assert_direct_gripper_control_allowed(f"HTTP {name}")
                     if not _allowed_during_recovery(name, args, kwargs, self._recovery_state):
                         raise _recovery_error(self._recovery_state)
                     generation = self._recovery_state.generation
@@ -176,6 +186,62 @@ def _is_full_home(args: tuple[object, ...], kwargs: dict[str, object]) -> bool:
     if args:
         return args[0] is None
     return kwargs.get("axes") is None
+
+
+def _is_direct_gripper_actuation(name: str, args: tuple[object, ...], kwargs: dict[str, object]) -> bool:
+    """Whether a robot-server call would bypass the durable labware ledger."""
+    if name in {"grip", "ungrip", "idle_gripper"}:
+        return True
+    if name in {"move_to", "move_rel", "prepare_for_mount_movement", "retract"}:
+        return _is_gripper_mount(_argument(args, kwargs, 0, "mount"))
+    if name == "home_z":
+        mount = _argument(args, kwargs, 0, "mount")
+        return mount is None or _is_gripper_mount(mount)
+    if name == "move_axes":
+        return _contains_gripper_axis(_argument(args, kwargs, 0, "position"))
+    if name == "retract_axis":
+        return _contains_gripper_axis(_argument(args, kwargs, 0, "axis"))
+    if name == "disengage_axes":
+        return _contains_gripper_axis(_argument(args, kwargs, 0, "which"))
+    if name == "home":
+        axes = _argument(args, kwargs, 0, "axes")
+        # Full homing remains an explicit recovery path, but a targeted raw
+        # gripper-axis home must not bypass the managed labware surface.
+        return axes is not None and _contains_gripper_axis(axes)
+    return False
+
+
+def _argument(
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+    index: int,
+    name: str,
+) -> object | None:
+    return args[index] if len(args) > index else kwargs.get(name)
+
+
+def _is_gripper_mount(value: object) -> bool:
+    try:
+        return OT3Mount.from_mount(value) is OT3Mount.GRIPPER  # type: ignore[arg-type]
+    except (AttributeError, KeyError, TypeError, ValueError):
+        mount_name = str(getattr(value, "name", value)).upper()
+        return mount_name in {"EXTENSION", "GRIPPER"}
+
+
+def _contains_gripper_axis(value: object) -> bool:
+    if isinstance(value, Mapping):
+        axes = value.keys()
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        axes = value
+    else:
+        axes = (value,)
+    for axis in axes:
+        if axis is Axis.Z_G or axis is Axis.G:
+            return True
+        axis_name = str(getattr(axis, "name", axis)).upper()
+        if axis_name in {"Z_G", "G", "EXTENSION_Z", "GRIPPER_JAW"}:
+            return True
+    return False
 
 
 def _is_status_call(name: str) -> bool:

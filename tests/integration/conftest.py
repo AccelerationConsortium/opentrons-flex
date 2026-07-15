@@ -108,6 +108,24 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "install a compatible thermal adapter and labware, close the robot door, and keep the E-stop ready."
         ),
     )
+    parser.addoption(
+        "--gripper-labware-actuation",
+        action="store_true",
+        default=False,
+        help="Enable a prepared-labware gripper round trip through locally allowlisted plans.",
+    )
+    parser.addoption(
+        "--gripper-outbound-plan",
+        metavar="PLAN_ID",
+        default=None,
+        help="Server-provisioned outbound plan identifier for the opt-in gripper HITL test.",
+    )
+    parser.addoption(
+        "--gripper-return-plan",
+        metavar="PLAN_ID",
+        default=None,
+        help="Server-provisioned return plan identifier for the opt-in gripper HITL test.",
+    )
 
 
 def _is_hardware_run(config: pytest.Config) -> bool:
@@ -153,6 +171,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     has_smoketest_http = bool(config.getoption("--with-http-server"))
     has_hardware = _is_hardware_run(config)
     has_heater_shaker_actuation = bool(config.getoption("--heater-shaker-actuation"))
+    has_gripper_labware_actuation = bool(config.getoption("--gripper-labware-actuation"))
 
     skip_sim = pytest.mark.skip(reason="simulator-only test, skipped when --robot is set")
     skip_http = pytest.mark.skip(reason="robot_http_only test, requires --robot-http, --robot, or --with-http-server")
@@ -160,6 +179,9 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     skip_hardware = pytest.mark.skip(reason="hardware_only test, requires --robot or --robot-http (a real Flex)")
     skip_heater_shaker_actuation = pytest.mark.skip(
         reason="Heater-Shaker actuation requires the explicit --heater-shaker-actuation safety gate"
+    )
+    skip_gripper_labware_actuation = pytest.mark.skip(
+        reason="Gripper labware movement requires --gripper-labware-actuation and an operator-prepared deck"
     )
 
     for item in items:
@@ -173,6 +195,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip_hardware)
         if not has_heater_shaker_actuation and item.get_closest_marker("heater_shaker_actuation"):
             item.add_marker(skip_heater_shaker_actuation)
+        if not has_gripper_labware_actuation and item.get_closest_marker("gripper_labware_actuation"):
+            item.add_marker(skip_gripper_labware_actuation)
 
 
 @pytest.fixture(scope="session")

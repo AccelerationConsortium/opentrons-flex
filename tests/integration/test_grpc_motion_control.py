@@ -19,7 +19,7 @@ import pytest_asyncio
 from unitelabs.opentrons_flex.features.motion_control import Lights, MachineStatus, Mount, Position
 from .observable import call_observable
 
-_PKG = "sila2.ca.accelerationconsortium.robots.motioncontrolfeature.v1"
+_PKG = "sila2.ca.accelerationconsortium.robots.motioncontrolfeature.v2"
 _SERVICE = f"{_PKG}.MotionControlFeature"
 
 T = typing.TypeVar("T")

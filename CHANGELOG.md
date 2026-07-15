@@ -13,6 +13,19 @@ the Flex firmware is not modified.
 
 ### Added
 
+- `LiquidHandlingController` with atomic mix, touch-tip, liquid-level probing,
+  aspirate/dispense while tracking, explicit transfer profiles, and execution of
+  Opentrons verified liquid-class definitions for water, 80% ethanol, and 50% glycerol
+- `LabwareMovementController` with locally allowlisted movement plans,
+  a durable location-to-labware identity ledger, plan/deck-state discovery,
+  module lid/latch interlocks under the shared hardware lock, official Flex
+  gripper waypoints, mandatory pickup-width verification, lid movement,
+  fail-closed restart/cancellation recovery, raw-gripper bypass prevention, and
+  guarded real-hardware coverage
+- Partial-tip nozzle configuration for Flex 1-, 8-, and 96-channel pipettes,
+  including full, single-nozzle, and rectangular layouts with tip-rack geometry
+- Dynamic liquid-volume checks, explicit SiLA units, defined liquid/nozzle/labware
+  errors, and positive simulator coverage for all Flex pipette channel families
 - Explicit `simulated_heater_shaker` configuration, full Heater-Shaker SiLA gRPC
   workflow coverage, and separately gated read-only/actuating real-hardware tests
 - Heater-Shaker FDL units for degrees Celsius and revolutions per minute, with
@@ -32,6 +45,13 @@ the Flex firmware is not modified.
 
 ### Changed
 
+- Version 0.6.0 expands the connector from primitive-only pipetting to a
+  SiLA-native advanced liquid-handling and labware-movement surface while
+  retaining all existing primitive endpoints.
+- **BREAKING**: `MotionControlFeature` is now version 2.0 because primitive
+  liquid volumes are strictly positive and the public FDL adds units and Defined
+  Execution Errors. `GripperFeature` is version 1.2 for the additive `JawWidth`
+  property, and `PipetteFeature` is version 1.1 for partial-nozzle commands.
 - **BREAKING**: Heater-Shaker Feature Definition is now version 2.0. Temperature
   command parameters use the unit-free `Temperature` identifier, and temperature/
   speed responses expose explicit target-active fields instead of Optional values.

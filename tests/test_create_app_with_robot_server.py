@@ -28,6 +28,8 @@ from unitelabs.opentrons_flex import OpentronsFlexConfig, create_app
 from unitelabs.opentrons_flex.features import (
     CalibrationFeature,
     GripperFeature,
+    LabwareMovementController,
+    LiquidHandlingController,
     MotionControlFeature,
     PipetteFeature,
     TipController,
@@ -61,6 +63,8 @@ def _patches(mock_api, mock_connector, mock_uv_server):
         patch("unitelabs.opentrons_flex.FlexMotionController.from_api", return_value=MagicMock()),
         patch("unitelabs.opentrons_flex.FlexGripperController.from_api", return_value=MagicMock()),
         patch("unitelabs.opentrons_flex.FlexCalibrationController.from_api", return_value=MagicMock()),
+        patch("unitelabs.opentrons_flex.FlexLiquidHandlingController", return_value=MagicMock()),
+        patch("unitelabs.opentrons_flex.FlexLabwareMovementController", return_value=MagicMock()),
         patch("unitelabs.opentrons_flex.Connector", return_value=mock_connector),
         patch("uvicorn.Server", return_value=mock_uv_server),
         patch("uvicorn.Config"),
@@ -118,6 +122,8 @@ async def test_hardware_built_via_ot3api():
         patch("unitelabs.opentrons_flex.FlexMotionController.from_api", return_value=MagicMock()),
         patch("unitelabs.opentrons_flex.FlexGripperController.from_api", return_value=MagicMock()),
         patch("unitelabs.opentrons_flex.FlexCalibrationController.from_api", return_value=MagicMock()),
+        patch("unitelabs.opentrons_flex.FlexLiquidHandlingController", return_value=MagicMock()),
+        patch("unitelabs.opentrons_flex.FlexLabwareMovementController", return_value=MagicMock()),
         patch("unitelabs.opentrons_flex.Connector", return_value=MagicMock()),
         patch("uvicorn.Server", return_value=MagicMock(serve=AsyncMock())),
         patch("uvicorn.Config"),
@@ -165,6 +171,8 @@ async def test_uvicorn_configured_on_unix_socket():
         patch("unitelabs.opentrons_flex.FlexMotionController.from_api", return_value=MagicMock()),
         patch("unitelabs.opentrons_flex.FlexGripperController.from_api", return_value=MagicMock()),
         patch("unitelabs.opentrons_flex.FlexCalibrationController.from_api", return_value=MagicMock()),
+        patch("unitelabs.opentrons_flex.FlexLiquidHandlingController", return_value=MagicMock()),
+        patch("unitelabs.opentrons_flex.FlexLabwareMovementController", return_value=MagicMock()),
         patch("unitelabs.opentrons_flex.Connector", return_value=MagicMock()),
         patch("uvicorn.Server", return_value=MagicMock(serve=AsyncMock())),
         patch("uvicorn.Config") as mock_cfg,
@@ -189,10 +197,12 @@ async def test_uvicorn_serve_task_started():
 
 @pytest.mark.asyncio
 async def test_core_features_registered():
-    """Motion, Pipette, Gripper, Calibration features are always registered."""
+    """All core motion, liquid, labware, instrument, and calibration features register."""
     async with _run() as r:
         types_ = [type(f) for f in r.registered]
         assert MotionControlFeature in types_
+        assert LiquidHandlingController in types_
+        assert LabwareMovementController in types_
         assert PipetteFeature in types_
         assert TipController in types_
         assert GripperFeature in types_

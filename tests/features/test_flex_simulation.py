@@ -184,7 +184,7 @@ async def test_lights_return_typed_state_and_rails_roundtrip(
 async def test_get_attached_pipettes_reports_both_mounts(pipette: PipetteFeature):
     status, intermediate = _obs()
     pipettes = await pipette.get_attached_pipettes(status=status, intermediate=intermediate)
-    assert {p.mount for p in pipettes} == {Mount.LEFT, Mount.RIGHT}
+    assert {p.mount for p in pipettes} == {TipPipetteMount.LEFT, TipPipetteMount.RIGHT}
 
 
 async def test_no_pipette_reports_not_attached(pipette: PipetteFeature):

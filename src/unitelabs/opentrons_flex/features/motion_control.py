@@ -5,9 +5,9 @@ Models motion the way the Flex hardware does: per-*mount* deck coordinates
 (x, y, z in mm) rather than the OT-2's six raw Smoothie axes. Backed by
 ``FlexMotionController`` (a wrapper around ``OT3API``).
 
-Liquid handling is exposed as the primitive aspirate/dispense moves only — the
-connector does not own liquid-class logic (mix, touch-tip, sequence ordering);
-that stays on the client, matching the OT-2 connector's contract.
+This feature retains the compatible primitive aspirate/dispense surface. Atomic
+mix, touch-tip, liquid tracking, transfer profiles, and verified liquid classes
+are separated into ``LiquidHandlingController``.
 """
 
 import asyncio
@@ -21,11 +21,16 @@ from unitelabs.cdk import sila
 from unitelabs.cdk.sila import constraints
 
 from ..io import (
+    DirectGripperControlDisabledError,
     FlexMotionController,
+    LiquidHandlingError,
+    LiquidVolumeOutOfRangeError,
     MachineErrorStateError,
     MovementOutOfBoundsError,
     NotHomedError,
+    PipetteNotAttachedError,
     StallDetectedError,
+    TipNotAttachedError,
 )
 from ._progress import OperationPhase, OperationProgress, report_progress, run_observable
 
@@ -33,7 +38,48 @@ from ._progress import OperationPhase, OperationProgress, report_progress, run_o
 # clients receive Defined Execution Errors (with recovery hints) rather than
 # opaque undefined errors. ``MachineErrorStateError`` covers the case where a move
 # returns but the robot has silently entered a hardware error state (e.g. E-stop).
-_MOVE_ERRORS = [NotHomedError, MovementOutOfBoundsError, StallDetectedError, MachineErrorStateError]
+_MOVE_ERRORS = [
+    NotHomedError,
+    MovementOutOfBoundsError,
+    StallDetectedError,
+    MachineErrorStateError,
+    DirectGripperControlDisabledError,
+]
+_LIQUID_ERRORS = [
+    *_MOVE_ERRORS,
+    PipetteNotAttachedError,
+    TipNotAttachedError,
+    LiquidVolumeOutOfRangeError,
+    LiquidHandlingError,
+]
+
+_MILLIMETRE = constraints.Unit(
+    "mm",
+    [constraints.Unit.Component(constraints.Unit.SI.METER)],
+    factor=0.001,
+)
+_MILLIMETRES_PER_SECOND = constraints.Unit(
+    "mm/s",
+    [
+        constraints.Unit.Component(constraints.Unit.SI.METER),
+        constraints.Unit.Component(constraints.Unit.SI.SECOND, exponent=-1),
+    ],
+    factor=0.001,
+)
+_MICROLITRE = constraints.Unit(
+    "µL",
+    [constraints.Unit.Component(constraints.Unit.SI.METER, exponent=3)],
+    factor=1e-9,
+)
+_DIMENSIONLESS_RATE = constraints.Unit(
+    "1",
+    [constraints.Unit.Component(constraints.Unit.SI.DIMENSIONLESS)],
+)
+_Millimetres = typing.Annotated[float, _MILLIMETRE]
+_MovementSpeed = typing.Annotated[float, constraints.MinimalInclusive(0.0), _MILLIMETRES_PER_SECOND]
+_LiquidVolume = typing.Annotated[float, constraints.MinimalExclusive(0.0), _MICROLITRE]
+_PushOutVolume = typing.Annotated[float, constraints.MinimalInclusive(0.0), _MICROLITRE]
+_FlowRateMultiplier = typing.Annotated[float, constraints.MinimalExclusive(0.0), _DIMENSIONLESS_RATE]
 
 # Possible E-stop states surfaced by MachineStatus. A Set constraint (AGENTS.md:
 # model status with strings + Set, not integers) documents the closed vocabulary.
@@ -59,9 +105,9 @@ def _ot3_mount(mount: Mount) -> OT3Mount:
 class Position:
     """A deck position for one mount, in millimetres."""
 
-    x: float
-    y: float
-    z: float
+    x: _Millimetres
+    y: _Millimetres
+    z: _Millimetres
 
 
 @dataclass
@@ -101,7 +147,7 @@ class MotionControlFeature(sila.Feature):
     """
 
     def __init__(self, controller: FlexMotionController):
-        super().__init__(originator="ca.accelerationconsortium", category="robots", version="1.1")
+        super().__init__(originator="ca.accelerationconsortium", category="robots", version="2.0")
         self._controller = controller
 
     # ------------------------------------------------------------------ homing
@@ -158,10 +204,10 @@ class MotionControlFeature(sila.Feature):
     async def move_to(
         self,
         mount: Mount,
-        x: float,
-        y: float,
-        z: float,
-        speed: typing.Annotated[float, constraints.MinimalInclusive(0.0)],
+        x: _Millimetres,
+        y: _Millimetres,
+        z: _Millimetres,
+        speed: _MovementSpeed,
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
@@ -202,10 +248,10 @@ class MotionControlFeature(sila.Feature):
     async def move_relative(
         self,
         mount: Mount,
-        delta_x: float,
-        delta_y: float,
-        delta_z: float,
-        speed: typing.Annotated[float, constraints.MinimalInclusive(0.0)],
+        delta_x: _Millimetres,
+        delta_y: _Millimetres,
+        delta_z: _Millimetres,
+        speed: _MovementSpeed,
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
@@ -270,7 +316,7 @@ class MotionControlFeature(sila.Feature):
 
     # ----------------------------------------------------- primitive liquid moves
 
-    @sila.ObservableCommand(errors=_MOVE_ERRORS)
+    @sila.ObservableCommand(errors=_LIQUID_ERRORS)
     async def prepare_for_aspirate(
         self,
         mount: Mount,
@@ -298,12 +344,12 @@ class MotionControlFeature(sila.Feature):
             raise
         report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, f"{mount.value} preparation completed.")
 
-    @sila.ObservableCommand(errors=_MOVE_ERRORS)
+    @sila.ObservableCommand(errors=_LIQUID_ERRORS)
     async def aspirate(
         self,
         mount: Mount,
-        volume: typing.Annotated[float, constraints.MinimalInclusive(0.0)],
-        rate: typing.Annotated[float, constraints.MinimalExclusive(0.0)],
+        volume: _LiquidVolume,
+        rate: _FlowRateMultiplier,
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
@@ -327,13 +373,13 @@ class MotionControlFeature(sila.Feature):
             raise
         report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, f"{mount.value} aspiration completed.")
 
-    @sila.ObservableCommand(errors=_MOVE_ERRORS)
+    @sila.ObservableCommand(errors=_LIQUID_ERRORS)
     async def dispense(
         self,
         mount: Mount,
-        volume: typing.Annotated[float, constraints.MinimalInclusive(0.0)],
-        rate: typing.Annotated[float, constraints.MinimalExclusive(0.0)],
-        push_out: typing.Annotated[float, constraints.MinimalInclusive(0.0)],
+        volume: _LiquidVolume,
+        rate: _FlowRateMultiplier,
+        push_out: _PushOutVolume,
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
@@ -359,7 +405,7 @@ class MotionControlFeature(sila.Feature):
             raise
         report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, f"{mount.value} dispense completed.")
 
-    @sila.ObservableCommand(errors=_MOVE_ERRORS)
+    @sila.ObservableCommand(errors=_LIQUID_ERRORS)
     async def blow_out(
         self,
         mount: Mount,

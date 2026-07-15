@@ -22,7 +22,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from opentrons.hardware_control import HardwareControlAPI
 from opentrons.hardware_control.motion_utilities import machine_from_deck, target_position_from_absolute
@@ -32,12 +32,15 @@ from opentrons.types import Point
 from opentrons_shared_data.robot.types import RobotType
 
 from ._errors import (
+    LiquidVolumeOutOfRangeError,
     MachineErrorStateError,
     NotHomedError,
+    NozzleConfigurationError,
     PipetteNotAttachedError,
     TipNotAttachedError,
     TipPickupError,
     TipStateError,
+    translate_liquid_errors,
     translate_motion_errors,
     translate_tip_errors,
 )
@@ -45,6 +48,9 @@ from .hardware_proxy import _TimedLock
 from .recovery_state import HardwareRecoveryState, recovery_state_for
 
 log = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from .labware_state import LabwareMovementState
 
 # Axes that belong to each mount, used when homing "just this mount".
 _MOUNT_AXES: dict[OT3Mount, list[Axis]] = {
@@ -79,6 +85,17 @@ class MachineState:
     message: str  # operator-facing description + resolution hint; empty when healthy
 
 
+@dataclass(frozen=True)
+class NozzleConfigurationState:
+    """Current active nozzle rectangle for one attached pipette."""
+
+    starting_nozzle: str
+    back_left_nozzle: str
+    front_right_nozzle: str
+    active_nozzles: int
+    tiprack_diameter: float
+
+
 class FlexMotionController:
     """
     High-level motion controller for the Opentrons Flex, wrapping ``OT3API``.
@@ -108,6 +125,7 @@ class FlexMotionController:
         raw_lock = lock if lock is not None else asyncio.Lock()
         self._lock: _TimedLock = _TimedLock(raw_lock, lock_timeout_s)
         self._recovery_state: HardwareRecoveryState = recovery_state_for(api)
+        self._labware_state: LabwareMovementState | None = None
 
     @classmethod
     async def build(
@@ -238,6 +256,7 @@ class FlexMotionController:
     async def move_to(self, mount: OT3Mount, point: Point, speed: float | None = None) -> Point:
         """Move ``mount`` to an absolute deck ``point`` and return the resulting position."""
         async with self._lock:
+            self._assert_direct_gripper_control_allowed(mount, "MoveTo")
             self._assert_operation_ready()
             async with self._active_operation() as generation:
                 self._validate_tip_location(point)
@@ -253,6 +272,7 @@ class FlexMotionController:
     async def move_rel(self, mount: OT3Mount, delta: Point, speed: float | None = None) -> Point:
         """Move ``mount`` by ``delta`` and return the resulting position."""
         async with self._lock:
+            self._assert_direct_gripper_control_allowed(mount, "MoveRelative")
             self._assert_operation_ready()
             async with self._active_operation() as generation:
                 self._validate_tip_location(delta)
@@ -309,45 +329,167 @@ class FlexMotionController:
         """Mapping of mount -> attached pipette dict (empty dict when no pipette)."""
         return dict(self._api.attached_instruments)
 
+    async def configure_nozzle_layout(
+        self,
+        mount: OT3Mount,
+        back_left_nozzle: str | None,
+        front_right_nozzle: str | None,
+        starting_nozzle: str | None,
+        tiprack_diameter: float,
+    ) -> NozzleConfigurationState:
+        """Configure a full, single, or rectangular partial-tip nozzle layout."""
+        async with self._lock:
+            self._assert_operation_ready()
+            self._assert_pipette_attached(mount)
+            instrument = self._api.hardware_instruments[mount.to_mount()]
+            if instrument.has_tip:
+                msg = "Remove attached tips before changing the active nozzle layout."
+                raise NozzleConfigurationError(msg)
+            if not math.isfinite(tiprack_diameter) or tiprack_diameter <= 0:
+                msg = "Tip-rack diameter must be finite and greater than 0 millimetres."
+                raise NozzleConfigurationError(msg)
+            try:
+                await self._api.update_nozzle_configuration_for_mount(
+                    mount,
+                    back_left_nozzle=back_left_nozzle,
+                    front_right_nozzle=front_right_nozzle,
+                    starting_nozzle=starting_nozzle,
+                )
+                self._api.set_current_tiprack_diameter(mount, tiprack_diameter)
+            except (AssertionError, KeyError, ValueError) as exc:
+                raise NozzleConfigurationError(str(exc)) from exc
+            return self.nozzle_configuration(mount)
+
+    def nozzle_configuration(self, mount: OT3Mount) -> NozzleConfigurationState:
+        """Return the cached active nozzle rectangle without hardware I/O."""
+        self._assert_pipette_attached(mount)
+        instrument = self._api.hardware_instruments[mount.to_mount()]
+        info = self._api.attached_instruments.get(mount.to_mount()) or {}
+        nozzle_map = info.get("current_nozzle_map")
+        if nozzle_map is None:  # pragma: no cover - supported Flex pipettes always report it
+            msg = "Attached pipette did not report its current nozzle map."
+            raise NozzleConfigurationError(msg)
+        names = list(nozzle_map.map_store)
+        if not names:  # pragma: no cover - Opentrons always retains at least one nozzle
+            msg = "Attached pipette reported an empty nozzle map."
+            raise NozzleConfigurationError(msg)
+        rows = [name[0] for name in names]
+        columns = [int(name[1:]) for name in names]
+        return NozzleConfigurationState(
+            starting_nozzle=str(nozzle_map.starting_nozzle),
+            back_left_nozzle=f"{min(rows)}{min(columns)}",
+            front_right_nozzle=f"{max(rows)}{max(columns)}",
+            active_nozzles=len(names),
+            tiprack_diameter=float(instrument.current_tiprack_diameter),
+        )
+
+    @translate_liquid_errors
     async def prepare_for_aspirate(self, mount: OT3Mount, rate: float = 1.0) -> None:
         """Position the plunger at bottom, ready to aspirate."""
         async with self._lock:
             self._assert_operation_ready()
+            self._assert_liquid_action_ready(mount)
             async with self._active_operation() as generation:
                 await self._api.prepare_for_aspirate(mount=mount, rate=rate)
                 self._assert_operation_generation(generation)
+                self._assert_machine_ok()
 
-    async def aspirate(self, mount: OT3Mount, volume: float | None = None, rate: float = 1.0) -> None:
-        """Aspirate ``volume`` µL on ``mount`` (full available volume when ``None``)."""
+    @translate_liquid_errors
+    async def aspirate(self, mount: OT3Mount, volume: float, rate: float = 1.0) -> None:
+        """Aspirate an explicit ``volume`` in µL on ``mount``."""
         async with self._lock:
             self._assert_operation_ready()
+            self._assert_liquid_action_ready(mount, volume=volume, aspirating=True)
             async with self._active_operation() as generation:
                 await self._api.aspirate(mount=mount, volume=volume, rate=rate)
                 self._assert_operation_generation(generation)
+                self._assert_machine_ok()
 
-    async def dispense(
-        self, mount: OT3Mount, volume: float | None = None, rate: float = 1.0, push_out: float | None = None
-    ) -> None:
-        """Dispense ``volume`` µL on ``mount`` (current volume when ``None``)."""
+    @translate_liquid_errors
+    async def dispense(self, mount: OT3Mount, volume: float, rate: float = 1.0, push_out: float | None = None) -> None:
+        """Dispense an explicit ``volume`` in µL on ``mount``."""
         async with self._lock:
             self._assert_operation_ready()
+            self._assert_liquid_action_ready(mount, volume=volume, aspirating=False)
+            instrument = self._api.hardware_instruments[mount.to_mount()]
+            is_full_dispense = math.isclose(volume, float(instrument.current_volume))
             async with self._active_operation() as generation:
-                await self._api.dispense(mount=mount, volume=volume, rate=rate, push_out=push_out)
+                await self._api.dispense(
+                    mount=mount,
+                    volume=volume,
+                    rate=rate,
+                    push_out=push_out,
+                    is_full_dispense=is_full_dispense,
+                )
                 self._assert_operation_generation(generation)
+                self._assert_machine_ok()
 
-    async def blow_out(self, mount: OT3Mount, volume: float | None = None) -> None:
+    @translate_liquid_errors
+    async def blow_out(self, mount: OT3Mount) -> None:
         """Blow out any residual liquid on ``mount``."""
         async with self._lock:
             self._assert_operation_ready()
+            self._assert_liquid_action_ready(mount)
             async with self._active_operation() as generation:
-                await self._api.blow_out(mount=mount, volume=volume)
+                await self._api.blow_out(mount=mount)
                 self._assert_operation_generation(generation)
+                self._assert_machine_ok()
 
     def _assert_pipette_attached(self, mount: OT3Mount) -> None:
         """Raise a stable defined error before querying a missing sensor."""
         if self._api.hardware_instruments.get(mount.to_mount()) is None:
             msg = f"No pipette is attached to {mount.name}. Attach a Flex pipette, re-scan instruments, and retry."
             raise PipetteNotAttachedError(msg)
+
+    def attach_labware_state(self, state: "LabwareMovementState") -> None:
+        """Gate raw gripper motion behind the durable allowlisted labware controller."""
+        self._labware_state = state
+
+    def _assert_direct_gripper_control_allowed(self, mount: OT3Mount, operation: str) -> None:
+        if mount is OT3Mount.GRIPPER and self._labware_state is not None:
+            self._labware_state.assert_direct_gripper_control_allowed(operation)
+
+    def _assert_liquid_action_ready(
+        self,
+        mount: OT3Mount,
+        *,
+        volume: float | None = None,
+        aspirating: bool | None = None,
+    ) -> None:
+        """Validate pipette, tip, and dynamic volume bounds before liquid actuation."""
+        self._assert_pipette_attached(mount)
+        instrument = self._api.hardware_instruments.get(mount.to_mount())
+        if instrument is None:  # pragma: no cover - guarded by _assert_pipette_attached
+            msg = f"No pipette is attached to {mount.name}."
+            raise PipetteNotAttachedError(msg)
+        if not instrument.has_tip:
+            msg = f"No tip is attached to {mount.name}. Perform a sensor-verified tip pickup before liquid handling."
+            raise TipNotAttachedError(msg)
+        if volume is None:
+            return
+        if not math.isfinite(volume) or volume <= 0:
+            msg = "Liquid volume must be finite and greater than 0 microlitres."
+            raise LiquidVolumeOutOfRangeError(msg)
+
+        info = self._api.attached_instruments.get(mount) or self._api.attached_instruments.get(mount.to_mount()) or {}
+        minimum = float(info.get("min_volume") or 0.0)
+        working_volume = float(getattr(instrument, "working_volume", info.get("max_volume") or 0.0))
+        current_volume = float(getattr(instrument, "current_volume", 0.0))
+        available = max(0.0, working_volume - current_volume)
+        limit = available if aspirating else current_volume
+        action = "aspirate" if aspirating else "dispense"
+        if minimum > 0 and volume < minimum:
+            msg = (
+                f"Cannot {action} {volume:g} microlitres on {mount.name}; the attached pipette minimum is "
+                f"{minimum:g} microlitres."
+            )
+            raise LiquidVolumeOutOfRangeError(msg)
+        if volume > limit:
+            msg = (
+                f"Cannot {action} {volume:g} microlitres on {mount.name}; the current dynamic limit is "
+                f"{limit:g} microlitres."
+            )
+            raise LiquidVolumeOutOfRangeError(msg)
 
     def _assert_operation_ready(self) -> None:
         if not self._recovery_state.operation_ready:
@@ -586,4 +728,12 @@ class FlexMotionController:
 
 
 # Re-export for callers that map SiLA enums to Opentrons types.
-__all__ = ["Axis", "FlexMotionController", "MachineState", "OT3Mount", "Point", "TipStateType"]
+__all__ = [
+    "Axis",
+    "FlexMotionController",
+    "MachineState",
+    "NozzleConfigurationState",
+    "OT3Mount",
+    "Point",
+    "TipStateType",
+]

@@ -120,6 +120,9 @@ except ImportError:
     class _Unit:
         class SI:
             METER = "Metre"
+            SECOND = "Second"
+            KILOGRAM = "Kilogram"
+            DIMENSIONLESS = "Dimensionless"
 
         class Component:
             def __init__(self, *_a, **_k):

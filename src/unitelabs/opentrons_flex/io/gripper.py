@@ -9,6 +9,7 @@ opening its own transport.
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 
 from opentrons.hardware_control import HardwareControlAPI
 
@@ -17,6 +18,9 @@ from .hardware_proxy import _TimedLock
 from .recovery_state import HardwareRecoveryState, recovery_state_for
 
 log = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from .labware_state import LabwareMovementState
 
 
 class FlexGripperController:
@@ -32,6 +36,7 @@ class FlexGripperController:
         raw_lock = lock if lock is not None else asyncio.Lock()
         self._lock: _TimedLock = _TimedLock(raw_lock, lock_timeout_s)
         self._recovery_state: HardwareRecoveryState = recovery_state_for(api)
+        self._labware_state: LabwareMovementState | None = None
 
     @classmethod
     def from_api(
@@ -54,10 +59,28 @@ class FlexGripperController:
         gripper = self._api.attached_gripper
         return dict(gripper) if gripper else None
 
+    @property
+    def jaw_width(self) -> float:
+        """Current sensor-estimated jaw width in millimetres."""
+        self._require_attached()
+        hardware_gripper = self._api.hardware_gripper
+        if hardware_gripper is None:  # pragma: no cover - guarded by _require_attached
+            msg = "No gripper attached."
+            raise GripperNotAttachedError(msg)
+        return float(hardware_gripper.jaw_width)
+
     def _require_attached(self) -> None:
         if not self.attached:
             msg = "No gripper attached. Attach the Flex gripper and re-scan instruments."
             raise GripperNotAttachedError(msg)
+
+    def attach_labware_state(self, state: "LabwareMovementState") -> None:
+        """Gate raw jaw actuation behind the durable allowlisted movement controller."""
+        self._labware_state = state
+
+    def _assert_direct_control_allowed(self, operation: str) -> None:
+        if self._labware_state is not None:
+            self._labware_state.assert_direct_gripper_control_allowed(operation)
 
     def _assert_operation_ready(self, *, jaw_recovery: bool = False) -> None:
         ready = self._recovery_state.gantry_recovered if jaw_recovery else self._recovery_state.operation_ready
@@ -89,6 +112,7 @@ class FlexGripperController:
         """Close the jaw to grip labware (optional ``force_newtons``)."""
         self._require_attached()
         async with self._lock:
+            self._assert_direct_control_allowed("Grip")
             self._assert_operation_ready()
             generation = self._recovery_state.generation
             task = self._recovery_state.register_current_operation()
@@ -109,6 +133,7 @@ class FlexGripperController:
         """Open the jaw to release labware."""
         self._require_attached()
         async with self._lock:
+            self._assert_direct_control_allowed("Ungrip")
             self._assert_operation_ready()
             generation = self._recovery_state.generation
             task = self._recovery_state.register_current_operation()

@@ -194,6 +194,76 @@ class TipStateError(Exception):
     """
 
 
+class LiquidVolumeOutOfRangeError(Exception):
+    """
+    The requested liquid volume is outside the attached pipette's current operating range.
+
+    Check the attached pipette model, tip capacity, and liquid already held in
+    the tip. Use a volume within the limits reported by PipetteFeature and retry.
+    """
+
+
+class LiquidHandlingError(Exception):
+    """
+    The pipette failed while preparing, aspirating, dispensing, or blowing out liquid.
+
+    Inspect the tip and liquid path, clear any obstruction or overpressure
+    condition, reconcile the physical liquid state, and re-home before retrying.
+    The underlying Opentrons error message is preserved for diagnosis.
+    """
+
+
+class LiquidNotFoundError(Exception):
+    """
+    The Flex pipette sensors did not detect liquid within the requested probing distance.
+
+    Confirm that the tip is immersed over the intended well, that liquid is
+    present, and that the maximum probing distance reaches the expected level.
+    """
+
+
+class LiquidClassNotSupportedError(Exception):
+    """
+    The selected verified liquid class has no definition for the attached pipette and tip rack.
+
+    Confirm the attached Flex pipette model and provide the full Opentrons tip-rack
+    URI used by the tip. Choose one of the supported verified liquid classes and retry.
+    """
+
+
+class NozzleConfigurationError(Exception):
+    """
+    The requested partial-tip nozzle layout is incompatible with the attached pipette.
+
+    Remove any attached tips, check nozzle identifiers against the attached
+    1-, 8-, or 96-channel head, provide the tip-rack diameter, and retry.
+    """
+
+
+def translate_liquid_errors(
+    fn: typing.Callable[..., typing.Awaitable[object]],
+) -> typing.Callable[..., typing.Awaitable[object]]:
+    """Wrap an async liquid method, translating expected OT3API failures."""
+
+    @functools.wraps(fn)
+    async def wrapper(*args: object, **kwargs: object) -> object:
+        from opentrons.types import PipetteNotAttachedError as OpentronsPipetteNotAttachedError
+        from opentrons_shared_data.errors.exceptions import PipetteLiquidNotFoundError, PipetteOverpressureError
+
+        try:
+            return await fn(*args, **kwargs)
+        except OpentronsPipetteNotAttachedError as exc:
+            msg = f"{exc} Attach a Flex pipette, re-scan instruments, and retry."
+            raise PipetteNotAttachedError(msg) from exc
+        except PipetteLiquidNotFoundError as exc:
+            raise LiquidNotFoundError(str(exc)) from exc
+        except PipetteOverpressureError as exc:
+            msg = f"{exc} Clear the obstruction or overpressure condition, then reconcile the liquid state."
+            raise LiquidHandlingError(msg) from exc
+
+    return wrapper
+
+
 def translate_tip_errors(
     fn: typing.Callable[..., typing.Awaitable[object]],
 ) -> typing.Callable[..., typing.Awaitable[object]]:
@@ -275,6 +345,51 @@ class GripActionError(Exception):
     The gripper failed to complete a grip, ungrip, or home-jaw action.
 
     The underlying hardware message is preserved so the failure can be diagnosed.
+    """
+
+
+class DirectGripperControlDisabledError(Exception):
+    """
+    Direct gripper actuation is disabled while the durable labware plan registry is active.
+
+    Use LabwareMovementController for allowlisted moves. To perform maintenance,
+    stop the connector and explicitly disable the local labware movement configuration.
+    """
+
+
+class LabwareMovementNotAllowedError(Exception):
+    """
+    The requested labware move is unsafe for the declared deck or module state.
+
+    Reconcile deck occupancy, open any required module lid or latch, clear the
+    gripper path, and submit a new movement plan before retrying.
+    """
+
+
+class DestinationOccupiedError(Exception):
+    """
+    The requested destination is occupied in the supplied deck snapshot.
+
+    Remove or relocate the occupying item, refresh the deck occupancy snapshot,
+    and retry. The connector will not overwrite an occupied location.
+    """
+
+
+class LabwareNotPickedError(Exception):
+    """
+    Gripper jaw-width verification indicates that the labware was not picked up.
+
+    Inspect the source alignment and labware geometry, clear obstructions, then
+    fully home the robot and gripper jaw before retrying.
+    """
+
+
+class LabwareNotPlacedError(Exception):
+    """
+    The gripper did not complete a verified placement at the destination.
+
+    Inspect both the gripper and destination, reconcile the physical deck state,
+    then fully home the robot and gripper jaw before any further movement.
     """
 
 

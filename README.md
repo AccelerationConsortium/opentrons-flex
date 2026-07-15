@@ -34,9 +34,11 @@ Motion is exposed per **mount** (`LEFT`, `RIGHT`, `GRIPPER`) in deck coordinates
 | Feature | Commands / properties |
 |---------|------------------------|
 | `MotionControlFeature` | `Home`, `HomeMount`, `MoveTo`, `MoveRelative`, `GetPosition`, `Aspirate`, `Dispense`, `BlowOut`, `PrepareForAspirate`, `EmergencyStop`, `Pause`, `Resume`, `SetLights`; `Lights`, `IsSimulating`, `MachineStatus` |
-| `PipetteFeature` | `GetAttachedPipettes` (one structured result per mount) |
+| `LiquidHandlingController` | `Mix`, `TouchTip`, `ProbeLiquidLevel`, `AspirateWhileTracking`, `DispenseWhileTracking`, atomic `Transfer`, and `TransferWithVerifiedLiquidClass` |
+| `LabwareMovementController` | `MoveLabware` / `MoveLid` execute locally allowlisted plans with server-owned occupancy, module-state, waypoint, pickup-width, and cancellation checks |
+| `PipetteFeature` | `GetAttachedPipettes`; full, single-nozzle, and rectangular partial-tip layouts for 1/8/96-channel heads |
 | `TipController` | Atomic move + `PickUpTip` / `DropTip`, `GetTipPresence`; sensor verification and defined recovery errors (use `MotionControlFeature.EmergencyStop` for a global halt) |
-| `GripperFeature` | `Grip`, `Ungrip`, `HomeJaw`; `Status` |
+| `GripperFeature` | `Grip`, `Ungrip`, `HomeJaw`; `Status`, `JawWidth` |
 | `CalibrationFeature` | `CalibratePipette`, `CalibrateGripperJaw`, `CalibrateDeck` (automatic probe-based routines) |
 | Module features | `HeaterShaker`, `Thermocycler`, `Temperature`, `AbsorbanceReader`, `FlexStacker` (registered when attached) |
 
@@ -48,6 +50,63 @@ operations with intermediate execution updates and defined module errors:
 Temperature inputs carry a degrees Celsius unit constraint and a 0–95 °C range;
 active shaking carries a revolutions-per-minute unit constraint and a 200–3000
 rpm range. Use `StopShaking` instead of sending an implicit zero-speed sentinel.
+
+Advanced liquid commands retain the low-level primitives for compatibility but
+run multi-step operations atomically under the same hardware lock. Verified
+liquid-class transfers read the version-2 definitions shipped with the installed
+Opentrons package and match them against the attached pipette plus the full tip-rack
+URI. Physical pipette installation remains an operator action; the connector
+detects the installed head, configures its active nozzles, and verifies tip state.
+
+Labware movement never accepts grip coordinates, sensor tolerances, or deck
+occupancy from a remote SiLA call. Set `labware_movement_config` to a local JSON
+file containing `plans`, a durable `state_file`, and `initial_occupancy`; clients can then
+select only a provisioned `plan_identifier`. The connector updates its deck state
+after each completed move, always keeps pickup geometry verification enabled, and
+serializes module latch/lid operations with gripper motion through the shared
+hardware lock. Leave the setting `null` to expose discovery and defined errors
+without authorizing physical labware movement.
+
+The local file has this shape; coordinates and grip values must come from the
+installed labware definitions and the calibrated deck model:
+
+```json
+{
+  "state_file": "/var/lib/unitelabs-opentrons-flex/labware-state.json",
+  "initial_occupancy": {"D1": "plate-1"},
+  "plans": [
+    {
+      "identifier": "plate_d1_to_d2",
+      "labware_identifier": "plate-1",
+      "is_lid": false,
+      "source": {
+        "identifier": "D1",
+        "kind": "DECK_SLOT",
+        "grip_point": {"x": -999.0, "y": -999.0, "z": -999.0}
+      },
+      "destination": {
+        "identifier": "D2",
+        "kind": "DECK_SLOT",
+        "grip_point": {"x": -999.0, "y": -999.0, "z": -999.0}
+      },
+      "grip": {
+        "force_newtons": 15.0,
+        "expected_width": 74.0,
+        "uncertainty_wider": 2.0,
+        "uncertainty_narrower": 2.0
+      },
+      "post_drop_slide_offset": {"x": 0.0, "y": 0.0, "z": 0.0}
+    }
+  ]
+}
+```
+
+The negative grip coordinates above are placeholders and are intentionally not a runnable
+deck plan. Replace them with validated absolute grip points before enabling the
+file on hardware, and provision a separate reverse plan for a round trip. The
+state ledger is marked invalid before physical movement and committed only after
+completion; an interrupted move or unclean shutdown requires local deck
+reconciliation before replacing the ledger and restarting.
 
 **Key source files:**
 
@@ -184,6 +243,10 @@ uv run --extra test python -m pytest tests/integration -k grpc
 # Full Heater-Shaker workflow over SiLA gRPC against the explicit module simulator
 uv run --extra test python -m pytest tests/integration/test_grpc_heater_shaker.py -v
 
+# Advanced liquid, partial-nozzle, and gripper labware workflows over SiLA gRPC
+uv run --extra test python -m pytest \
+  tests/integration/test_grpc_advanced_flex.py tests/integration/test_grpc_pipette.py -v
+
 # Full local smoketest: SiLA gRPC + in-process robot-server HTTP API, both backed
 # by the OT3 simulator. This is the CI/CD end-to-end path before real hardware.
 uv run --extra test python -m pytest tests/integration --with-http-server -v
@@ -240,7 +303,20 @@ the heater in cleanup:
 ```sh
 uv run --extra test python -m pytest \
   tests/integration/hardware/test_hitl_heater_shaker.py \
-  --robot <robot-ip>:50051 --heater-shaker-actuation -v
+    --robot <robot-ip>:50051 --heater-shaker-actuation -v
+```
+
+Labware movement has a separate physical safety gate. First provision validated
+outbound and return plans in the connector's local `labware_movement_config`.
+The test selects only those allowlisted plans, moves the prepared labware out and
+back, and checks machine state:
+
+```sh
+uv run --extra test python -m pytest \
+  tests/integration/hardware/test_hitl_labware_movement.py \
+  --robot <robot-ip>:50051 --gripper-labware-actuation \
+  --gripper-outbound-plan PLAN_ID \
+  --gripper-return-plan RETURN_PLAN_ID -v
 ```
 
 Every integration run prints its **mode/target/device** header and records
@@ -348,7 +424,7 @@ uv run --extra test python -m pytest tests/integration/http_api --robot-http <ro
 
 ## Usage
 
-To interact with the running connector, we recommend using the [SiLA Browser](https://gitlab.com/unitelabs/sila2/sila-browser) against `<robot-ip>:50051`. The Opentrons App and any REST client can use the HTTP API at `http://<robot-ip>:31950` unchanged.
+To interact with the running connector, we recommend using the [SiLA Browser](https://gitlab.com/unitelabs/sila2/sila-browser) against `<robot-ip>:50051`. The Opentrons App and REST clients can use the standard HTTP API shape at `http://<robot-ip>:31950`. When durable labware plans are enabled, raw HTTP gripper/extension and gripper-axis actuation is intentionally rejected so it cannot bypass `LabwareMovementController`; use the allowlisted SiLA plans or disable the local plan registry for a deliberate maintenance session.
 
 ### Encryption
 

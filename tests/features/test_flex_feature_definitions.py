@@ -18,6 +18,8 @@ from unitelabs.opentrons_flex import OpentronsFlexConfig
 from unitelabs.opentrons_flex.features import (
     CalibrationFeature,
     GripperFeature,
+    LabwareMovementController,
+    LiquidHandlingController,
     MotionControlFeature,
     PipetteFeature,
     TipController,
@@ -25,6 +27,8 @@ from unitelabs.opentrons_flex.features import (
 from unitelabs.opentrons_flex.io import (
     FlexCalibrationController,
     FlexGripperController,
+    FlexLabwareMovementController,
+    FlexLiquidHandlingController,
     FlexMotionController,
 )
 
@@ -52,6 +56,10 @@ async def test_core_features_generate_sila_definitions():
     connector = Connector(config)
     motion_feature = MotionControlFeature(motion)
     connector.register(motion_feature)
+    liquid_feature = LiquidHandlingController(FlexLiquidHandlingController(motion))
+    connector.register(liquid_feature)
+    labware_feature = LabwareMovementController(FlexLabwareMovementController(motion, gripper))
+    connector.register(labware_feature)
     pipette = PipetteFeature(motion)
     tip = TipController(motion)
     connector.register(pipette)
@@ -79,14 +87,30 @@ async def test_core_features_generate_sila_definitions():
     assert "Current lifecycle phase of the operation." in tip_fdl
     assert "Operator-facing progress or recovery message." in tip_fdl
     assert "PickUpTip" not in pipette_fdl
+    assert 'FeatureVersion="1.1"' in pipette_fdl
+    assert "<Identifier>ConfigureFullNozzleLayout</Identifier>" in pipette_fdl
+    assert "<Identifier>ConfigureSingleNozzleLayout</Identifier>" in pipette_fdl
+    assert "<Identifier>ConfigureRectangularNozzleLayout</Identifier>" in pipette_fdl
+    assert "<Identifier>GetNozzleConfiguration</Identifier>" in pipette_fdl
     gripper_fdl = Serializer.serialize(gripper_feature.serialize)
     calibration_fdl = Serializer.serialize(calibration_feature.serialize)
     motion_fdl = Serializer.serialize(motion_feature.serialize)
-    assert 'FeatureVersion="1.1"' in motion_fdl
-    assert 'FeatureVersion="1.1"' in gripper_fdl
+    liquid_fdl = Serializer.serialize(liquid_feature.serialize)
+    labware_fdl = Serializer.serialize(labware_feature.serialize)
+    assert 'FeatureVersion="2.0"' in motion_fdl
+    assert 'FeatureVersion="1.2"' in gripper_fdl
     assert 'FeatureVersion="1.1"' in calibration_fdl
     assert "<Identifier>NotHomedError</Identifier>" in gripper_fdl
     assert "<Identifier>NotHomedError</Identifier>" in calibration_fdl
+    assert "<Identifier>Mix</Identifier>" in liquid_fdl
+    assert "<Identifier>TransferWithVerifiedLiquidClass</Identifier>" in liquid_fdl
+    assert "<Identifier>LiquidClassNotSupportedError</Identifier>" in liquid_fdl
+    assert "<Identifier>MoveLabware</Identifier>" in labware_fdl
+    assert "<Identifier>MoveLid</Identifier>" in labware_fdl
+    assert "<Identifier>AvailablePlans</Identifier>" in labware_fdl
+    assert "<Identifier>DeckState</Identifier>" in labware_fdl
+    assert "<Identifier>DestinationOccupiedError</Identifier>" in labware_fdl
+    assert "<Identifier>PlanIdentifier</Identifier>" in labware_fdl
 
     await connector.start()
     try:

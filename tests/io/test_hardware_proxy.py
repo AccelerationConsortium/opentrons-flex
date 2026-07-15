@@ -9,6 +9,7 @@ running against the raw API directly.
 """
 
 import asyncio
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -17,11 +18,15 @@ from opentrons import types
 from opentrons.hardware_control import API
 from opentrons.hardware_control.backends.simulator import Simulator
 from opentrons.hardware_control.errors import OutOfBoundsMove
-from opentrons.hardware_control.types import Axis, MotionChecks
+from opentrons.hardware_control.types import Axis, MotionChecks, OT3Mount
 from opentrons_shared_data.errors.exceptions import PositionUnknownError
 from opentrons.drivers.smoothie_drivers.simulator import SimulatingDriver
 
-from unitelabs.opentrons_flex.io import NotHomedError
+from unitelabs.opentrons_flex.io import (
+    DirectGripperControlDisabledError,
+    LabwareMovementState,
+    NotHomedError,
+)
 from unitelabs.opentrons_flex.io.hardware_proxy import HardwareProxy, _TimedLock
 
 
@@ -273,6 +278,34 @@ async def test_proxy_halt_during_full_home_keeps_recovery_gate(
         await home_task
 
     assert proxy._recovery_state.rehome_required
+
+
+async def test_proxy_blocks_http_gripper_bypass_when_labware_state_is_managed(tmp_path: Path) -> None:
+    class FakeHardwareAPI:
+        async def grip(self) -> None:
+            raise AssertionError("grip must be rejected before hardware delegation")
+
+        async def move_to(self, mount: OT3Mount, position: object) -> None:
+            raise AssertionError("move_to must be rejected before hardware delegation")
+
+        async def move_axes(self, position: dict[Axis, float]) -> None:
+            raise AssertionError("move_axes must be rejected before hardware delegation")
+
+    state = LabwareMovementState(tmp_path / "labware-state.json", {"D1": "plate-1"})
+    proxy = HardwareProxy(FakeHardwareAPI(), labware_state=state)  # type: ignore[arg-type]
+    try:
+        with pytest.raises(DirectGripperControlDisabledError, match="HTTP grip"):
+            await proxy.grip()
+        with pytest.raises(DirectGripperControlDisabledError, match="HTTP move_to"):
+            await proxy.move_to(OT3Mount.GRIPPER, object())
+        with pytest.raises(DirectGripperControlDisabledError, match="HTTP move_to"):
+            await proxy.move_to(types.Mount.EXTENSION, object())
+        with pytest.raises(DirectGripperControlDisabledError, match="HTTP move_axes"):
+            await proxy.move_axes(position={Axis.Z_G: 100.0})
+        with pytest.raises(DirectGripperControlDisabledError, match="HTTP move_axes"):
+            await proxy.move_axes({Axis.G: 10.0})
+    finally:
+        state.close()
 
 
 # ── Lock serialisation ────────────────────────────────────────────────────────

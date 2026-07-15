@@ -28,7 +28,7 @@ from unitelabs.cdk import SiLAServerConfig
 from unitelabs.opentrons_flex import OpentronsFlexConfig, create_app
 from unitelabs.opentrons_flex.features.motion_control import Mount
 
-_PKG = "sila2.ca.accelerationconsortium.robots.motioncontrolfeature.v1"
+_PKG = "sila2.ca.accelerationconsortium.robots.motioncontrolfeature.v2"
 _SERVICE = f"{_PKG}.MotionControlFeature"
 
 _GRIPPER_PKG = "sila2.ca.accelerationconsortium.robots.gripperfeature.v1"

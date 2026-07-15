@@ -24,14 +24,8 @@ from ..io import (
     FlexCalibrationController,
     NotHomedError,
 )
+from ._pipette_types import PIPETTE_MOUNTS, PipetteMount
 from ._progress import OperationPhase, OperationProgress, report_progress
-
-
-class PipetteMount(enum.Enum):
-    """A pipette mount eligible for calibration (the gripper calibrates separately)."""
-
-    LEFT = "LEFT"
-    RIGHT = "RIGHT"
 
 
 class GripperJaw(enum.Enum):
@@ -51,7 +45,7 @@ class Offset:
 
 
 def _ot3_pipette_mount(mount: PipetteMount) -> OT3Mount:
-    return OT3Mount.LEFT if mount is PipetteMount.LEFT else OT3Mount.RIGHT
+    return PIPETTE_MOUNTS[mount]
 
 
 class CalibrationFeature(sila.Feature):

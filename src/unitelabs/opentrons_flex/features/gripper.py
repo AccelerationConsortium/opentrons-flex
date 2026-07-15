@@ -15,14 +15,39 @@ from dataclasses import dataclass
 from unitelabs.cdk import sila
 from unitelabs.cdk.sila import constraints
 
-from ..io import FlexGripperController, GripActionError, GripperNotAttachedError, NotHomedError
+from ..io import (
+    DirectGripperControlDisabledError,
+    FlexGripperController,
+    GripActionError,
+    GripperNotAttachedError,
+    NotHomedError,
+)
 from ._progress import OperationPhase, OperationProgress, report_progress
 
 # Flex gripper grip force range in Newtons (documented operating envelope).
 _MIN_FORCE_N = 5.0
 _MAX_FORCE_N = 25.0
 _GripForce = typing.Annotated[
-    float, constraints.MinimalInclusive(_MIN_FORCE_N), constraints.MaximalInclusive(_MAX_FORCE_N)
+    float,
+    constraints.MinimalInclusive(_MIN_FORCE_N),
+    constraints.MaximalInclusive(_MAX_FORCE_N),
+    constraints.Unit(
+        "N",
+        [
+            constraints.Unit.Component(constraints.Unit.SI.KILOGRAM),
+            constraints.Unit.Component(constraints.Unit.SI.METER),
+            constraints.Unit.Component(constraints.Unit.SI.SECOND, exponent=-2),
+        ],
+    ),
+]
+_JawWidth = typing.Annotated[
+    float,
+    constraints.MinimalInclusive(0.0),
+    constraints.Unit(
+        "mm",
+        [constraints.Unit.Component(constraints.Unit.SI.METER)],
+        factor=0.001,
+    ),
 ]
 
 
@@ -40,10 +65,12 @@ class GripperFeature(sila.Feature):
     """SiLA2 feature for the Flex gripper: grip, ungrip, and home the jaw."""
 
     def __init__(self, controller: FlexGripperController):
-        super().__init__(originator="ca.accelerationconsortium", category="robots", version="1.1")
+        super().__init__(originator="ca.accelerationconsortium", category="robots", version="1.2")
         self._controller = controller
 
-    @sila.ObservableCommand(errors=[GripperNotAttachedError, GripActionError, NotHomedError])
+    @sila.ObservableCommand(
+        errors=[GripperNotAttachedError, GripActionError, NotHomedError, DirectGripperControlDisabledError]
+    )
     async def grip(
         self,
         force: _GripForce,
@@ -68,7 +95,9 @@ class GripperFeature(sila.Feature):
             raise
         report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, "Gripper grip completed.")
 
-    @sila.ObservableCommand(errors=[GripperNotAttachedError, GripActionError, NotHomedError])
+    @sila.ObservableCommand(
+        errors=[GripperNotAttachedError, GripActionError, NotHomedError, DirectGripperControlDisabledError]
+    )
     async def ungrip(
         self,
         *,
@@ -122,3 +151,8 @@ class GripperFeature(sila.Feature):
             gripper_id=str(info.get("gripper_id") or ""),
             state=str(info.get("state") or ""),
         )
+
+    @sila.UnobservableProperty(errors=[GripperNotAttachedError])
+    def jaw_width(self) -> _JawWidth:
+        """Return the current sensor-estimated jaw width in millimetres."""
+        return self._controller.jaw_width

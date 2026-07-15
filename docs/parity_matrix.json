@@ -1,5 +1,5 @@
 {
-  "description": "Feature-parity matrix: Opentrons robot-server HTTP API <-> SiLA2 connector. The connector re-exposes the full opentrons robot-server HTTP surface unchanged, so every HTTP route remains available; this matrix records which HTTP functions ALSO have a first-class SiLA2 equivalent. sila_support: 'supported' = SiLA equivalent exists and is exercised against the simulator; 'unclear' = a SiLA path exists but full parity needs hardware confirmation; 'unsupported' = intentionally HTTP-only (no SiLA equivalent by design).",
+  "description": "Feature-parity matrix: Opentrons robot-server HTTP API <-> SiLA2 connector. The connector re-exposes the full opentrons robot-server HTTP route shape; when durable labware plans are configured, raw HTTP gripper/extension actuation is rejected so it cannot bypass the labware ledger. This matrix records which HTTP functions ALSO have a first-class SiLA2 equivalent. sila_support: 'supported' = SiLA equivalent exists and is exercised against the simulator; 'unclear' = a SiLA path exists but full parity needs hardware confirmation; 'unsupported' = intentionally HTTP-only (no SiLA equivalent by design).",
   "sila_support_values": ["supported", "unsupported", "unclear"],
   "entries": [
     {
@@ -102,6 +102,17 @@
       "notes": "Primitive plunger moves exist only on SiLA; there is no direct low-level HTTP aspirate/dispense route (HTTP uses the protocol engine)."
     },
     {
+      "group": "Advanced liquid handling",
+      "http_method": "n/a",
+      "http_path": "",
+      "http_available": false,
+      "core": false,
+      "sila_feature": "LiquidHandlingController",
+      "sila_element": "Mix / TouchTip / ProbeLiquidLevel / tracked liquid moves / Transfer / verified liquid classes",
+      "sila_support": "supported",
+      "notes": "Atomic advanced liquid workflows share the OT3API hardware lock and are covered through the real simulator and SiLA gRPC codec."
+    },
+    {
       "group": "Tip handling",
       "http_method": "n/a",
       "http_path": "",
@@ -119,9 +130,20 @@
       "http_available": false,
       "core": false,
       "sila_feature": "GripperFeature",
-      "sila_element": "Grip / Ungrip / HomeJaw / Status",
+      "sila_element": "Grip / Ungrip / HomeJaw / Status / JawWidth",
       "sila_support": "supported",
       "notes": "Flex gripper primitives exposed on SiLA; HTTP exposes gripper only via the protocol engine."
+    },
+    {
+      "group": "Labware movement",
+      "http_method": "n/a",
+      "http_path": "",
+      "http_available": false,
+      "core": false,
+      "sila_feature": "LabwareMovementController",
+      "sila_element": "MoveLabware / MoveLid / AvailablePlans / DeckState",
+      "sila_support": "supported",
+      "notes": "Executes locally allowlisted plans with a durable location-to-labware identity ledger, official Flex gripper waypoints, module-state and pickup-width checks, fail-closed restart/cancellation recovery, and raw-gripper bypass prevention."
     },
     {
       "group": "Calibration",

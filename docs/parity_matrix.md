@@ -7,11 +7,12 @@ against the live robot-server OpenAPI schema so the matrix cannot silently drift
 
 ## How to read this
 
-The connector **re-exposes the entire opentrons robot-server HTTP API unchanged**
-(same FastAPI app, backed by our shared `HardwareProxy`). So every HTTP route is
-still available at `http://<robot-ip>:31950`. This matrix records which HTTP
-functions *also* have a first-class **SiLA2** equivalent, and where parity is not
-yet confirmed.
+The connector re-exposes the entire opentrons robot-server HTTP route shape
+(same FastAPI app, backed by our shared `HardwareProxy`) at
+`http://<robot-ip>:31950`. When durable labware plans are configured, raw HTTP
+gripper/extension and gripper-axis actuation is rejected so it cannot bypass the
+labware ledger. This matrix records which HTTP functions *also* have a first-class
+**SiLA2** equivalent, and where parity is not yet confirmed.
 
 `sila_support`:
 
@@ -34,8 +35,10 @@ yet confirmed.
 | Motion | `GET /robot/positions` | MotionControlFeature | GetPosition | ✅ supported | HTTP variant returns preset named positions (deprecated) |
 | Safety | `GET /robot/control/estopStatus` | MotionControlFeature | **MachineStatus** | ❓ unclear | E-stop/door; drives the Pitfall #2 post-move error-state check |
 | Liquid handling | *(SiLA-only)* | MotionControlFeature | Aspirate / Dispense / BlowOut / PrepareForAspirate | ✅ supported | No low-level HTTP aspirate/dispense (HTTP uses protocol engine) |
-| Tip handling | *(SiLA-only)* | PipetteFeature | PickUpTip / DropTip / GetTipPresence | ✅ supported | Sensor-verified at current position; caller owns deck/well navigation |
-| Gripper | *(SiLA-only)* | GripperFeature | Grip / Ungrip / HomeJaw / Status | ✅ supported | HTTP exposes gripper only via protocol engine |
+| Advanced liquid handling | *(SiLA-only)* | LiquidHandlingController | Mix / TouchTip / ProbeLiquidLevel / tracked moves / Transfer / verified liquid classes | ✅ supported | Atomic workflows under the shared hardware lock |
+| Tip handling | *(SiLA-only)* | TipController | PickUpTip / DropTip / GetTipPresence | ✅ supported | Sensor-verified atomic move and tip actuation |
+| Gripper | *(SiLA-only)* | GripperFeature | Grip / Ungrip / HomeJaw / Status / JawWidth | ✅ supported | HTTP exposes gripper only via protocol engine |
+| Labware movement | *(SiLA-only)* | LabwareMovementController | MoveLabware / MoveLid / AvailablePlans / DeckState | ✅ supported | Locally allowlisted plans, durable identity occupancy, module-state, official waypoints, pickup-width, fail-closed recovery, and raw-gripper bypass prevention |
 | Calibration | *(SiLA-only)* | CalibrationFeature | CalibratePipette / CalibrateGripperJaw / CalibrateDeck | ❓ unclear | Probe-based; confirm on hardware with probe attached |
 | Server settings | `GET /settings` | — | — | ⛔ unsupported | Server config is HTTP-only per AGENTS.md |
 | Identify | `POST /identify` | — | — | ⛔ unsupported | Operator equivalent on SiLA is SetLights |

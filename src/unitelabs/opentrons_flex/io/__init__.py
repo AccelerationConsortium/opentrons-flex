@@ -24,9 +24,19 @@ from ._errors import (
     COMMON_MODULE_ERRORS,
     CalibrationFailedError,
     CalibrationProbeNotAttachedError,
+    DestinationOccupiedError,
+    DirectGripperControlDisabledError,
     GripActionError,
     GripperNotAttachedError,
+    LiquidClassNotSupportedError,
+    LiquidHandlingError,
+    LiquidNotFoundError,
+    LiquidVolumeOutOfRangeError,
+    LabwareMovementNotAllowedError,
+    LabwareNotPickedError,
+    LabwareNotPlacedError,
     MachineErrorStateError,
+    NozzleConfigurationError,
     ModuleNotRespondingError,
     ModuleOperationError,
     MovementOutOfBoundsError,
@@ -50,11 +60,34 @@ from ._types import (
 )
 from .absorbance_reader import AbsorbanceReaderController
 from .calibration import FlexCalibrationController
-from .flex_motion import Axis, FlexMotionController, MachineState, OT3Mount, Point, TipStateType
+from .flex_motion import (
+    Axis,
+    FlexMotionController,
+    MachineState,
+    NozzleConfigurationState,
+    OT3Mount,
+    Point,
+    TipStateType,
+)
 from .flex_stacker import FlexStackerController
 from .gripper import FlexGripperController
 from .hardware_proxy import HardwareProxy
 from .heater_shaker import HeaterShakerController
+from .labware_movement import (
+    FlexLabwareMovementController,
+    LabwareGripGeometry,
+    LabwareMovementPlan,
+    LabwareMoveResult,
+    LoadedLabwareMovementConfig,
+    load_labware_movement_config,
+)
+from .labware_state import LabwareMovementState
+from .liquid_handling import (
+    FlexLiquidHandlingController,
+    LiquidTransferProfile,
+    LiquidWellGeometry,
+    VerifiedLiquidTransfer,
+)
 from .modules import scan_module_ports
 from .temperature_module import TemperatureModuleController
 from .thermocycler import ThermocyclerController
@@ -69,9 +102,13 @@ __all__ = [
     "Axis",
     "CalibrationFailedError",
     "CalibrationProbeNotAttachedError",
+    "DestinationOccupiedError",
     "DeviceInfo",
+    "DirectGripperControlDisabledError",
     "FlexCalibrationController",
     "FlexGripperController",
+    "FlexLabwareMovementController",
+    "FlexLiquidHandlingController",
     "FlexMotionController",
     "FlexStackerController",
     "FlexStackerLimitSwitches",
@@ -80,12 +117,28 @@ __all__ = [
     "GripperNotAttachedError",
     "HardwareProxy",
     "HeaterShakerController",
+    "LabwareGripGeometry",
+    "LabwareMoveResult",
+    "LabwareMovementNotAllowedError",
+    "LabwareMovementPlan",
+    "LabwareMovementState",
+    "LabwareNotPickedError",
+    "LabwareNotPlacedError",
+    "LiquidClassNotSupportedError",
+    "LiquidHandlingError",
+    "LiquidNotFoundError",
+    "LiquidTransferProfile",
+    "LiquidVolumeOutOfRangeError",
+    "LiquidWellGeometry",
+    "LoadedLabwareMovementConfig",
     "MachineErrorStateError",
     "MachineState",
     "ModuleNotRespondingError",
     "ModuleOperationError",
     "MovementOutOfBoundsError",
     "NotHomedError",
+    "NozzleConfigurationError",
+    "NozzleConfigurationState",
     "OT3Mount",
     "PipetteNotAttachedError",
     "Point",
@@ -98,5 +151,7 @@ __all__ = [
     "TipPickupError",
     "TipStateError",
     "TipStateType",
+    "VerifiedLiquidTransfer",
+    "load_labware_movement_config",
     "scan_module_ports",
 ]

@@ -12,6 +12,8 @@ from .features import (
     FlexStackerFeature,
     GripperFeature,
     HeaterShakerFeature,
+    LabwareMovementController,
+    LiquidHandlingController,
     MotionControlFeature,
     PipetteFeature,
     TemperatureModuleFeature,
@@ -22,12 +24,17 @@ from .io import (
     AbsorbanceReaderController,
     FlexCalibrationController,
     FlexGripperController,
+    FlexLabwareMovementController,
+    FlexLiquidHandlingController,
     FlexMotionController,
     FlexStackerController,
     HardwareProxy,
     HeaterShakerController,
+    LoadedLabwareMovementConfig,
+    LabwareMovementState,
     TemperatureModuleController,
     ThermocyclerController,
+    load_labware_movement_config,
 )
 
 log = logging.getLogger(__name__)
@@ -75,7 +82,10 @@ class OpentronsFlexConfig(ConnectorBaseConfig):
         default_factory=lambda: SiLAServerConfig(
             name="Opentrons Flex",
             type="LiquidHandler",
-            description="SiLA2 connector for Opentrons Flex motion, pipettes, gripper and calibration",
+            description=(
+                "SiLA2 connector for liquid handling, tip and labware movement, modules, and calibration "
+                "on an Opentrons Flex"
+            ),
             version=str(__version__),
             vendor_url="https://opentrons.com/",
         )
@@ -88,6 +98,14 @@ class OpentronsFlexConfig(ConnectorBaseConfig):
     Flex. It is rejected in live-hardware mode rather than silently substituting a
     simulated module for a missing physical device. Declaring this after the existing
     fields preserves the positional configuration signature for current callers.
+    """
+
+    labware_movement_config: str | None = None
+    """Local JSON file containing allowlisted gripper plans and initial deck occupancy.
+
+    Raw grip points, geometry-check tolerances, and occupancy are intentionally
+    not accepted from remote SiLA calls. Provision them locally and restart the
+    connector so the server owns and updates the movement state.
     """
 
 
@@ -127,15 +145,32 @@ def _register_core_features(
     motion: FlexMotionController,
     gripper: FlexGripperController,
     calibration: FlexCalibrationController,
+    labware_config: LoadedLabwareMovementConfig,
+    labware_state: LabwareMovementState | None,
 ) -> None:
     connector.register(MotionControlFeature(motion))
+    connector.register(LiquidHandlingController(FlexLiquidHandlingController(motion)))
+    connector.register(
+        LabwareMovementController(
+            FlexLabwareMovementController(
+                motion,
+                gripper,
+                plans=labware_config.plans,
+                state=labware_state,
+            )
+        )
+    )
     connector.register(PipetteFeature(motion))
     connector.register(TipController(motion))
     connector.register(GripperFeature(gripper))
     connector.register(CalibrationFeature(calibration))
 
 
-def _register_modules(connector: Connector, attached_modules: collections.abc.Iterable) -> None:
+def _register_modules(
+    connector: Connector,
+    attached_modules: collections.abc.Iterable,
+    shared_lock: asyncio.Lock,
+) -> None:
     factories = _module_factories()
     for module in attached_modules:
         factory = factories.get(module.MODULE_TYPE)
@@ -143,7 +178,7 @@ def _register_modules(connector: Connector, attached_modules: collections.abc.It
             log.info("Skipping unsupported module type %s", module.MODULE_TYPE.name)
             continue
         controller_cls, feature_cls = factory
-        connector.register(feature_cls(controller_cls.from_module(module)))
+        connector.register(feature_cls(controller_cls.from_module(module, lock=shared_lock)))
         log.info("Registered SiLA feature for module %s", module.MODULE_TYPE.name)
 
 
@@ -171,8 +206,14 @@ async def create_app(config: OpentronsFlexConfig) -> collections.abc.AsyncGenera
         )
         raise ValueError(message)
 
+    labware_config = (
+        load_labware_movement_config(config.labware_movement_config)
+        if config.labware_movement_config is not None
+        else LoadedLabwareMovementConfig(plans=(), initial_occupancy={}, state_file=None)
+    )
+
     if config.with_robot_server:
-        async for connector in _create_app_with_robot_server(config):
+        async for connector in _create_app_with_robot_server(config, labware_config):
             yield connector
         return
 
@@ -189,20 +230,31 @@ async def create_app(config: OpentronsFlexConfig) -> collections.abc.AsyncGenera
     motion = FlexMotionController.from_api(api, lock=shared_lock, lock_timeout_s=config.lock_timeout_s)
     gripper = FlexGripperController.from_api(api, lock=shared_lock, lock_timeout_s=config.lock_timeout_s)
     calibration = FlexCalibrationController.from_api(api, lock=shared_lock, lock_timeout_s=config.lock_timeout_s)
+    labware_state = (
+        LabwareMovementState(labware_config.state_file, labware_config.initial_occupancy)
+        if labware_config.state_file is not None
+        else None
+    )
 
-    app = Connector(config)
-    _register_core_features(app, motion, gripper, calibration)
-    _register_modules(app, api.attached_modules)
+    try:
+        app = Connector(config)
+        _register_core_features(app, motion, gripper, calibration, labware_config, labware_state)
+        _register_modules(app, api.attached_modules, shared_lock)
 
-    log.info("SiLA server listening on %s:%d", config.sila_server.hostname, config.sila_server.port)
+        log.info("SiLA server listening on %s:%d", config.sila_server.hostname, config.sila_server.port)
 
-    yield app
-
-    await api.clean_up()
+        yield app
+    finally:
+        try:
+            if labware_state is not None:
+                labware_state.close()
+        finally:
+            await api.clean_up()
 
 
 async def _create_app_with_robot_server(
     config: OpentronsFlexConfig,
+    labware_config: LoadedLabwareMovementConfig,
 ) -> collections.abc.AsyncGenerator[Connector, None]:
     """
     Start both the SiLA2 gRPC server and the opentrons HTTP robot-server in one process.
@@ -234,7 +286,17 @@ async def _create_app_with_robot_server(
         shared_hardware = await OT3API.build_hardware_controller()
 
     shared_lock = asyncio.Lock()
-    proxy = HardwareProxy(shared_hardware, lock=shared_lock, lock_timeout_s=config.lock_timeout_s)
+    labware_state = (
+        LabwareMovementState(labware_config.state_file, labware_config.initial_occupancy)
+        if labware_config.state_file is not None
+        else None
+    )
+    proxy = HardwareProxy(
+        shared_hardware,
+        lock=shared_lock,
+        lock_timeout_s=config.lock_timeout_s,
+        labware_state=labware_state,
+    )
     motion = FlexMotionController.from_api(shared_hardware, lock=shared_lock, lock_timeout_s=config.lock_timeout_s)
     gripper = FlexGripperController.from_api(shared_hardware, lock=shared_lock, lock_timeout_s=config.lock_timeout_s)
     calibration = FlexCalibrationController.from_api(
@@ -273,14 +335,19 @@ async def _create_app_with_robot_server(
     uv_server = uvicorn.Server(uv_config)
     robot_server_task = asyncio.create_task(uv_server.serve())
 
-    connector = Connector(config)
-    _register_core_features(connector, motion, gripper, calibration)
-    _register_modules(connector, shared_hardware.attached_modules)
+    try:
+        connector = Connector(config)
+        _register_core_features(connector, motion, gripper, calibration, labware_config, labware_state)
+        _register_modules(connector, shared_hardware.attached_modules, shared_lock)
 
-    log.info("SiLA server listening on %s:%d", config.sila_server.hostname, config.sila_server.port)
+        log.info("SiLA server listening on %s:%d", config.sila_server.hostname, config.sila_server.port)
 
-    yield connector
-
-    uv_server.should_exit = True
-    await asyncio.gather(robot_server_task, return_exceptions=True)
-    await shared_hardware.clean_up()
+        yield connector
+    finally:
+        uv_server.should_exit = True
+        await asyncio.gather(robot_server_task, return_exceptions=True)
+        try:
+            if labware_state is not None:
+                labware_state.close()
+        finally:
+            await shared_hardware.clean_up()

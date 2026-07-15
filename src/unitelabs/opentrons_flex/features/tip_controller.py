@@ -6,7 +6,7 @@ import math
 import typing
 from dataclasses import dataclass
 
-from opentrons.hardware_control.types import OT3Mount, TipStateType
+from opentrons.hardware_control.types import TipStateType
 from unitelabs.cdk import sila
 from unitelabs.cdk.sila import constraints
 
@@ -23,6 +23,7 @@ from ..io import (
     TipPickupError,
     TipStateError,
 )
+from ._pipette_types import PIPETTE_MOUNTS, PipetteMount
 from ._progress import OperationPhase
 
 MAX_SUPPORTED_TIP_LENGTH_MM = 100.0
@@ -48,19 +49,6 @@ _TIP_MOTION_ERRORS = [
 _TIP_STATE_ERRORS = [PipetteNotAttachedError, TipStateError]
 _FEATURE_FQI = "ca.accelerationconsortium/robots/TipController/v1"
 _T = typing.TypeVar("_T")
-
-
-class PipetteMount(enum.Enum):
-    """A Flex mount that can hold a pipette."""
-
-    LEFT = "LEFT"
-    RIGHT = "RIGHT"
-
-
-PIPETTE_MOUNTS = {
-    PipetteMount.LEFT: OT3Mount.LEFT,
-    PipetteMount.RIGHT: OT3Mount.RIGHT,
-}
 
 
 class TipPresence(enum.Enum):

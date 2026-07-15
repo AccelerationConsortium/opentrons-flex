@@ -7,6 +7,7 @@ opentrons module-object API) to assert each controller method maps to the right
 module call/property and that disconnect() is a no-op (the API owns the tty).
 """
 
+import asyncio
 from typing import ClassVar
 
 import pytest
@@ -184,6 +185,22 @@ async def test_heater_shaker_from_module_maps_calls():
     assert await ctrl.get_latch_status() == "idle_closed"
     assert await ctrl.get_device_info() == DeviceInfo.from_dict(mod.device_info)
     await ctrl.disconnect()  # no-op
+
+
+@pytest.mark.asyncio
+async def test_module_action_waits_for_shared_hardware_lock():
+    mod = FakeHeaterShaker()
+    shared_lock = asyncio.Lock()
+    ctrl = HeaterShakerController.from_module(mod, lock=shared_lock)
+
+    await shared_lock.acquire()
+    task = asyncio.create_task(ctrl.close_latch())
+    await asyncio.sleep(0)
+    assert ("close_labware_latch", (), {}) not in mod.calls
+
+    shared_lock.release()
+    await task
+    assert ("close_labware_latch", (), {}) in mod.calls
 
 
 # ── Thermocycler ──────────────────────────────────────────────────────────────
