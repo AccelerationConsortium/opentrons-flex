@@ -8,6 +8,7 @@ enums) without needing an attached module.
 """
 
 import pytest
+from sila.framework.fdl import Serializer
 
 from unitelabs.cdk import Connector, SiLAServerConfig
 from unitelabs.opentrons_flex import OpentronsFlexConfig
@@ -55,3 +56,26 @@ async def test_module_feature_sila_definition_builds(feature_cls) -> None:
         assert connector.sila_server.protobuf is not None
     finally:
         await connector.stop()
+
+
+@_REQUIRES_REAL_CDK
+def test_heater_shaker_definition_has_units_constraints_and_controller_name() -> None:
+    """The workflow-facing Heater-Shaker FDL exposes its physical constraints."""
+    feature = HeaterShakerFeature(object())
+    feature.attach()
+    fdl = Serializer.serialize(feature.serialize)
+
+    assert 'FeatureVersion="2.0"' in fdl
+    assert "<Identifier>HeaterShakerFeature</Identifier>" in fdl
+    assert "<DisplayName>Heater Shaker Controller</DisplayName>" in fdl
+    assert "<Identifier>SetRpm</Identifier>" in fdl
+    assert "<Identifier>Temperature</Identifier>" in fdl
+    assert "<Identifier>TemperatureCelsius</Identifier>" not in fdl
+    assert "<MinimalInclusive>200</MinimalInclusive>" in fdl
+    assert "<MaximalInclusive>3000</MaximalInclusive>" in fdl
+    assert "<Label>rpm</Label>" in fdl
+    assert "<SIUnit>Second</SIUnit>" in fdl
+    assert "<Exponent>-1</Exponent>" in fdl
+    assert "<Label>°C</Label>" in fdl
+    assert "<SIUnit>Kelvin</SIUnit>" in fdl
+    assert "<Offset>273.15</Offset>" in fdl

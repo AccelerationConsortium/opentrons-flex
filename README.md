@@ -40,6 +40,15 @@ Motion is exposed per **mount** (`LEFT`, `RIGHT`, `GRIPPER`) in deck coordinates
 | `CalibrationFeature` | `CalibratePipette`, `CalibrateGripperJaw`, `CalibrateDeck` (automatic probe-based routines) |
 | Module features | `HeaterShaker`, `Thermocycler`, `Temperature`, `AbsorbanceReader`, `FlexStacker` (registered when attached) |
 
+The Heater-Shaker controller exposes observable temperature, shaking, and latch
+operations with intermediate execution updates and defined module errors:
+`SetTemperature`, `WaitForTemperature`, `DeactivateHeater`, `SetRpm`,
+`StopShaking`, `OpenLatch`, `CloseLatch`, `GetTemperature`, `GetRpm`,
+`GetLatchStatus`, `GetStatus`, and `GetDeviceInfo`.
+Temperature inputs carry a degrees Celsius unit constraint and a 0–95 °C range;
+active shaking carries a revolutions-per-minute unit constraint and a 200–3000
+rpm range. Use `StopShaking` instead of sending an implicit zero-speed sentinel.
+
 **Key source files:**
 
 - `src/unitelabs/opentrons_flex/__init__.py` — `create_app()` entry point and
@@ -136,6 +145,8 @@ Used as such this command will create a `config.json` in the current working dir
 Key values:
 
 - `use_simulator` — `true` runs the OT3 hardware simulator (no robot); `false` drives real Flex hardware.
+- `simulated_heater_shaker` — when `true`, explicitly attaches one simulated
+  Heater-Shaker to the OT3 simulator. It is rejected when `use_simulator=false`.
 - `with_robot_server` — `true` additionally starts the in-process opentrons HTTP robot-server.
 
 Note: The `cloud_server_endpoint` values are only necessary if you want to use the connector with the UniteLabs platform.
@@ -169,6 +180,9 @@ uv run --extra test python -m pytest tests/io tests/features
 
 # gRPC integration tests over the wire (in-process SiLA server + OT3 simulator)
 uv run --extra test python -m pytest tests/integration -k grpc
+
+# Full Heater-Shaker workflow over SiLA gRPC against the explicit module simulator
+uv run --extra test python -m pytest tests/integration/test_grpc_heater_shaker.py -v
 
 # Full local smoketest: SiLA gRPC + in-process robot-server HTTP API, both backed
 # by the OT3 simulator. This is the CI/CD end-to-end path before real hardware.
@@ -208,6 +222,26 @@ uv run --extra test python -m pytest tests/integration/http_api --robot-http <ro
 Tests marked `@pytest.mark.simulator_only` are skipped automatically when `--robot` is
 set. Hardware motion is validated through the explicit HITL suite below, not through
 the broad simulator integration suite.
+
+For a Flex with a physical Heater-Shaker, begin with the read-only identity and
+status check. It does not move the latch, heat, or shake:
+
+```sh
+uv run --extra test python -m pytest \
+  tests/integration/hardware/test_hitl_heater_shaker.py \
+  -k identity --robot <robot-ip>:50051 -v
+```
+
+The actuation test is gated separately. Run it only after installing a compatible
+thermal adapter and secured labware, closing the robot door, and keeping the E-stop
+ready. It closes the latch, shakes at the minimum 200 rpm, then stops and deactivates
+the heater in cleanup:
+
+```sh
+uv run --extra test python -m pytest \
+  tests/integration/hardware/test_hitl_heater_shaker.py \
+  --robot <robot-ip>:50051 --heater-shaker-actuation -v
+```
 
 Every integration run prints its **mode/target/device** header and records
 `mode` / `sila_target` / `http_target` / `device_id` to each test's junit

@@ -6,6 +6,7 @@ expected controller method and return structured data rather than a boolean
 success sentinel.
 """
 
+import asyncio
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -28,7 +29,14 @@ from unitelabs.opentrons_flex.features.flex_stacker import (
     StackerLedPattern,
     StackerStatus,
 )
-from unitelabs.opentrons_flex.features.heater_shaker import HeaterShakerFeature, HeaterShakerStatus, LatchStatus
+from unitelabs.opentrons_flex.features.heater_shaker import (
+    HeaterShakerFeature,
+    HeaterShakerSpeed,
+    HeaterShakerStatus,
+    HeaterShakerTemperature,
+    LatchStatus,
+)
+from unitelabs.opentrons_flex.features._progress import OperationPhase
 from unitelabs.opentrons_flex.features.temperature import TemperatureModuleFeature
 from unitelabs.opentrons_flex.features.thermocycler import (
     LidStatus,
@@ -303,19 +311,27 @@ async def test_heater_shaker_feature_endpoints() -> None:
     feature = HeaterShakerFeature(controller)
 
     status, intermediate = _obs()
-    assert await feature.set_temperature(42.0, status=status, intermediate=intermediate) == Temperature(25.0, 42.0)
+    assert await feature.set_temperature(42.0, status=status, intermediate=intermediate) == HeaterShakerTemperature(
+        25.0, 42.0, True
+    )
     status, intermediate = _obs()
-    assert await feature.wait_for_temperature(42.0, status=status, intermediate=intermediate) == Temperature(25.0, 42.0)
+    assert await feature.wait_for_temperature(
+        42.0, status=status, intermediate=intermediate
+    ) == HeaterShakerTemperature(25.0, 42.0, True)
     status, intermediate = _obs()
-    assert await feature.get_temperature(status=status, intermediate=intermediate) == Temperature(25.0, 42.0)
+    assert await feature.get_temperature(status=status, intermediate=intermediate) == HeaterShakerTemperature(
+        25.0, 42.0, True
+    )
     status, intermediate = _obs()
-    assert await feature.deactivate_heater(status=status, intermediate=intermediate) == Temperature(25.0, 42.0)
+    assert await feature.deactivate_heater(status=status, intermediate=intermediate) == HeaterShakerTemperature(
+        25.0, 42.0, True
+    )
     status, intermediate = _obs()
-    assert await feature.set_rpm(1000, status=status, intermediate=intermediate) == RPM(500, 1000)
+    assert await feature.set_rpm(1000, status=status, intermediate=intermediate) == HeaterShakerSpeed(500, 1000, True)
     status, intermediate = _obs()
-    assert await feature.get_rpm(status=status, intermediate=intermediate) == RPM(500, 1000)
+    assert await feature.get_rpm(status=status, intermediate=intermediate) == HeaterShakerSpeed(500, 1000, True)
     status, intermediate = _obs()
-    assert await feature.stop_shaking(status=status, intermediate=intermediate) == RPM(500, 1000)
+    assert await feature.stop_shaking(status=status, intermediate=intermediate) == HeaterShakerSpeed(500, 1000, True)
     status, intermediate = _obs()
     assert await feature.open_latch(status=status, intermediate=intermediate) is LatchStatus.IDLE_OPEN
     status, intermediate = _obs()
@@ -330,6 +346,36 @@ async def test_heater_shaker_feature_endpoints() -> None:
     assert ("set_rpm", 1000) in controller.calls
     assert ("open_latch",) in controller.calls
     assert ("close_latch",) in controller.calls
+
+
+@pytest.mark.asyncio
+async def test_heater_shaker_motion_can_be_cancelled() -> None:
+    """Cancellation reaches the controller action and emits a terminal update."""
+
+    class _BlockingHeaterShaker(_HeaterShakerController):
+        started: asyncio.Event
+
+        def __init__(self) -> None:
+            super().__init__(calls=[])
+            self.started = asyncio.Event()
+
+        async def set_rpm(self, rpm: int) -> None:
+            self.calls.append(("set_rpm", rpm))
+            self.started.set()
+            await asyncio.Event().wait()
+
+    controller = _BlockingHeaterShaker()
+    feature = HeaterShakerFeature(controller)
+    status, intermediate = _obs()
+    task = asyncio.create_task(feature.set_rpm(500, status=status, intermediate=intermediate))
+
+    await controller.started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert intermediate.messages[-1].phase is OperationPhase.CANCELLED
+    assert status.updates[-1]["progress"] == 1.0
 
 
 @pytest.mark.asyncio

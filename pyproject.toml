@@ -62,6 +62,7 @@ markers = [
     "robot_http_only: test requires a live robot HTTP API; skipped unless --robot-http (or --robot) is set",
     "smoketest_http_only: test requires the local simulator HTTP stack; skipped unless --with-http-server is set",
     "hardware_only: hardware-in-the-loop test; requires a real Flex via --robot/--robot-http, skipped otherwise",
+    "heater_shaker_actuation: opt-in Heater-Shaker hardware actuation; requires --heater-shaker-actuation",
 ]
 
 [tool.ruff]

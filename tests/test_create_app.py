@@ -75,6 +75,27 @@ async def test_bare_simulator_registers_no_module_features():
 
 
 @pytest.mark.asyncio
+async def test_explicit_simulated_heater_shaker_registers_feature():
+    """The opt-in OT3 module simulator registers a real Heater-Shaker feature."""
+    config = OpentronsFlexConfig(use_simulator=True, simulated_heater_shaker=True)
+    async with _run_app(config) as registered:
+        heater_shakers = [feature for feature in registered if isinstance(feature, HeaterShakerFeature)]
+
+    assert len(heater_shakers) == 1
+    assert heater_shakers[0]._controller._module.device_info["serial"] == "HS-SIM-1"
+
+
+@pytest.mark.asyncio
+async def test_simulated_heater_shaker_is_rejected_in_live_mode():
+    """A simulation setting must never substitute hardware in a live connector."""
+    config = OpentronsFlexConfig(use_simulator=False, simulated_heater_shaker=True)
+    gen = create_app(config)
+
+    with pytest.raises(ValueError, match="requires use_simulator=true"):
+        await gen.__anext__()
+
+
+@pytest.mark.asyncio
 async def test_attached_flex_modules_register_features():
     """Every supported Flex active module type registers a matching SiLA feature."""
     from opentrons.hardware_control.modules.types import ModuleType

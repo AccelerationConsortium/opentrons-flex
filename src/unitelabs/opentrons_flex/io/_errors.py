@@ -9,19 +9,19 @@ regardless of path.
 
 Coverage (source-verified):
 - ModuleNotRespondingError  <- opentrons comm-layer SerialException / NoResponse
-- ModuleOperationError      <- ThermocyclerError, TempDeckError
+- ModuleOperationError      <- FailedCommand/ErrorResponse, ThermocyclerError, TempDeckError
 
-Known gap: the heater-shaker has no dedicated opentrons exception class, so its
-operational failures surface as comm errors (ModuleNotRespondingError) or, if
-neither, as undefined errors. This should be revisited once the real
-heater-shaker failure exceptions are observed on hardware.
+Known gap: the heater-shaker has no dedicated opentrons exception class. Its
+firmware rejections surface as FailedCommand and map to ModuleOperationError,
+while any failure outside the translated classes remains an undefined error.
+Revisit this once dedicated heater-shaker exceptions are observed on hardware.
 """
 
 import functools
 import inspect
 import typing
 
-from opentrons.drivers.asyncio.communication.errors import SerialException
+from opentrons.drivers.asyncio.communication.errors import FailedCommand, SerialException
 from opentrons.drivers.temp_deck.driver import TempDeckError
 from opentrons.hardware_control.modules.errors import AbsorbanceReaderDisconnectedError
 from opentrons.hardware_control.modules.thermocycler import ThermocyclerError
@@ -76,6 +76,10 @@ def translate_module_errors(
     async def wrapper(*args: object, **kwargs: object) -> object:
         try:
             return await fn(*args, **kwargs)
+        except FailedCommand as e:
+            # The device did respond, but rejected the operation. Preserve the
+            # firmware response (including its error code) for operator recovery.
+            raise ModuleOperationError(str(e)) from e
         except SerialException as e:
             raise ModuleNotRespondingError(str(e)) from e
         except _OPERATION_ERRORS as e:

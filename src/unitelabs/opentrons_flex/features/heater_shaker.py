@@ -17,11 +17,34 @@ from ..io import (
 )
 from ._progress import OperationProgress, run_observable
 
-# Sourced from opentrons: heater-shaker temperature validated 0-95 C
-# (opentrons/protocol_api/module_validation_and_errors.py: HEATER_SHAKER_TEMPERATURE_MAX=95),
-# shaking speed 0-3000 RPM (opentrons/hardware_control/modules/heater_shaker.py).
-_TempCelsius = typing.Annotated[float, constraints.MinimalInclusive(0.0), constraints.MaximalInclusive(95.0)]
-_Rpm = typing.Annotated[int, constraints.MinimalInclusive(0), constraints.MaximalInclusive(3000)]
+# The constraints mirror the public Opentrons Heater-Shaker contract. A target
+# below ambient may not be reachable, but API 2.25+ accepts 0-95 degrees Celsius.
+# Active shaking is 200-3000 revolutions per minute; stopping is a separate
+# command so 0 is not overloaded as a hidden control value.
+_CELSIUS = constraints.Unit(
+    "°C",
+    [constraints.Unit.Component(constraints.Unit.SI.KELVIN)],
+    offset=273.15,
+)
+_REVOLUTIONS_PER_MINUTE = constraints.Unit(
+    "rpm",
+    [constraints.Unit.Component(constraints.Unit.SI.SECOND, exponent=-1)],
+    factor=1 / 60,
+)
+_TempCelsius = typing.Annotated[
+    float,
+    constraints.MinimalInclusive(0.0),
+    constraints.MaximalInclusive(95.0),
+    _CELSIUS,
+]
+_Rpm = typing.Annotated[
+    int,
+    constraints.MinimalInclusive(200),
+    constraints.MaximalInclusive(3000),
+    _REVOLUTIONS_PER_MINUTE,
+]
+_TemperatureReading = typing.Annotated[float, _CELSIUS]
+_RotationSpeedReading = typing.Annotated[int, _REVOLUTIONS_PER_MINUTE]
 
 
 log = logging.getLogger(__name__)
@@ -46,14 +69,77 @@ class LatchStatus(enum.Enum):
 
 
 @dataclass
-class HeaterShakerStatus:
-    """Current status of heater-shaker module."""
+class HeaterShakerTemperature:
+    """
+    Current and requested Heater-Shaker temperature.
 
-    temperature_current: float
-    temperature_target: float | None
-    rpm_current: int
-    rpm_target: int | None
+    Attributes:
+        current: Measured plate temperature.
+        target: Requested target, or zero when TargetActive is false.
+        target_active: Whether the heater currently has an active target.
+    """
+
+    current: _TemperatureReading
+    target: _TemperatureReading
+    target_active: bool
+
+
+@dataclass
+class HeaterShakerSpeed:
+    """
+    Current and requested Heater-Shaker rotation speed.
+
+    Attributes:
+        current: Measured rotation speed.
+        target: Requested target, or zero when TargetActive is false.
+        target_active: Whether the shaker currently has an active target.
+    """
+
+    current: _RotationSpeedReading
+    target: _RotationSpeedReading
+    target_active: bool
+
+
+@dataclass
+class HeaterShakerStatus:
+    """
+    Current Heater-Shaker temperature, speed, and latch state.
+
+    Attributes:
+        temperature_current: Measured plate temperature.
+        temperature_target: Requested target, or zero when TemperatureTargetActive is false.
+        temperature_target_active: Whether the heater currently has an active target.
+        rpm_current: Measured rotation speed.
+        rpm_target: Requested target, or zero when RpmTargetActive is false.
+        rpm_target_active: Whether the shaker currently has an active target.
+        latch_status: Current labware latch state.
+    """
+
+    temperature_current: _TemperatureReading
+    temperature_target: _TemperatureReading
+    temperature_target_active: bool
+    rpm_current: _RotationSpeedReading
+    rpm_target: _RotationSpeedReading
+    rpm_target_active: bool
     latch_status: LatchStatus
+
+
+def _temperature_response(reading: Temperature) -> HeaterShakerTemperature:
+    """Convert Opentrons' nullable target into an explicit SiLA structure."""
+    return HeaterShakerTemperature(
+        current=reading.current,
+        target=reading.target if reading.target is not None else 0.0,
+        target_active=reading.target is not None,
+    )
+
+
+def _speed_response(reading: RPM) -> HeaterShakerSpeed:
+    """Convert Opentrons' nullable target into an explicit SiLA structure."""
+    return HeaterShakerSpeed(
+        current=reading.current,
+        target=reading.target if reading.target is not None else 0,
+        target_active=reading.target is not None,
+    )
 
 
 class HeaterShakerFeature(sila.Feature):
@@ -73,22 +159,28 @@ class HeaterShakerFeature(sila.Feature):
         Args:
             controller: The HeaterShakerController instance.
         """
-        super().__init__(originator="ca.accelerationconsortium", category="modules")
+        super().__init__(
+            originator="ca.accelerationconsortium",
+            category="modules",
+            identifier="HeaterShakerFeature",
+            name="Heater Shaker Controller",
+            version="2.0",
+        )
         self._controller = controller
 
     @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
     async def set_temperature(
         self,
-        temperature_celsius: _TempCelsius,
+        temperature: _TempCelsius,
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
-    ) -> Temperature:
+    ) -> HeaterShakerTemperature:
         """
         Set the target temperature.
 
         Args:
-            temperature_celsius: Target temperature in Celsius (valid range 0-95 C;
+            temperature: Target temperature in Celsius (valid range 0-95 C;
                 the module heats only, so the effective minimum is ambient).
 
         Returns:
@@ -97,26 +189,26 @@ class HeaterShakerFeature(sila.Feature):
         await run_observable(
             status,
             intermediate,
-            f"Setting heater-shaker temperature target to {temperature_celsius} C.",
+            f"Setting heater-shaker temperature target to {temperature} C.",
             "Heater-shaker temperature target set.",
             "Heater-shaker temperature command cancelled.",
-            self._controller.set_temperature(temperature_celsius),
+            self._controller.set_temperature(temperature),
         )
-        return await self._controller.get_temperature()
+        return _temperature_response(await self._controller.get_temperature())
 
     @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
     async def wait_for_temperature(
         self,
-        temperature_celsius: _TempCelsius,
+        temperature: _TempCelsius,
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
-    ) -> Temperature:
+    ) -> HeaterShakerTemperature:
         """
         Wait until the heater reaches a target temperature.
 
         Args:
-            temperature_celsius: Temperature in Celsius to wait for.
+            temperature: Temperature in Celsius to wait for.
 
         Yields:
             Update: Current heater wait progress update.
@@ -127,12 +219,12 @@ class HeaterShakerFeature(sila.Feature):
         await run_observable(
             status,
             intermediate,
-            f"Waiting for heater-shaker to reach {temperature_celsius} C.",
+            f"Waiting for heater-shaker to reach {temperature} C.",
             "Heater-shaker reached target temperature.",
             "Heater-shaker temperature wait cancelled.",
-            self._controller.wait_for_temperature(temperature_celsius),
+            self._controller.wait_for_temperature(temperature),
         )
-        return await self._controller.get_temperature()
+        return _temperature_response(await self._controller.get_temperature())
 
     @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
     async def get_temperature(
@@ -140,14 +232,14 @@ class HeaterShakerFeature(sila.Feature):
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
-    ) -> Temperature:
+    ) -> HeaterShakerTemperature:
         """
         Get the current temperature.
 
         Returns:
             Current and target temperature.
         """
-        return await run_observable(
+        reading = await run_observable(
             status,
             intermediate,
             "Reading heater-shaker temperature.",
@@ -155,6 +247,7 @@ class HeaterShakerFeature(sila.Feature):
             "Heater-shaker temperature read cancelled.",
             self._controller.get_temperature(),
         )
+        return _temperature_response(reading)
 
     @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
     async def deactivate_heater(
@@ -162,7 +255,7 @@ class HeaterShakerFeature(sila.Feature):
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
-    ) -> Temperature:
+    ) -> HeaterShakerTemperature:
         """
         Turn off the heater.
 
@@ -177,7 +270,7 @@ class HeaterShakerFeature(sila.Feature):
             "Heater-shaker heater deactivation cancelled.",
             self._controller.deactivate_heater(),
         )
-        return await self._controller.get_temperature()
+        return _temperature_response(await self._controller.get_temperature())
 
     @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
     async def set_rpm(
@@ -186,13 +279,13 @@ class HeaterShakerFeature(sila.Feature):
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
-    ) -> RPM:
+    ) -> HeaterShakerSpeed:
         """
         Set the shaking speed.
 
         Args:
-            rpm: Target shaking speed in revolutions per minute (valid range 0-3000;
-                0 stops shaking).
+            rpm: Target shaking speed in revolutions per minute (valid range 200-3000).
+                Use StopShaking to stop and home the shaker.
 
         Returns:
             Current and target RPM.
@@ -205,7 +298,7 @@ class HeaterShakerFeature(sila.Feature):
             "Heater-shaker speed command cancelled.",
             self._controller.set_rpm(rpm),
         )
-        return await self._controller.get_rpm()
+        return _speed_response(await self._controller.get_rpm())
 
     @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
     async def get_rpm(
@@ -213,14 +306,14 @@ class HeaterShakerFeature(sila.Feature):
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
-    ) -> RPM:
+    ) -> HeaterShakerSpeed:
         """
         Get the current shaking speed.
 
         Returns:
             Current and target RPM.
         """
-        return await run_observable(
+        reading = await run_observable(
             status,
             intermediate,
             "Reading heater-shaker speed.",
@@ -228,6 +321,7 @@ class HeaterShakerFeature(sila.Feature):
             "Heater-shaker speed read cancelled.",
             self._controller.get_rpm(),
         )
+        return _speed_response(reading)
 
     @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
     async def stop_shaking(
@@ -235,7 +329,7 @@ class HeaterShakerFeature(sila.Feature):
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
-    ) -> RPM:
+    ) -> HeaterShakerSpeed:
         """
         Stop shaking and return to home position.
 
@@ -250,7 +344,7 @@ class HeaterShakerFeature(sila.Feature):
             "Heater-shaker stop shaking cancelled.",
             self._controller.stop_shaking(),
         )
-        return await self._controller.get_rpm()
+        return _speed_response(await self._controller.get_rpm())
 
     @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
     async def open_latch(
@@ -350,9 +444,11 @@ class HeaterShakerFeature(sila.Feature):
 
         return HeaterShakerStatus(
             temperature_current=temp.current,
-            temperature_target=temp.target,
+            temperature_target=temp.target if temp.target is not None else 0.0,
+            temperature_target_active=temp.target is not None,
             rpm_current=rpm.current,
-            rpm_target=rpm.target,
+            rpm_target=rpm.target if rpm.target is not None else 0,
+            rpm_target_active=rpm.target is not None,
             latch_status=LatchStatus(latch.value),
         )
 

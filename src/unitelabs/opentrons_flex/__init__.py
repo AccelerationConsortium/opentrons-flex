@@ -81,6 +81,15 @@ class OpentronsFlexConfig(ConnectorBaseConfig):
         )
     )
 
+    simulated_heater_shaker: bool = False
+    """Attach one simulated Heater-Shaker when ``use_simulator`` is enabled.
+
+    This is explicit and opt-in so a bare simulator keeps matching an unconfigured
+    Flex. It is rejected in live-hardware mode rather than silently substituting a
+    simulated module for a missing physical device. Declaring this after the existing
+    fields preserves the positional configuration signature for current callers.
+    """
+
 
 # Module type -> (IO controller class, SiLA feature class). The Magnetic Module is
 # intentionally absent — the Flex does not support it.
@@ -93,6 +102,23 @@ def _module_factories() -> dict:
         ModuleType.HEATER_SHAKER: (HeaterShakerController, HeaterShakerFeature),
         ModuleType.THERMOCYCLER: (ThermocyclerController, ThermocyclerFeature),
         ModuleType.TEMPERATURE: (TemperatureModuleController, TemperatureModuleFeature),
+    }
+
+
+def _simulator_attached_modules(config: OpentronsFlexConfig) -> dict:
+    """Build the explicit module inventory passed to the OT3 simulator."""
+    if not config.simulated_heater_shaker:
+        return {}
+
+    from opentrons.hardware_control.modules.types import SimulatingModule
+
+    return {
+        "heatershaker": [
+            SimulatingModule(
+                serial_number="HS-SIM-1",
+                model="heaterShakerModuleV1",
+            )
+        ]
     }
 
 
@@ -138,6 +164,13 @@ async def create_app(config: OpentronsFlexConfig) -> collections.abc.AsyncGenera
         config.with_robot_server,
     )
 
+    if config.simulated_heater_shaker and not config.use_simulator:
+        message = (
+            "simulated_heater_shaker requires use_simulator=true. "
+            "For a real Flex, connect and power the physical Heater-Shaker before starting the connector."
+        )
+        raise ValueError(message)
+
     if config.with_robot_server:
         async for connector in _create_app_with_robot_server(config):
             yield connector
@@ -147,7 +180,7 @@ async def create_app(config: OpentronsFlexConfig) -> collections.abc.AsyncGenera
 
     if config.use_simulator:
         log.info("Building OT3API simulator backend")
-        api = await OT3API.build_hardware_simulator()
+        api = await OT3API.build_hardware_simulator(attached_modules=_simulator_attached_modules(config))
     else:
         log.info("Building OT3API for real Flex hardware (CAN)")
         api = await OT3API.build_hardware_controller()
@@ -195,7 +228,7 @@ async def _create_app_with_robot_server(
 
     if config.use_simulator:
         log.info("Building shared OT3API (simulator)")
-        shared_hardware = await OT3API.build_hardware_simulator()
+        shared_hardware = await OT3API.build_hardware_simulator(attached_modules=_simulator_attached_modules(config))
     else:
         log.info("Building shared OT3API on CAN bus")
         shared_hardware = await OT3API.build_hardware_controller()

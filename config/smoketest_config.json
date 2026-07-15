@@ -39,6 +39,7 @@
     }
   },
   "use_simulator": true,
+  "simulated_heater_shaker": true,
   "with_robot_server": true,
   "robot_server_tcp_port": 31950,
   "lock_timeout_s": 10

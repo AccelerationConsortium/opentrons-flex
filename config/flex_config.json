@@ -51,6 +51,7 @@
     }
   },
   "use_simulator": false,
+  "simulated_heater_shaker": false,
   "with_robot_server": true,
   "robot_server_uds": "/run/aiohttp.sock",
   "lock_timeout_s": null

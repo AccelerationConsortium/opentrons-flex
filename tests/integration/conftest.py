@@ -99,6 +99,15 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "Requires the robot_server package to be installed."
         ),
     )
+    parser.addoption(
+        "--heater-shaker-actuation",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable opt-in Heater-Shaker hardware actuation tests. Before using this flag, "
+            "install a compatible thermal adapter and labware, close the robot door, and keep the E-stop ready."
+        ),
+    )
 
 
 def _is_hardware_run(config: pytest.Config) -> bool:
@@ -143,11 +152,15 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     has_robot_http = bool(config.getoption("--robot-http")) or has_robot or bool(config.getoption("--with-http-server"))
     has_smoketest_http = bool(config.getoption("--with-http-server"))
     has_hardware = _is_hardware_run(config)
+    has_heater_shaker_actuation = bool(config.getoption("--heater-shaker-actuation"))
 
     skip_sim = pytest.mark.skip(reason="simulator-only test, skipped when --robot is set")
     skip_http = pytest.mark.skip(reason="robot_http_only test, requires --robot-http, --robot, or --with-http-server")
     skip_smoketest_http = pytest.mark.skip(reason="smoketest_http_only test, requires --with-http-server")
     skip_hardware = pytest.mark.skip(reason="hardware_only test, requires --robot or --robot-http (a real Flex)")
+    skip_heater_shaker_actuation = pytest.mark.skip(
+        reason="Heater-Shaker actuation requires the explicit --heater-shaker-actuation safety gate"
+    )
 
     for item in items:
         if has_robot and item.get_closest_marker("simulator_only"):
@@ -158,6 +171,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip_smoketest_http)
         if not has_hardware and item.get_closest_marker("hardware_only"):
             item.add_marker(skip_hardware)
+        if not has_heater_shaker_actuation and item.get_closest_marker("heater_shaker_actuation"):
+            item.add_marker(skip_heater_shaker_actuation)
 
 
 @pytest.fixture(scope="session")
@@ -247,6 +262,7 @@ def simulator_stack(request: pytest.FixtureRequest) -> Generator[SimulatorStack 
     async def _serve() -> None:
         config = OpentronsFlexConfig(
             use_simulator=True,
+            simulated_heater_shaker=True,
             with_robot_server=True,
             robot_server_tcp_port=http_port,
             sila_server=SiLAServerConfig(hostname="127.0.0.1", port=grpc_port, tls=False),
@@ -369,6 +385,7 @@ async def sila_channel(robot_address: str | None):
     """
     config = OpentronsFlexConfig(
         use_simulator=True,
+        simulated_heater_shaker=True,
         sila_server=SiLAServerConfig(hostname="127.0.0.1", port=0, tls=False),
         cloud_server_endpoint=None,
         discovery=None,

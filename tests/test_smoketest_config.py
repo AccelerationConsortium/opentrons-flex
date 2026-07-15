@@ -18,6 +18,7 @@ def test_smoketest_config_never_targets_real_hardware() -> None:
     cfg = _load(SMOKETEST_CONFIG)
 
     assert cfg["use_simulator"] is True
+    assert cfg["simulated_heater_shaker"] is True
     assert cfg["with_robot_server"] is True
     assert cfg["sila_server"]["hostname"] in {"127.0.0.1", "localhost"}
     assert cfg["cloud_server_endpoint"] is None
@@ -29,5 +30,6 @@ def test_real_flex_config_stays_explicitly_live() -> None:
     cfg = _load(FLEX_CONFIG)
 
     assert cfg["use_simulator"] is False
+    assert cfg["simulated_heater_shaker"] is False
     assert cfg["with_robot_server"] is True
     assert cfg["sila_server"]["hostname"] == "0.0.0.0"
