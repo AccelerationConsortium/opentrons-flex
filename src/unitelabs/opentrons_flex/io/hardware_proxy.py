@@ -9,6 +9,7 @@ commands on the Flex CAN bus.
 import asyncio
 import functools
 import inspect
+import logging
 import typing
 from collections.abc import Mapping
 
@@ -16,10 +17,18 @@ from opentrons.hardware_control import HardwareControlAPI
 from opentrons.hardware_control.types import Axis, OT3Mount
 
 from ._errors import NotHomedError
-from .recovery_state import HardwareRecoveryState, recovery_state_for
+from ._module_base import complete_before_cancellation
+from .recovery_state import (
+    FlexStackerRecoveryState,
+    HardwareRecoveryState,
+    recovery_state_for,
+    stacker_recovery_state_for,
+)
 
 if typing.TYPE_CHECKING:
     from .labware_state import LabwareMovementState
+
+log = logging.getLogger(__name__)
 
 _RECOVERY_SAFE_CALLS = frozenset(
     {
@@ -53,6 +62,139 @@ class _TimedLock:
         self._lock.release()
 
 
+_STACKER_ACTUATION_METHODS = frozenset(
+    {
+        "close_latch",
+        "deactivate",
+        "dispense_labware",
+        "home_all",
+        "home_axis",
+        "move_axis",
+        "open_latch",
+        "store_labware",
+    }
+)
+_STACKER_LABWARE_METHODS = frozenset({"dispense_labware", "store_labware"})
+
+
+class _LockedModuleProxy:
+    """Serialize one robot-server module view through the connector lock."""
+
+    def __init__(self, module: object, lock: _TimedLock) -> None:
+        self._module = module
+        self._lock = lock
+
+    @property
+    def __class__(self) -> type:
+        """Preserve runtime type checks used by Protocol Engine safety code."""
+        return self._module.__class__
+
+    async def _invoke_coroutine(
+        self,
+        _name: str,
+        attr: typing.Callable[..., typing.Awaitable[object]],
+        args: tuple[object, ...],
+        kwargs: dict[str, object],
+    ) -> object:
+        return await attr(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> object:
+        attr = getattr(self._module, name)
+
+        if inspect.isasyncgenfunction(attr):
+
+            @functools.wraps(attr)
+            async def locked_gen(*args: object, **kwargs: object) -> typing.AsyncGenerator[object, None]:
+                async with self._lock:
+                    async for item in attr(*args, **kwargs):
+                        yield item
+
+            return locked_gen
+
+        if inspect.iscoroutinefunction(attr):
+
+            @functools.wraps(attr)
+            async def locked(*args: object, **kwargs: object) -> object:
+                async with self._lock:
+                    return await self._invoke_coroutine(name, attr, args, kwargs)
+
+            return locked
+
+        return attr
+
+
+class _AbsorbanceReaderModuleProxy(_LockedModuleProxy):
+    """Keep HTTP Reader ownership until executor-backed module work settles."""
+
+    async def _invoke_coroutine(
+        self,
+        name: str,
+        attr: typing.Callable[..., typing.Awaitable[object]],
+        args: tuple[object, ...],
+        kwargs: dict[str, object],
+    ) -> object:
+        return await complete_before_cancellation(
+            attr(*args, **kwargs),
+            f"HTTP Absorbance Reader {name}",
+        )
+
+
+async def _finish_stacker_deactivation(module: object) -> None:
+    """Shield Stacker motor deactivation from repeated client cancellation."""
+    deactivate = module.deactivate
+    stop = asyncio.create_task(deactivate())
+    while not stop.done():
+        try:
+            await asyncio.shield(stop)
+        except asyncio.CancelledError:
+            continue
+    await stop
+
+
+class _FlexStackerModuleProxy(_LockedModuleProxy):
+    """Layer Stacker recovery authority onto the generic module lock."""
+
+    def __init__(self, module: object, lock: _TimedLock) -> None:
+        super().__init__(module, lock)
+        self._recovery_state: FlexStackerRecoveryState = stacker_recovery_state_for(module)
+
+    async def _invoke_coroutine(
+        self,
+        name: str,
+        attr: typing.Callable[..., typing.Awaitable[object]],
+        args: tuple[object, ...],
+        kwargs: dict[str, object],
+    ) -> object:
+        # This check deliberately runs after the generic proxy acquires the
+        # shared lock, so a queued request cannot race a failing SiLA action.
+        if name in _STACKER_LABWARE_METHODS and self._recovery_state.recovery_required(self._module):
+            msg = "The Flex Stacker requires a complete HomeAll recovery before moving labware."
+            raise NotHomedError(msg)
+
+        try:
+            result = await attr(*args, **kwargs)
+        except asyncio.CancelledError:
+            if name in _STACKER_ACTUATION_METHODS:
+                self._recovery_state.require_full_home()
+                try:
+                    await _finish_stacker_deactivation(self._module)
+                except Exception:
+                    log.exception("Flex Stacker failed to deactivate after a cancelled HTTP operation")
+            raise
+        except Exception:
+            if name in _STACKER_ACTUATION_METHODS:
+                self._recovery_state.require_full_home()
+            raise
+
+        if name in _STACKER_ACTUATION_METHODS and result is False:
+            self._recovery_state.require_full_home()
+        elif name == "home_all":
+            ignore_latch = bool(args[0]) if args else bool(kwargs.get("ignore_latch", False))
+            if not ignore_latch:
+                self._recovery_state.mark_fully_homed()
+        return result
+
+
 class HardwareProxy:
     """
     Serialises concurrent async callers against a shared HardwareControlAPI.
@@ -71,6 +213,7 @@ class HardwareProxy:
     _lock: _TimedLock
     _recovery_state: HardwareRecoveryState
     _labware_state: "LabwareMovementState | None"
+    _module_proxies: dict[int, tuple[object, object]]
 
     def __init__(
         self,
@@ -84,12 +227,32 @@ class HardwareProxy:
         object.__setattr__(self, "_lock", _TimedLock(raw_lock, lock_timeout_s))
         object.__setattr__(self, "_recovery_state", recovery_state_for(api))
         object.__setattr__(self, "_labware_state", labware_state)
+        object.__setattr__(self, "_module_proxies", {})
 
     def __setattr__(self, name: str, value: object) -> None:
         setattr(self._api, name, value)
 
     def __getattr__(self, name: str) -> object:
         attr = getattr(self._api, name)
+
+        if name == "attached_modules":
+            live_proxies: dict[int, tuple[object, object]] = {}
+            result: list[object] = []
+            for module in attr:
+                key = id(module)
+                cached = self._module_proxies.get(key)
+                if cached is not None and cached[0] is module:
+                    module_proxy = cached[1]
+                elif _is_flex_stacker_module(module):
+                    module_proxy = _FlexStackerModuleProxy(module, self._lock)
+                elif _is_absorbance_reader_module(module):
+                    module_proxy = _AbsorbanceReaderModuleProxy(module, self._lock)
+                else:
+                    module_proxy = _LockedModuleProxy(module, self._lock)
+                live_proxies[key] = (module, module_proxy)
+                result.append(module_proxy)
+            object.__setattr__(self, "_module_proxies", live_proxies)
+            return result
 
         if inspect.isasyncgenfunction(attr):
 
@@ -179,6 +342,16 @@ class HardwareProxy:
         routes to distinguish OT-2 (API) from OT-3 (OT3API).
         """
         return isinstance(self._api, cls)
+
+
+def _is_flex_stacker_module(module: object) -> bool:
+    module_type = getattr(module, "MODULE_TYPE", None)
+    return getattr(module_type, "name", "") == "FLEX_STACKER"
+
+
+def _is_absorbance_reader_module(module: object) -> bool:
+    module_type = getattr(module, "MODULE_TYPE", None)
+    return getattr(module_type, "name", "") == "ABSORBANCE_READER"
 
 
 def _is_full_home(args: tuple[object, ...], kwargs: dict[str, object]) -> bool:

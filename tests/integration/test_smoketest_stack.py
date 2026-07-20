@@ -6,8 +6,8 @@ import pytest
 from unitelabs.opentrons_flex.features.motion_control import Mount, Position
 from .observable import call_observable
 
-_PKG = "sila2.ca.accelerationconsortium.robots.motioncontrolfeature.v2"
-_SERVICE = f"{_PKG}.MotionControlFeature"
+_PKG = "sila2.ca.accelerationconsortium.robots.motioncontroller.v2"
+_SERVICE = f"{_PKG}.MotionController"
 
 
 async def _property(channel: grpc.aio.Channel, pb: object, name: str) -> dict:

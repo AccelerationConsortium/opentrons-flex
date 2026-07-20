@@ -31,8 +31,8 @@ from unitelabs.opentrons_flex.features.motion_control import MachineStatus, Moun
 
 from ..observable import call_observable
 
-_PKG = "sila2.ca.accelerationconsortium.robots.motioncontrolfeature.v2"
-_SERVICE = f"{_PKG}.MotionControlFeature"
+_PKG = "sila2.ca.accelerationconsortium.robots.motioncontroller.v2"
+_SERVICE = f"{_PKG}.MotionController"
 
 # Safe HITL jog distance (mm): small, along +Z (up, away from the deck).
 _JOG_MM = 5.0

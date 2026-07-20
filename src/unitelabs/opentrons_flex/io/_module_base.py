@@ -25,6 +25,27 @@ from ._errors import translate_module_errors, translate_public_async_methods
 from ._types import DeviceInfo
 
 log = logging.getLogger(__name__)
+_T = typing.TypeVar("_T")
+
+
+async def complete_before_cancellation(operation: typing.Awaitable[_T], description: str) -> _T:
+    """Wait for native work to settle before propagating client cancellation."""
+    task = asyncio.ensure_future(operation)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            log.exception("%s failed while completing after client cancellation", description)
+        raise
 
 
 def _serialize_module_method(
@@ -42,8 +63,9 @@ def _serialize_module_method(
 
 def _serialize_public_async_methods(cls: type) -> None:
     """Apply shared-lock serialization to public async methods declared by ``cls``."""
+    exempt_methods = getattr(cls, "_SHARED_LOCK_EXEMPT_METHODS", frozenset())
     for name, attr in list(vars(cls).items()):
-        if not name.startswith("_") and inspect.iscoroutinefunction(attr):
+        if name not in exempt_methods and not name.startswith("_") and inspect.iscoroutinefunction(attr):
             setattr(cls, name, _serialize_module_method(attr))
 
 

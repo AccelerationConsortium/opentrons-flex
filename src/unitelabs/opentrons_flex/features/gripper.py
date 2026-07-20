@@ -65,7 +65,13 @@ class GripperFeature(sila.Feature):
     """SiLA2 feature for the Flex gripper: grip, ungrip, and home the jaw."""
 
     def __init__(self, controller: FlexGripperController):
-        super().__init__(originator="ca.accelerationconsortium", category="robots", version="1.2")
+        super().__init__(
+            originator="ca.accelerationconsortium",
+            category="robots",
+            identifier="GripperController",
+            name="Gripper Controller",
+            version="1.2",
+        )
         self._controller = controller
 
     @sila.ObservableCommand(

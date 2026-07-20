@@ -1,4 +1,4 @@
-"""End-to-end gRPC integration tests for the Flex GripperFeature (simulate mode).
+"""End-to-end gRPC integration tests for the Flex GripperController (simulate mode).
 
 The bare simulator has no gripper attached, so this exercises two things over the
 wire: the Status property for an absent gripper, and that a grip/ungrip/home_jaw
@@ -17,8 +17,8 @@ import pytest_asyncio
 from unitelabs.opentrons_flex.features.gripper import GripperStatus
 from .observable import call_observable
 
-_PKG = "sila2.ca.accelerationconsortium.robots.gripperfeature.v1"
-_SERVICE = f"{_PKG}.GripperFeature"
+_PKG = "sila2.ca.accelerationconsortium.robots.grippercontroller.v1"
+_SERVICE = f"{_PKG}.GripperController"
 
 
 class _GripperClient:

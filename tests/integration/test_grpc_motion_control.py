@@ -1,9 +1,9 @@
-"""End-to-end gRPC integration tests for the Flex MotionControlFeature (simulate mode).
+"""End-to-end gRPC integration tests for the Flex MotionController (simulate mode).
 
 Spins up a real SiLA gRPC server on a dynamic port (see conftest ``sila_channel``)
 and makes real gRPC calls over the wire using the server's own protobuf codec.
 Confirms the full chain:
-  gRPC channel → SiLA server → MotionControlFeature → FlexMotionController → OT3API
+  gRPC channel → SiLA server → MotionController → FlexMotionController → OT3API
 
 ``pb.encode`` accepts the feature method's snake_case parameter names; ``pb.decode``
 returns a single-entry dict whose value is the native dataclass the method returned
@@ -19,14 +19,14 @@ import pytest_asyncio
 from unitelabs.opentrons_flex.features.motion_control import Lights, MachineStatus, Mount, Position
 from .observable import call_observable
 
-_PKG = "sila2.ca.accelerationconsortium.robots.motioncontrolfeature.v2"
-_SERVICE = f"{_PKG}.MotionControlFeature"
+_PKG = "sila2.ca.accelerationconsortium.robots.motioncontroller.v2"
+_SERVICE = f"{_PKG}.MotionController"
 
 T = typing.TypeVar("T")
 
 
 class _MotionClient:
-    """Raw gRPC client for MotionControlFeature using the server's protobuf codec."""
+    """Raw gRPC client for MotionController using the server's protobuf codec."""
 
     def __init__(self, channel: grpc.aio.Channel, pb: object) -> None:
         self._ch = channel

@@ -41,7 +41,7 @@ async def test_heater_shaker_guarded_actuation_round_trip(heater_shaker: HeaterS
     """Run a minimum-speed shake only after the operator explicitly opens the safety gate."""
     try:
         assert await heater_shaker.close_latch() is LatchStatus.IDLE_CLOSED
-        speed = await heater_shaker.set_rpm(200)
+        speed = await heater_shaker.set_speed(200)
         assert speed.target == 200
     finally:
         try:

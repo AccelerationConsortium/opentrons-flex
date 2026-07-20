@@ -43,20 +43,20 @@ async def test_heater_shaker_workflow_round_trip(heater_shaker: HeaterShakerClie
     assert measured_temperature.current == pytest.approx(42.0)
     assert measured_temperature.target_active is True
 
-    speed = await heater_shaker.set_rpm(500)
+    speed = await heater_shaker.set_speed(500)
     assert isinstance(speed, HeaterShakerSpeed)
     assert speed.target == 500
     assert speed.target_active is True
-    measured_speed = await heater_shaker.get_rpm()
+    measured_speed = await heater_shaker.get_speed()
     assert measured_speed.target == 500
     assert measured_speed.target_active is True
 
     status = await heater_shaker.get_status()
     assert isinstance(status, HeaterShakerStatus)
-    assert status.temperature_target == pytest.approx(42.0)
+    assert status.target_temperature == pytest.approx(42.0)
     assert status.temperature_target_active is True
-    assert status.rpm_target == 500
-    assert status.rpm_target_active is True
+    assert status.target_speed == 500
+    assert status.speed_target_active is True
     assert status.latch_status is LatchStatus.IDLE_CLOSED
 
     stopped = await heater_shaker.stop_shaking()
@@ -74,13 +74,13 @@ async def test_heater_shaker_workflow_round_trip(heater_shaker: HeaterShakerClie
 @pytest.mark.asyncio
 @pytest.mark.simulator_only
 @pytest.mark.parametrize("rotation_speed", [0, 199, 3001])
-async def test_set_rpm_rejects_values_outside_operating_range(
+async def test_set_speed_rejects_values_outside_operating_range(
     heater_shaker: HeaterShakerClient,
     rotation_speed: int,
 ) -> None:
     """The FDL constraint rejects invalid speeds before a hardware command is sent."""
     with pytest.raises(ConversionError):
-        await heater_shaker.set_rpm(rotation_speed)
+        await heater_shaker.set_speed(rotation_speed)
 
 
 @pytest.mark.asyncio

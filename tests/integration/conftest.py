@@ -109,6 +109,63 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         ),
     )
     parser.addoption(
+        "--stacker-actuation",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable opt-in Flex Stacker actuation tests. Load compatible labware in the hopper, "
+            "empty the shuttle, close the hopper door, and keep the E-stop ready."
+        ),
+    )
+    parser.addoption(
+        "--stacker-labware-height",
+        metavar="MILLIMETRES",
+        type=float,
+        default=None,
+        help="Exact assembled labware height for the guarded Stacker retrieve/store test.",
+    )
+    parser.addoption(
+        "--plate-reader-actuation",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable opt-in Plate Reader initialization. The reader must be empty and its lid must be placed "
+            "with the Flex Gripper before this test starts."
+        ),
+    )
+    parser.addoption(
+        "--plate-reader-wavelength",
+        metavar="NANOMETRES",
+        type=int,
+        default=450,
+        help="Supported wavelength used by the guarded Plate Reader initialization test (default: 450).",
+    )
+    parser.addoption(
+        "--plate-reader-measurement",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable an opt-in Plate Reader measurement after initialization. A compatible plate must be present "
+            "and its lid must have been placed with the Flex Gripper before this test starts."
+        ),
+    )
+    parser.addoption(
+        "--temperature-module-actuation",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable opt-in Temperature Module GEN2 heating/cooling. Ensure compatible labware is installed "
+            "and choose an explicit target with --temperature-module-target."
+        ),
+    )
+    parser.addoption(
+        "--temperature-module-target",
+        metavar="DEGREES_CELSIUS",
+        type=float,
+        default=None,
+        help="Explicit 4-95 °C target for the guarded Temperature Module GEN2 hardware test.",
+    )
+    parser.addoption(
         "--gripper-labware-actuation",
         action="store_true",
         default=False,
@@ -171,6 +228,10 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     has_smoketest_http = bool(config.getoption("--with-http-server"))
     has_hardware = _is_hardware_run(config)
     has_heater_shaker_actuation = bool(config.getoption("--heater-shaker-actuation"))
+    has_stacker_actuation = bool(config.getoption("--stacker-actuation"))
+    has_plate_reader_actuation = bool(config.getoption("--plate-reader-actuation"))
+    has_plate_reader_measurement = bool(config.getoption("--plate-reader-measurement"))
+    has_temperature_module_actuation = bool(config.getoption("--temperature-module-actuation"))
     has_gripper_labware_actuation = bool(config.getoption("--gripper-labware-actuation"))
 
     skip_sim = pytest.mark.skip(reason="simulator-only test, skipped when --robot is set")
@@ -179,6 +240,21 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     skip_hardware = pytest.mark.skip(reason="hardware_only test, requires --robot or --robot-http (a real Flex)")
     skip_heater_shaker_actuation = pytest.mark.skip(
         reason="Heater-Shaker actuation requires the explicit --heater-shaker-actuation safety gate"
+    )
+    skip_stacker_actuation = pytest.mark.skip(
+        reason="Flex Stacker actuation requires --stacker-actuation and an operator-prepared hopper and shuttle"
+    )
+    skip_plate_reader_actuation = pytest.mark.skip(
+        reason="Plate Reader initialization requires --plate-reader-actuation and an empty covered reader"
+    )
+    skip_plate_reader_measurement = pytest.mark.skip(
+        reason="Plate Reader measurement requires --plate-reader-measurement and a gripper-covered compatible plate"
+    )
+    skip_temperature_module_actuation = pytest.mark.skip(
+        reason=(
+            "Temperature Module actuation requires --temperature-module-actuation, compatible labware, "
+            "and an explicit --temperature-module-target"
+        )
     )
     skip_gripper_labware_actuation = pytest.mark.skip(
         reason="Gripper labware movement requires --gripper-labware-actuation and an operator-prepared deck"
@@ -195,6 +271,14 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip_hardware)
         if not has_heater_shaker_actuation and item.get_closest_marker("heater_shaker_actuation"):
             item.add_marker(skip_heater_shaker_actuation)
+        if not has_stacker_actuation and item.get_closest_marker("stacker_actuation"):
+            item.add_marker(skip_stacker_actuation)
+        if not has_plate_reader_actuation and item.get_closest_marker("plate_reader_actuation"):
+            item.add_marker(skip_plate_reader_actuation)
+        if not has_plate_reader_measurement and item.get_closest_marker("plate_reader_measurement"):
+            item.add_marker(skip_plate_reader_measurement)
+        if not has_temperature_module_actuation and item.get_closest_marker("temperature_module_actuation"):
+            item.add_marker(skip_temperature_module_actuation)
         if not has_gripper_labware_actuation and item.get_closest_marker("gripper_labware_actuation"):
             item.add_marker(skip_gripper_labware_actuation)
 
@@ -287,6 +371,9 @@ def simulator_stack(request: pytest.FixtureRequest) -> Generator[SimulatorStack 
         config = OpentronsFlexConfig(
             use_simulator=True,
             simulated_heater_shaker=True,
+            simulated_flex_stacker=True,
+            simulated_absorbance_reader=True,
+            simulated_temperature_module=True,
             with_robot_server=True,
             robot_server_tcp_port=http_port,
             sila_server=SiLAServerConfig(hostname="127.0.0.1", port=grpc_port, tls=False),
@@ -410,6 +497,9 @@ async def sila_channel(robot_address: str | None):
     config = OpentronsFlexConfig(
         use_simulator=True,
         simulated_heater_shaker=True,
+        simulated_flex_stacker=True,
+        simulated_absorbance_reader=True,
+        simulated_temperature_module=True,
         sila_server=SiLAServerConfig(hostname="127.0.0.1", port=0, tls=False),
         cloud_server_endpoint=None,
         discovery=None,

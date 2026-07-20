@@ -1,10 +1,10 @@
-"""SiLA2 feature for the Flex Stacker module."""
+"""SiLA 2 feature for the Flex Stacker module."""
 
+import asyncio
 import enum
 import typing
 from dataclasses import dataclass
 
-from opentrons.drivers.flex_stacker.types import Direction, LEDColor, LEDPattern, StackerAxis
 from unitelabs.cdk import sila
 from unitelabs.cdk.sila import constraints
 
@@ -12,48 +12,65 @@ from ..io import (
     COMMON_MODULE_ERRORS,
     DeviceInfo,
     FlexStackerController,
+    FlexStackerAxis as StackerAxisName,
+    FlexStackerDirection as StackerDirection,
+    FlexStackerLedColor as StackerLedColor,
+    FlexStackerLedPattern as StackerLedPattern,
+    InvalidStackerConfigurationError,
+    StackerMovementOutOfRangeError,
+    StackerNotReadyError,
 )
 from ._progress import OperationProgress, run_observable
+from ._subscriptions import stream_changes
 
-_LabwareHeightMm = typing.Annotated[float, constraints.MinimalInclusive(4.0), constraints.MaximalInclusive(102.5)]
-_DistanceMm = typing.Annotated[float, constraints.MinimalInclusive(0.0)]
-_LedPower = typing.Annotated[float, constraints.MinimalInclusive(0.0), constraints.MaximalInclusive(1.0)]
-_NonNegativeInteger = typing.Annotated[int, constraints.MinimalInclusive(0)]
-_LedRepetitions = typing.Annotated[int, constraints.MinimalInclusive(-1)]
-
-
-class StackerAxisName(enum.Enum):
-    """Flex Stacker axis."""
-
-    X = "X"
-    Z = "Z"
-    LATCH = "L"
-
-
-class StackerDirection(enum.Enum):
-    """Flex Stacker movement direction."""
-
-    RETRACT = "RETRACT"
-    EXTEND = "EXTEND"
-
-
-class StackerLedColor(enum.Enum):
-    """Flex Stacker LED color."""
-
-    WHITE = "WHITE"
-    RED = "RED"
-    GREEN = "GREEN"
-    BLUE = "BLUE"
-    YELLOW = "YELLOW"
-
-
-class StackerLedPattern(enum.Enum):
-    """Flex Stacker LED pattern."""
-
-    STATIC = "STATIC"
-    FLASH = "FLASH"
-    PULSE = "PULSE"
-    CONFIRM = "CONFIRM"
+_MILLIMETRE = constraints.Unit(
+    "mm",
+    [constraints.Unit.Component(constraints.Unit.SI.METER)],
+    factor=0.001,
+)
+_SECOND = constraints.Unit(
+    "s",
+    [constraints.Unit.Component(constraints.Unit.SI.SECOND)],
+)
+_DIMENSIONLESS = constraints.Unit(
+    "1",
+    [constraints.Unit.Component(constraints.Unit.SI.DIMENSIONLESS)],
+)
+_LabwareHeight = typing.Annotated[
+    float,
+    constraints.MinimalInclusive(4.0),
+    constraints.MaximalInclusive(102.5),
+    _MILLIMETRE,
+]
+_Distance = typing.Annotated[
+    float,
+    constraints.MinimalInclusive(0.0),
+    constraints.MaximalInclusive(194.0),
+    _MILLIMETRE,
+]
+_LedPower = typing.Annotated[
+    float,
+    constraints.MinimalInclusive(0.0),
+    constraints.MaximalInclusive(1.0),
+    _DIMENSIONLESS,
+]
+_Duration = typing.Annotated[
+    float,
+    constraints.MinimalInclusive(0.0),
+    constraints.MaximalInclusive(10.0),
+    _SECOND,
+]
+_LedRepetitions = typing.Annotated[
+    int,
+    constraints.MinimalInclusive(-1),
+    constraints.MaximalInclusive(10),
+]
+_STACKER_ERRORS = (
+    *COMMON_MODULE_ERRORS,
+    InvalidStackerConfigurationError,
+    StackerMovementOutOfRangeError,
+    StackerNotReadyError,
+)
 
 
 class StackerStatus(enum.Enum):
@@ -83,7 +100,7 @@ class LatchState(enum.Enum):
 
 
 class PlatformState(enum.Enum):
-    """Flex Stacker platform state."""
+    """Flex Stacker shuttle platform state."""
 
     EXTENDED = "extended"
     RETRACTED = "retracted"
@@ -108,7 +125,7 @@ class HopperDoorState(enum.Enum):
 
 
 class AxisState(enum.Enum):
-    """Flex Stacker axis state."""
+    """Flex Stacker limit-switch state."""
 
     EXTENDED = "extended"
     RETRACTED = "retracted"
@@ -129,6 +146,7 @@ class FlexStackerStatus:
     hopper_door_state: HopperDoorState
     install_detected: bool
     initialized: bool
+    recovery_required: bool
     error_details: str
 
 
@@ -148,6 +166,7 @@ class _RawFlexStackerState(typing.Protocol):
     hopper_door_state: str
     install_detected: bool
     initialized: bool
+    recovery_required: bool
     error_details: str
 
 
@@ -155,22 +174,6 @@ class _RawFlexStackerLimitSwitches(typing.Protocol):
     x: str
     z: str
     latch: str
-
-
-def _axis(axis: StackerAxisName) -> StackerAxis:
-    return StackerAxis.L if axis is StackerAxisName.LATCH else StackerAxis(axis.value)
-
-
-def _direction(direction: StackerDirection) -> Direction:
-    return Direction.RETRACT if direction is StackerDirection.RETRACT else Direction.EXTEND
-
-
-def _led_color(color: StackerLedColor) -> LEDColor:
-    return LEDColor[color.name]
-
-
-def _led_pattern(pattern: StackerLedPattern) -> LEDPattern:
-    return LEDPattern[pattern.name]
 
 
 def _status(raw: object) -> FlexStackerStatus:
@@ -182,6 +185,7 @@ def _status(raw: object) -> FlexStackerStatus:
         hopper_door_state=HopperDoorState(state.hopper_door_state),
         install_detected=state.install_detected,
         initialized=state.initialized,
+        recovery_required=state.recovery_required,
         error_details=state.error_details,
     )
 
@@ -195,14 +199,116 @@ def _limit_switches(raw: object) -> FlexStackerLimitSwitchStatus:
     )
 
 
-class FlexStackerFeature(sila.Feature):
-    """SiLA2 feature for Flex Stacker labware storage and delivery."""
+class _FlexStackerCommands:
+    """Shared observable-command execution for both Stacker concerns."""
+
+    _controller: FlexStackerController
+
+    async def _run_and_status(
+        self,
+        action: typing.Awaitable[None],
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+        starting: str,
+        completed: str,
+        cancelled: str,
+    ) -> FlexStackerStatus:
+        try:
+            await run_observable(status, intermediate, starting, completed, cancelled, action)
+        except asyncio.CancelledError:
+            # Cancelling a gRPC await does not guarantee that module firmware
+            # stops its current motor sequence, so issue an explicit motor stop.
+            await self._controller.halt_for_cancellation()
+            raise
+        return _status(self._controller.state)
+
+
+class FlexStackerFeature(_FlexStackerCommands, sila.Feature):
+    """Retrieve and store labware with a Flex Stacker through SiLA 2."""
 
     def __init__(self, controller: FlexStackerController):
-        super().__init__(originator="ca.accelerationconsortium", category="modules")
+        super().__init__(
+            originator="ca.accelerationconsortium",
+            category="modules",
+            identifier="FlexStackerController",
+            name="Flex Stacker Controller",
+            version="2.0",
+        )
         self._controller = controller
 
-    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    @sila.ObservableCommand(errors=_STACKER_ERRORS)
+    async def retrieve_labware(
+        self,
+        labware_height: _LabwareHeight,
+        enforce_hopper_labware_sensing: bool,
+        enforce_shuttle_labware_sensing: bool,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> FlexStackerStatus:
+        """Retrieve the bottom labware item from the Stacker onto its shuttle."""
+        return await self._run_and_status(
+            self._controller.retrieve_labware(
+                labware_height=labware_height,
+                enforce_hopper_labware_sensing=enforce_hopper_labware_sensing,
+                enforce_shuttle_labware_sensing=enforce_shuttle_labware_sensing,
+            ),
+            status=status,
+            intermediate=intermediate,
+            starting="Starting Flex Stacker labware retrieval.",
+            completed="Flex Stacker labware retrieval completed.",
+            cancelled="Flex Stacker labware retrieval cancelled.",
+        )
+
+    @sila.ObservableCommand(errors=_STACKER_ERRORS)
+    async def store_labware(
+        self,
+        labware_height: _LabwareHeight,
+        enforce_shuttle_labware_sensing: bool,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> FlexStackerStatus:
+        """Store the shuttle labware at the bottom of the Stacker."""
+        return await self._run_and_status(
+            self._controller.store_labware(
+                labware_height=labware_height,
+                enforce_shuttle_labware_sensing=enforce_shuttle_labware_sensing,
+            ),
+            status=status,
+            intermediate=intermediate,
+            starting="Starting Flex Stacker labware storage.",
+            completed="Flex Stacker labware storage completed.",
+            cancelled="Flex Stacker labware storage cancelled.",
+        )
+
+    @sila.ObservableProperty(errors=_STACKER_ERRORS)
+    async def subscribe_status(self) -> sila.Stream[FlexStackerStatus]:
+        """Subscribe to operational and recovery state changes."""
+        async for value in stream_changes(lambda: _status(self._controller.state)):
+            yield value
+
+    @sila.UnobservableProperty(errors=COMMON_MODULE_ERRORS)
+    def device_info(self) -> DeviceInfo:
+        """Return the attached Stacker serial number, model, and firmware version."""
+        return self._controller.device_info
+
+
+class FlexStackerMaintenanceFeature(_FlexStackerCommands, sila.Feature):
+    """Perform service, recovery, latch, axis, and LED operations on a Flex Stacker."""
+
+    def __init__(self, controller: FlexStackerController):
+        super().__init__(
+            originator="ca.accelerationconsortium",
+            category="modules",
+            identifier="FlexStackerMaintenanceController",
+            name="Flex Stacker Maintenance Controller",
+            version="1.0",
+        )
+        self._controller = controller
+
+    @sila.ObservableCommand(errors=_STACKER_ERRORS)
     async def home_all(
         self,
         ignore_latch: bool,
@@ -210,29 +316,17 @@ class FlexStackerFeature(sila.Feature):
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
     ) -> FlexStackerStatus:
-        """
-        Home all stacker axes.
-
-        Args:
-            ignore_latch: Skip latch-closing logic during recovery.
-
-        Yields:
-            Update: Current homing progress update.
-
-        Returns:
-            Stacker state after homing.
-        """
-        await run_observable(
-            status,
-            intermediate,
-            "Starting Flex Stacker homing.",
-            "Flex Stacker homing completed.",
-            "Flex Stacker homing cancelled.",
+        """Home all Stacker axes; ignore_latch is intended only for recovery."""
+        return await self._run_and_status(
             self._controller.home_all(ignore_latch=ignore_latch),
+            status=status,
+            intermediate=intermediate,
+            starting="Starting Flex Stacker homing.",
+            completed="Flex Stacker homing completed.",
+            cancelled="Flex Stacker homing cancelled.",
         )
-        return _status(await self._controller.get_state())
 
-    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    @sila.ObservableCommand(errors=_STACKER_ERRORS)
     async def home_axis(
         self,
         axis: StackerAxisName,
@@ -240,332 +334,130 @@ class FlexStackerFeature(sila.Feature):
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
-    ) -> bool:
-        """
-        Home one stacker axis in the named direction.
-
-        Args:
-            axis: Axis to home.
-            direction: Homing direction.
-
-        Yields:
-            Update: Current homing progress update.
-
-        Returns:
-            True when the hardware reports a successful move.
-        """
-        return await run_observable(
-            status,
-            intermediate,
-            f"Starting Flex Stacker {axis.value} axis home.",
-            f"Flex Stacker {axis.value} axis home completed.",
-            f"Flex Stacker {axis.value} axis home cancelled.",
-            self._controller.home_axis(_axis(axis), _direction(direction)),
+    ) -> FlexStackerStatus:
+        """Home one maintenance axis in the named direction."""
+        return await self._run_and_status(
+            self._controller.home_axis(axis, direction),
+            status=status,
+            intermediate=intermediate,
+            starting=f"Starting Flex Stacker {axis.value} axis home.",
+            completed=f"Flex Stacker {axis.value} axis home completed.",
+            cancelled=f"Flex Stacker {axis.value} axis home cancelled.",
         )
 
-    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    @sila.ObservableCommand(errors=_STACKER_ERRORS)
     async def move_axis(
         self,
         axis: StackerAxisName,
         direction: StackerDirection,
-        distance: _DistanceMm,
+        distance: _Distance,
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
-    ) -> bool:
-        """
-        Move one stacker axis by a distance in millimetres.
-
-        Args:
-            axis: Axis to move.
-            direction: Movement direction.
-            distance: Distance in mm.
-
-        Yields:
-            Update: Current movement progress update.
-
-        Returns:
-            True when the hardware reports a successful move.
-        """
-        return await run_observable(
-            status,
-            intermediate,
-            f"Starting Flex Stacker {axis.value} axis move.",
-            f"Flex Stacker {axis.value} axis move completed.",
-            f"Flex Stacker {axis.value} axis move cancelled.",
-            self._controller.move_axis(_axis(axis), _direction(direction), distance),
+    ) -> FlexStackerStatus:
+        """Move one maintenance axis by a constrained distance."""
+        return await self._run_and_status(
+            self._controller.move_axis(axis, direction, distance),
+            status=status,
+            intermediate=intermediate,
+            starting=f"Starting Flex Stacker {axis.value} axis move.",
+            completed=f"Flex Stacker {axis.value} axis move completed.",
+            cancelled=f"Flex Stacker {axis.value} axis move cancelled.",
         )
 
-    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    @sila.ObservableCommand(errors=_STACKER_ERRORS)
     async def open_latch(
         self,
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
     ) -> FlexStackerStatus:
-        """
-        Open the stacker latch.
-
-        Yields:
-            Update: Current latch movement progress update.
-
-        Returns:
-            Stacker state after opening.
-        """
-        await run_observable(
-            status,
-            intermediate,
-            "Opening Flex Stacker latch.",
-            "Flex Stacker latch opened.",
-            "Flex Stacker latch open cancelled.",
+        """Open the Stacker shuttle latch."""
+        return await self._run_and_status(
             self._controller.open_latch(),
+            status=status,
+            intermediate=intermediate,
+            starting="Opening the Flex Stacker latch.",
+            completed="Flex Stacker latch opened.",
+            cancelled="Flex Stacker latch opening cancelled.",
         )
-        return _status(await self._controller.get_state())
 
-    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    @sila.ObservableCommand(errors=_STACKER_ERRORS)
     async def close_latch(
         self,
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
     ) -> FlexStackerStatus:
-        """
-        Close the stacker latch.
-
-        Yields:
-            Update: Current latch movement progress update.
-
-        Returns:
-            Stacker state after closing.
-        """
-        await run_observable(
-            status,
-            intermediate,
-            "Closing Flex Stacker latch.",
-            "Flex Stacker latch closed.",
-            "Flex Stacker latch close cancelled.",
+        """Close the Stacker shuttle latch."""
+        return await self._run_and_status(
             self._controller.close_latch(),
+            status=status,
+            intermediate=intermediate,
+            starting="Closing the Flex Stacker latch.",
+            completed="Flex Stacker latch closed.",
+            cancelled="Flex Stacker latch closing cancelled.",
         )
-        return _status(await self._controller.get_state())
 
-    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
-    async def dispense_labware(
-        self,
-        labware_height: _LabwareHeightMm,
-        enforce_hopper_labware_sensing: bool,
-        enforce_shuttle_labware_sensing: bool,
-        *,
-        status: sila.Status,
-        intermediate: sila.Intermediate[OperationProgress],
-    ) -> FlexStackerStatus:
-        """
-        Dispense one labware item from the stacker onto the shuttle.
-
-        Args:
-            labware_height: Labware height in mm.
-            enforce_hopper_labware_sensing: Require hopper labware detection.
-            enforce_shuttle_labware_sensing: Require shuttle labware detection.
-
-        Yields:
-            Update: Current dispense progress update.
-
-        Returns:
-            Stacker state after dispensing.
-        """
-        await run_observable(
-            status,
-            intermediate,
-            "Starting Flex Stacker labware dispense.",
-            "Flex Stacker labware dispense completed.",
-            "Flex Stacker labware dispense cancelled.",
-            self._controller.dispense_labware(
-                labware_height=labware_height,
-                enforce_hopper_labware_sensing=enforce_hopper_labware_sensing,
-                enforce_shuttle_labware_sensing=enforce_shuttle_labware_sensing,
-            ),
-        )
-        return _status(await self._controller.get_state())
-
-    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
-    async def store_labware(
-        self,
-        labware_height: _LabwareHeightMm,
-        enforce_shuttle_labware_sensing: bool,
-        *,
-        status: sila.Status,
-        intermediate: sila.Intermediate[OperationProgress],
-    ) -> FlexStackerStatus:
-        """
-        Store one labware item from the shuttle into the stacker.
-
-        Args:
-            labware_height: Labware height in mm.
-            enforce_shuttle_labware_sensing: Require shuttle labware detection.
-
-        Yields:
-            Update: Current storage progress update.
-
-        Returns:
-            Stacker state after storage.
-        """
-        await run_observable(
-            status,
-            intermediate,
-            "Starting Flex Stacker labware storage.",
-            "Flex Stacker labware storage completed.",
-            "Flex Stacker labware storage cancelled.",
-            self._controller.store_labware(
-                labware_height=labware_height,
-                enforce_shuttle_labware_sensing=enforce_shuttle_labware_sensing,
-            ),
-        )
-        return _status(await self._controller.get_state())
-
-    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    @sila.ObservableCommand(errors=_STACKER_ERRORS)
     async def set_led(
         self,
         power: _LedPower,
         color: StackerLedColor,
         pattern: StackerLedPattern,
-        duration_ms: _NonNegativeInteger,
+        duration: _Duration,
         repetitions: _LedRepetitions,
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
     ) -> FlexStackerStatus:
-        """
-        Set the stacker LED state.
-
-        Args:
-            power: LED power from 0.0 to 1.0.
-            color: LED color.
-            pattern: LED pattern.
-            duration_ms: Pattern duration in ms, or 0 for module default.
-            repetitions: Repetition count; -1 means repeat indefinitely.
-
-        Yields:
-            Update: Current LED command progress update.
-
-        Returns:
-            Stacker state after setting LEDs.
-        """
-        await run_observable(
-            status,
-            intermediate,
-            "Setting Flex Stacker LED state.",
-            "Flex Stacker LED state set.",
-            "Flex Stacker LED command cancelled.",
+        """Set the Stacker status LED; duration is expressed in seconds."""
+        return await self._run_and_status(
             self._controller.set_led(
                 power=power,
-                color=_led_color(color),
-                pattern=_led_pattern(pattern),
-                duration_ms=duration_ms,
+                color=color,
+                pattern=pattern,
+                duration=duration,
                 repetitions=repetitions,
             ),
+            status=status,
+            intermediate=intermediate,
+            starting="Setting the Flex Stacker LED state.",
+            completed="Flex Stacker LED state set.",
+            cancelled="Flex Stacker LED command cancelled.",
         )
-        return _status(await self._controller.get_state())
 
-    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    @sila.ObservableCommand(errors=_STACKER_ERRORS)
     async def deactivate(
         self,
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
     ) -> FlexStackerStatus:
-        """
-        Stop stacker motors.
-
-        Yields:
-            Update: Current deactivation progress update.
-
-        Returns:
-            Stacker state after deactivation.
-        """
+        """Stop Stacker motors."""
         await run_observable(
             status,
             intermediate,
-            "Deactivating Flex Stacker.",
+            "Deactivating the Flex Stacker.",
             "Flex Stacker deactivated.",
             "Flex Stacker deactivation cancelled.",
             self._controller.deactivate(),
         )
-        return _status(await self._controller.get_state())
+        return _status(self._controller.state)
 
-    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
-    async def get_limit_switches(
-        self,
-        *,
-        status: sila.Status,
-        intermediate: sila.Intermediate[OperationProgress],
-    ) -> FlexStackerLimitSwitchStatus:
-        """
-        Get stacker limit-switch states.
+    @sila.ObservableProperty(errors=_STACKER_ERRORS)
+    async def subscribe_status(self) -> sila.Stream[FlexStackerStatus]:
+        """Subscribe to Stacker state changes during maintenance and recovery."""
+        async for value in stream_changes(lambda: _status(self._controller.state)):
+            yield value
 
-        Yields:
-            Update: Current limit-switch read progress update.
+    @sila.ObservableProperty(errors=_STACKER_ERRORS)
+    async def subscribe_limit_switch_status(self) -> sila.Stream[FlexStackerLimitSwitchStatus]:
+        """Subscribe to X, Z, and latch limit-switch changes."""
+        async for value in stream_changes(lambda: _limit_switches(self._controller.limit_switches)):
+            yield value
 
-        Returns:
-            X, Z, and latch axis states.
-        """
-        return _limit_switches(
-            await run_observable(
-                status,
-                intermediate,
-                "Reading Flex Stacker limit switches.",
-                "Flex Stacker limit switches read.",
-                "Flex Stacker limit-switch read cancelled.",
-                self._controller.get_limit_switches(),
-            )
-        )
-
-    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
-    async def get_status(
-        self,
-        *,
-        status: sila.Status,
-        intermediate: sila.Intermediate[OperationProgress],
-    ) -> FlexStackerStatus:
-        """
-        Get Flex Stacker state.
-
-        Yields:
-            Update: Current status-read progress update.
-
-        Returns:
-            Stacker state.
-        """
-        return _status(
-            await run_observable(
-                status,
-                intermediate,
-                "Reading Flex Stacker status.",
-                "Flex Stacker status read.",
-                "Flex Stacker status read cancelled.",
-                self._controller.get_state(),
-            )
-        )
-
-    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
-    async def get_device_info(
-        self,
-        *,
-        status: sila.Status,
-        intermediate: sila.Intermediate[OperationProgress],
-    ) -> DeviceInfo:
-        """
-        Get Flex Stacker device information.
-
-        Yields:
-            Update: Current device-info read progress update.
-
-        Returns:
-            Serial number, model, and firmware version.
-        """
-        return await run_observable(
-            status,
-            intermediate,
-            "Reading Flex Stacker device information.",
-            "Flex Stacker device information read.",
-            "Flex Stacker device information read cancelled.",
-            self._controller.get_device_info(),
-        )
+    @sila.UnobservableProperty(errors=COMMON_MODULE_ERRORS)
+    def device_info(self) -> DeviceInfo:
+        """Return the attached Stacker serial number, model, and firmware version."""
+        return self._controller.device_info

@@ -1,8 +1,32 @@
 """SiLA2 features for Opentrons Flex control."""
 
-from .absorbance_reader import AbsorbanceReaderFeature
+from .absorbance_reader import (
+    AbsorbanceReaderFeature,
+    AbsorbanceReaderStatus,
+    MeasurementMode,
+    PlateMeasurement,
+    PlatePresence,
+    ReaderLidStatus,
+    ReaderStatus,
+    WavelengthMeasurement,
+    WellAbsorbance,
+)
 from .calibration import CalibrationFeature
-from .flex_stacker import FlexStackerFeature
+from .flex_stacker import (
+    AxisState,
+    FlexStackerFeature,
+    FlexStackerMaintenanceFeature,
+    FlexStackerLimitSwitchStatus,
+    FlexStackerStatus,
+    HopperDoorState,
+    LatchState,
+    PlatformState,
+    StackerAxisName,
+    StackerDirection,
+    StackerLedColor,
+    StackerLedPattern,
+    StackerStatus,
+)
 from .gripper import GripperFeature
 from .heater_shaker import HeaterShakerFeature
 from .labware_movement import (
@@ -25,25 +49,33 @@ from .liquid_handling import (
 )
 from .motion_control import Lights, MotionControlFeature, Mount, Position
 from .pipette import NozzleConfiguration, PipetteFeature, PipetteInfo
-from .temperature import TemperatureModuleFeature
-from .thermocycler import ThermocyclerFeature
+from .temperature import TemperatureControlStatus, TemperatureControllerStatus, TemperatureModuleFeature
+from .thermocycler import ThermocyclerFeature, ThermocyclerTemperature
 from .tip_controller import PipetteMount, TipController, TipLocation, TipPresence
 
 __all__ = [
     "AbsorbanceReaderFeature",
+    "AbsorbanceReaderStatus",
+    "AxisState",
     "CalibrationFeature",
     "FlexStackerFeature",
+    "FlexStackerLimitSwitchStatus",
+    "FlexStackerMaintenanceFeature",
+    "FlexStackerStatus",
     "GripperFeature",
     "HeaterShakerFeature",
+    "HopperDoorState",
     "LabwareDeckState",
     "LabwareMovementController",
     "LabwareMovementResult",
     "LabwarePlanSummary",
     "LabwarePosition",
+    "LatchState",
     "Lights",
     "LiquidHandlingController",
     "LiquidLevel",
     "LiquidPosition",
+    "MeasurementMode",
     "MotionControlFeature",
     "Mount",
     "NozzleConfiguration",
@@ -52,14 +84,29 @@ __all__ = [
     "PipetteInfo",
     "PipetteMount",
     "PlacementState",
+    "PlateMeasurement",
+    "PlatePresence",
+    "PlatformState",
     "Position",
+    "ReaderLidStatus",
+    "ReaderStatus",
+    "StackerAxisName",
+    "StackerDirection",
+    "StackerLedColor",
+    "StackerLedPattern",
+    "StackerStatus",
+    "TemperatureControlStatus",
+    "TemperatureControllerStatus",
     "TemperatureModuleFeature",
     "ThermocyclerFeature",
+    "ThermocyclerTemperature",
     "TipController",
     "TipLocation",
     "TipPresence",
     "TransferProfile",
     "VerifiedLiquidClass",
     "VerifiedTransferResult",
+    "WavelengthMeasurement",
+    "WellAbsorbance",
     "WellGeometry",
 ]

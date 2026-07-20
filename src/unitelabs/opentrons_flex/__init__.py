@@ -10,6 +10,7 @@ from .features import (
     AbsorbanceReaderFeature,
     CalibrationFeature,
     FlexStackerFeature,
+    FlexStackerMaintenanceFeature,
     GripperFeature,
     HeaterShakerFeature,
     LabwareMovementController,
@@ -108,6 +109,15 @@ class OpentronsFlexConfig(ConnectorBaseConfig):
     connector so the server owns and updates the movement state.
     """
 
+    simulated_flex_stacker: bool = False
+    """Attach one simulated Flex Stacker when ``use_simulator`` is enabled."""
+
+    simulated_absorbance_reader: bool = False
+    """Attach one simulated Absorbance Plate Reader when ``use_simulator`` is enabled."""
+
+    simulated_temperature_module: bool = False
+    """Attach one simulated Temperature Module GEN2 when ``use_simulator`` is enabled."""
+
 
 # Module type -> (IO controller class, SiLA feature class). The Magnetic Module is
 # intentionally absent — the Flex does not support it.
@@ -115,29 +125,51 @@ def _module_factories() -> dict:
     from opentrons.hardware_control.modules.types import ModuleType
 
     return {
-        ModuleType.ABSORBANCE_READER: (AbsorbanceReaderController, AbsorbanceReaderFeature),
-        ModuleType.FLEX_STACKER: (FlexStackerController, FlexStackerFeature),
-        ModuleType.HEATER_SHAKER: (HeaterShakerController, HeaterShakerFeature),
-        ModuleType.THERMOCYCLER: (ThermocyclerController, ThermocyclerFeature),
-        ModuleType.TEMPERATURE: (TemperatureModuleController, TemperatureModuleFeature),
+        ModuleType.ABSORBANCE_READER: (AbsorbanceReaderController, (AbsorbanceReaderFeature,)),
+        ModuleType.FLEX_STACKER: (
+            FlexStackerController,
+            (FlexStackerFeature, FlexStackerMaintenanceFeature),
+        ),
+        ModuleType.HEATER_SHAKER: (HeaterShakerController, (HeaterShakerFeature,)),
+        ModuleType.THERMOCYCLER: (ThermocyclerController, (ThermocyclerFeature,)),
+        ModuleType.TEMPERATURE: (TemperatureModuleController, (TemperatureModuleFeature,)),
     }
 
 
 def _simulator_attached_modules(config: OpentronsFlexConfig) -> dict:
     """Build the explicit module inventory passed to the OT3 simulator."""
-    if not config.simulated_heater_shaker:
-        return {}
-
     from opentrons.hardware_control.modules.types import SimulatingModule
 
-    return {
-        "heatershaker": [
+    attached_modules: dict[str, list[SimulatingModule]] = {}
+    if config.simulated_heater_shaker:
+        attached_modules["heatershaker"] = [
             SimulatingModule(
                 serial_number="HS-SIM-1",
                 model="heaterShakerModuleV1",
             )
         ]
-    }
+    if config.simulated_flex_stacker:
+        attached_modules["flexstacker"] = [
+            SimulatingModule(
+                serial_number="FS-SIM-1",
+                model="flexStackerModuleV1",
+            )
+        ]
+    if config.simulated_absorbance_reader:
+        attached_modules["absorbancereader"] = [
+            SimulatingModule(
+                serial_number="AR-SIM-1",
+                model="absorbanceReaderV1",
+            )
+        ]
+    if config.simulated_temperature_module:
+        attached_modules["tempdeck"] = [
+            SimulatingModule(
+                serial_number="TM-SIM-1",
+                model="temperatureModuleV2",
+            )
+        ]
+    return attached_modules
 
 
 def _register_core_features(
@@ -177,9 +209,11 @@ def _register_modules(
         if factory is None:
             log.info("Skipping unsupported module type %s", module.MODULE_TYPE.name)
             continue
-        controller_cls, feature_cls = factory
-        connector.register(feature_cls(controller_cls.from_module(module, lock=shared_lock)))
-        log.info("Registered SiLA feature for module %s", module.MODULE_TYPE.name)
+        controller_cls, feature_classes = factory
+        controller = controller_cls.from_module(module, lock=shared_lock)
+        for feature_cls in feature_classes:
+            connector.register(feature_cls(controller))
+            log.info("Registered SiLA feature %s for module %s", feature_cls.__name__, module.MODULE_TYPE.name)
 
 
 async def create_app(config: OpentronsFlexConfig) -> collections.abc.AsyncGenerator[Connector, None]:
@@ -199,10 +233,21 @@ async def create_app(config: OpentronsFlexConfig) -> collections.abc.AsyncGenera
         config.with_robot_server,
     )
 
-    if config.simulated_heater_shaker and not config.use_simulator:
+    simulated_modules = [
+        name
+        for enabled, name in (
+            (config.simulated_heater_shaker, "simulated_heater_shaker"),
+            (config.simulated_flex_stacker, "simulated_flex_stacker"),
+            (config.simulated_absorbance_reader, "simulated_absorbance_reader"),
+            (config.simulated_temperature_module, "simulated_temperature_module"),
+        )
+        if enabled
+    ]
+    if simulated_modules and not config.use_simulator:
+        settings = ", ".join(simulated_modules)
         message = (
-            "simulated_heater_shaker requires use_simulator=true. "
-            "For a real Flex, connect and power the physical Heater-Shaker before starting the connector."
+            f"Simulation settings {settings} require use_simulator=true. "
+            "For a real Flex, connect and power the physical modules before starting the connector."
         )
         raise ValueError(message)
 

@@ -63,7 +63,13 @@ class PipetteFeature(sila.Feature):
     """SiLA2 feature reporting the pipettes attached to the Flex mounts."""
 
     def __init__(self, controller: FlexMotionController):
-        super().__init__(originator="ca.accelerationconsortium", category="robots", version="1.1")
+        super().__init__(
+            originator="ca.accelerationconsortium",
+            category="robots",
+            identifier="PipetteController",
+            name="Pipette Controller",
+            version="1.1",
+        )
         self._controller = controller
 
     @sila.ObservableCommand()

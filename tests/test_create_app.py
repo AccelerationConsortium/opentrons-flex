@@ -18,6 +18,7 @@ from unitelabs.opentrons_flex.features import (
     AbsorbanceReaderFeature,
     CalibrationFeature,
     FlexStackerFeature,
+    FlexStackerMaintenanceFeature,
     GripperFeature,
     MotionControlFeature,
     PipetteFeature,
@@ -90,12 +91,47 @@ async def test_explicit_simulated_heater_shaker_registers_feature():
 
 
 @pytest.mark.asyncio
-async def test_simulated_heater_shaker_is_rejected_in_live_mode():
+async def test_explicit_simulated_stacker_reader_and_temperature_register_features():
+    """Opt-in Opentrons module simulators register all requested active accessories."""
+    config = OpentronsFlexConfig(
+        use_simulator=True,
+        simulated_flex_stacker=True,
+        simulated_absorbance_reader=True,
+        simulated_temperature_module=True,
+    )
+    async with _run_app(config) as registered:
+        stackers = [feature for feature in registered if isinstance(feature, FlexStackerFeature)]
+        stacker_maintenance = [feature for feature in registered if isinstance(feature, FlexStackerMaintenanceFeature)]
+        readers = [feature for feature in registered if isinstance(feature, AbsorbanceReaderFeature)]
+        temperature_modules = [feature for feature in registered if isinstance(feature, TemperatureModuleFeature)]
+
+    assert len(stackers) == 1
+    assert stackers[0]._controller.device_info.serial_number == "FS-SIM-1"
+    assert len(stacker_maintenance) == 1
+    assert stacker_maintenance[0]._controller is stackers[0]._controller
+    assert len(readers) == 1
+    assert readers[0]._controller.device_info.serial_number == "AR-SIM-1"
+    assert len(temperature_modules) == 1
+    assert temperature_modules[0]._controller.device_info.serial_number == "TM-SIM-1"
+    assert temperature_modules[0]._controller.device_info.model
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "setting",
+    [
+        "simulated_heater_shaker",
+        "simulated_flex_stacker",
+        "simulated_absorbance_reader",
+        "simulated_temperature_module",
+    ],
+)
+async def test_simulated_module_is_rejected_in_live_mode(setting: str):
     """A simulation setting must never substitute hardware in a live connector."""
-    config = OpentronsFlexConfig(use_simulator=False, simulated_heater_shaker=True)
+    config = OpentronsFlexConfig(use_simulator=False, **{setting: True})
     gen = create_app(config)
 
-    with pytest.raises(ValueError, match="requires use_simulator=true"):
+    with pytest.raises(ValueError, match="require use_simulator=true"):
         await gen.__anext__()
 
 
@@ -134,6 +170,7 @@ async def test_attached_flex_modules_register_features():
     types = [type(f) for f in registered]
     assert AbsorbanceReaderFeature in types
     assert FlexStackerFeature in types
+    assert FlexStackerMaintenanceFeature in types
     assert HeaterShakerFeature in types
     assert TemperatureModuleFeature in types
     assert ThermocyclerFeature in types

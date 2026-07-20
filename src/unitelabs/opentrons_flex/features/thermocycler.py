@@ -17,9 +17,43 @@ from ..io import (
 from ._progress import OperationProgress, run_observable
 
 # Sourced from opentrons protocol_api/module_contexts.py: block 4-99 C, lid 37-110 C.
-_BlockCelsius = typing.Annotated[float, constraints.MinimalInclusive(4.0), constraints.MaximalInclusive(99.0)]
-_LidCelsius = typing.Annotated[float, constraints.MinimalInclusive(37.0), constraints.MaximalInclusive(110.0)]
-_NonNegativeFloat = typing.Annotated[float, constraints.MinimalInclusive(0.0)]
+_CELSIUS = constraints.Unit(
+    "°C",
+    [constraints.Unit.Component(constraints.Unit.SI.KELVIN)],
+    offset=273.15,
+)
+_SECOND = constraints.Unit(
+    "s",
+    [constraints.Unit.Component(constraints.Unit.SI.SECOND)],
+)
+_MICROLITRE = constraints.Unit(
+    "µL",
+    [constraints.Unit.Component(constraints.Unit.SI.METER, exponent=3)],
+    factor=1e-9,
+)
+_CELSIUS_PER_SECOND = constraints.Unit(
+    "°C/s",
+    [
+        constraints.Unit.Component(constraints.Unit.SI.KELVIN),
+        constraints.Unit.Component(constraints.Unit.SI.SECOND, exponent=-1),
+    ],
+)
+_BlockTemperature = typing.Annotated[
+    float,
+    constraints.MinimalInclusive(4.0),
+    constraints.MaximalInclusive(99.0),
+    _CELSIUS,
+]
+_LidTemperature = typing.Annotated[
+    float,
+    constraints.MinimalInclusive(37.0),
+    constraints.MaximalInclusive(110.0),
+    _CELSIUS,
+]
+_TemperatureReading = typing.Annotated[float, _CELSIUS]
+_Duration = typing.Annotated[float, constraints.MinimalInclusive(0.0), _SECOND]
+_Volume = typing.Annotated[float, constraints.MinimalInclusive(0.0), _MICROLITRE]
+_RampRate = typing.Annotated[float, constraints.MinimalInclusive(0.0), _CELSIUS_PER_SECOND]
 _PositiveInteger = typing.Annotated[int, constraints.MinimalInclusive(1)]
 
 
@@ -47,10 +81,12 @@ class LidStatus(enum.Enum):
 class ThermocyclerStatus:
     """Current status of thermocycler module."""
 
-    lid_temperature_current: float
-    lid_temperature_target: float | None
-    plate_temperature_current: float
-    plate_temperature_target: float | None
+    current_lid_temperature: _TemperatureReading
+    target_lid_temperature: _TemperatureReading
+    lid_target_active: bool
+    current_plate_temperature: _TemperatureReading
+    target_plate_temperature: _TemperatureReading
+    plate_target_active: bool
     lid_status: LidStatus
 
 
@@ -58,9 +94,26 @@ class ThermocyclerStatus:
 class ThermocyclerProfileStep:
     """One thermocycler profile step."""
 
-    temperature_celsius: float
-    hold_time_seconds: float
-    ramp_rate: float
+    temperature: _BlockTemperature
+    hold_time: _Duration
+    ramp_rate: _RampRate
+
+
+@dataclass
+class ThermocyclerTemperature:
+    """Current and target temperature without an optional wire value."""
+
+    current_temperature: _TemperatureReading
+    target_temperature: _TemperatureReading
+    target_active: bool
+
+
+def _temperature(reading: Temperature) -> ThermocyclerTemperature:
+    return ThermocyclerTemperature(
+        current_temperature=reading.current,
+        target_temperature=reading.target if reading.target is not None else 0.0,
+        target_active=reading.target is not None,
+    )
 
 
 class ThermocyclerFeature(sila.Feature):
@@ -80,7 +133,13 @@ class ThermocyclerFeature(sila.Feature):
         Args:
             controller: The ThermocyclerController instance.
         """
-        super().__init__(originator="ca.accelerationconsortium", category="modules")
+        super().__init__(
+            originator="ca.accelerationconsortium",
+            category="modules",
+            identifier="ThermocyclerController",
+            name="Thermocycler Controller",
+            version="2.0",
+        )
         self._controller = controller
 
     # ============ Lid Control ============
@@ -159,16 +218,16 @@ class ThermocyclerFeature(sila.Feature):
     @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
     async def set_lid_temperature(
         self,
-        temperature_celsius: _LidCelsius,
+        temperature: _LidTemperature,
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
-    ) -> Temperature:
+    ) -> ThermocyclerTemperature:
         """
         Set the lid temperature.
 
         Args:
-            temperature_celsius: Target lid temperature in Celsius (valid range 37-110 C).
+            temperature: Target lid temperature (valid range 37-110 degrees Celsius).
 
         Returns:
             Current and target lid temperature.
@@ -176,12 +235,12 @@ class ThermocyclerFeature(sila.Feature):
         await run_observable(
             status,
             intermediate,
-            f"Setting thermocycler lid temperature to {temperature_celsius} C.",
+            f"Setting thermocycler lid temperature to {temperature} °C.",
             "Thermocycler lid temperature target set.",
             "Thermocycler lid temperature command cancelled.",
-            self._controller.set_lid_temperature(temperature_celsius),
+            self._controller.set_lid_temperature(temperature),
         )
-        return await self._controller.get_lid_temperature()
+        return _temperature(await self._controller.get_lid_temperature())
 
     @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
     async def wait_for_lid_temperature(
@@ -189,7 +248,7 @@ class ThermocyclerFeature(sila.Feature):
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
-    ) -> Temperature:
+    ) -> ThermocyclerTemperature:
         """
         Wait until the thermocycler lid reaches its current target.
 
@@ -207,7 +266,7 @@ class ThermocyclerFeature(sila.Feature):
             "Thermocycler lid temperature wait cancelled.",
             self._controller.wait_for_lid_temperature(),
         )
-        return await self._controller.get_lid_temperature()
+        return _temperature(await self._controller.get_lid_temperature())
 
     @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
     async def get_lid_temperature(
@@ -215,14 +274,14 @@ class ThermocyclerFeature(sila.Feature):
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
-    ) -> Temperature:
+    ) -> ThermocyclerTemperature:
         """
         Get the current lid temperature.
 
         Returns:
             Current and target lid temperature.
         """
-        return await run_observable(
+        reading = await run_observable(
             status,
             intermediate,
             "Reading thermocycler lid temperature.",
@@ -230,26 +289,27 @@ class ThermocyclerFeature(sila.Feature):
             "Thermocycler lid temperature read cancelled.",
             self._controller.get_lid_temperature(),
         )
+        return _temperature(reading)
 
     @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
     async def set_plate_temperature(
         self,
-        temperature_celsius: _BlockCelsius,
-        hold_time_seconds: _NonNegativeFloat,
-        volume_ul: _NonNegativeFloat,
-        ramp_rate: _NonNegativeFloat,
+        temperature: _BlockTemperature,
+        hold_time: _Duration,
+        volume: _Volume,
+        ramp_rate: _RampRate,
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
-    ) -> Temperature:
+    ) -> ThermocyclerTemperature:
         """
         Set the plate (block) temperature.
 
         Args:
-            temperature_celsius: Target block temperature in Celsius (valid range 4-99 C).
-            hold_time_seconds: Hold time in seconds, or 0 for no hold time.
-            volume_ul: Sample volume in uL for thermal control, or 0 for no volume.
-            ramp_rate: Ramp rate in C/s, or 0 for module default.
+            temperature: Target block temperature (valid range 4-99 degrees Celsius).
+            hold_time: Hold time, or 0 for no hold time.
+            volume: Sample volume, or 0 for no volume.
+            ramp_rate: Temperature ramp rate, or 0 for module default.
 
         Returns:
             Current and target plate temperature.
@@ -257,17 +317,17 @@ class ThermocyclerFeature(sila.Feature):
         await run_observable(
             status,
             intermediate,
-            f"Setting thermocycler plate temperature to {temperature_celsius} C.",
+            f"Setting thermocycler plate temperature to {temperature} °C.",
             "Thermocycler plate temperature target set.",
             "Thermocycler plate temperature command cancelled.",
             self._controller.set_plate_temperature(
-                temperature=temperature_celsius,
-                hold_time=hold_time_seconds if hold_time_seconds > 0 else None,
-                volume=volume_ul if volume_ul > 0 else None,
+                temperature=temperature,
+                hold_time=hold_time if hold_time > 0 else None,
+                volume=volume if volume > 0 else None,
                 ramp_rate=ramp_rate if ramp_rate > 0 else None,
             ),
         )
-        return await self._controller.get_plate_temperature()
+        return _temperature(await self._controller.get_plate_temperature())
 
     @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
     async def wait_for_plate_temperature(
@@ -275,7 +335,7 @@ class ThermocyclerFeature(sila.Feature):
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
-    ) -> Temperature:
+    ) -> ThermocyclerTemperature:
         """
         Wait until the thermocycler plate reaches its current target.
 
@@ -293,7 +353,7 @@ class ThermocyclerFeature(sila.Feature):
             "Thermocycler plate temperature wait cancelled.",
             self._controller.wait_for_plate_temperature(),
         )
-        return await self._controller.get_plate_temperature()
+        return _temperature(await self._controller.get_plate_temperature())
 
     @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
     async def get_plate_temperature(
@@ -301,14 +361,14 @@ class ThermocyclerFeature(sila.Feature):
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
-    ) -> Temperature:
+    ) -> ThermocyclerTemperature:
         """
         Get the current plate (block) temperature.
 
         Returns:
             Current and target plate temperature.
         """
-        return await run_observable(
+        reading = await run_observable(
             status,
             intermediate,
             "Reading thermocycler plate temperature.",
@@ -316,13 +376,14 @@ class ThermocyclerFeature(sila.Feature):
             "Thermocycler plate temperature read cancelled.",
             self._controller.get_plate_temperature(),
         )
+        return _temperature(reading)
 
     @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
     async def execute_profile(
         self,
         steps: list[ThermocyclerProfileStep],
         repetitions: _PositiveInteger,
-        volume_ul: _NonNegativeFloat,
+        volume: _Volume,
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
@@ -333,7 +394,7 @@ class ThermocyclerFeature(sila.Feature):
         Args:
             steps: Ordered profile steps.
             repetitions: Number of repetitions.
-            volume_ul: Sample volume in uL, or 0 for no volume.
+            volume: Sample volume, or 0 for no volume.
 
         Yields:
             Update: Current profile execution progress update.
@@ -343,8 +404,8 @@ class ThermocyclerFeature(sila.Feature):
         """
         profile = [
             {
-                "temperature": step.temperature_celsius,
-                "hold_time_seconds": step.hold_time_seconds if step.hold_time_seconds > 0 else None,
+                "temperature": step.temperature,
+                "hold_time_seconds": step.hold_time if step.hold_time > 0 else None,
                 "ramp_rate": step.ramp_rate if step.ramp_rate > 0 else None,
             }
             for step in steps
@@ -358,7 +419,7 @@ class ThermocyclerFeature(sila.Feature):
             self._controller.execute_profile(
                 steps=profile,
                 repetitions=repetitions,
-                volume=volume_ul if volume_ul > 0 else None,
+                volume=volume if volume > 0 else None,
             ),
         )
         return await self._status()
@@ -369,7 +430,7 @@ class ThermocyclerFeature(sila.Feature):
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
-    ) -> Temperature:
+    ) -> ThermocyclerTemperature:
         """
         Turn off the lid heater.
 
@@ -384,7 +445,7 @@ class ThermocyclerFeature(sila.Feature):
             "Thermocycler lid heater deactivation cancelled.",
             self._controller.deactivate_lid(),
         )
-        return await self._controller.get_lid_temperature()
+        return _temperature(await self._controller.get_lid_temperature())
 
     @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
     async def deactivate_block(
@@ -392,7 +453,7 @@ class ThermocyclerFeature(sila.Feature):
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
-    ) -> Temperature:
+    ) -> ThermocyclerTemperature:
         """
         Turn off the block heater/cooler.
 
@@ -407,7 +468,7 @@ class ThermocyclerFeature(sila.Feature):
             "Thermocycler block deactivation cancelled.",
             self._controller.deactivate_block(),
         )
-        return await self._controller.get_plate_temperature()
+        return _temperature(await self._controller.get_plate_temperature())
 
     @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
     async def deactivate_all(
@@ -464,10 +525,12 @@ class ThermocyclerFeature(sila.Feature):
         lid_status = LidStatus(await self._controller.get_lid_status())
 
         return ThermocyclerStatus(
-            lid_temperature_current=lid_temp.current,
-            lid_temperature_target=lid_temp.target,
-            plate_temperature_current=plate_temp.current,
-            plate_temperature_target=plate_temp.target,
+            current_lid_temperature=lid_temp.current,
+            target_lid_temperature=lid_temp.target if lid_temp.target is not None else 0.0,
+            lid_target_active=lid_temp.target is not None,
+            current_plate_temperature=plate_temp.current,
+            target_plate_temperature=plate_temp.target if plate_temp.target is not None else 0.0,
+            plate_target_active=plate_temp.target is not None,
             lid_status=lid_status,
         )
 

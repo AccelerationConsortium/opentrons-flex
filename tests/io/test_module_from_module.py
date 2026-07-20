@@ -13,9 +13,14 @@ from typing import ClassVar
 import pytest
 
 from unitelabs.opentrons_flex.io import (
+    AbsorbanceMeasurementMode,
     AbsorbanceReaderController,
     DeviceInfo,
+    FlexStackerAxis,
     FlexStackerController,
+    FlexStackerDirection,
+    FlexStackerLedColor,
+    FlexStackerLedPattern,
     HeaterShakerController,
     TemperatureModuleController,
     ThermocyclerController,
@@ -36,10 +41,14 @@ class _Recorder:
 class FakeTempDeck(_Recorder):
     temperature = 25.0
     target = 37.0
+    status = type("TemperatureStatus", (), {"value": "heating"})()
     device_info: ClassVar[dict] = {"serial": "T1", "model": "temp_v2", "version": "1.0"}
 
     async def start_set_temperature(self, celsius):
         self.record("start_set_temperature", celsius)
+        self.temperature = celsius
+        self.target = celsius
+        self.status = type("TemperatureStatus", (), {"value": "holding at target"})()
 
     async def deactivate(self):
         self.record("deactivate")
@@ -53,8 +62,13 @@ async def test_temperature_from_module_maps_calls():
     await ctrl.set_temperature(50.0)
     assert ("start_set_temperature", (50.0,), {}) in mod.calls
 
+    await ctrl.set_temperature_and_wait(20.0)
+    assert ("start_set_temperature", (20.0,), {}) in mod.calls
+
     t = await ctrl.get_temperature()
-    assert (t.current, t.target) == (25.0, 37.0)
+    assert (t.current, t.target) == (20.0, 20.0)
+    assert ctrl.state.status == "holding at target"
+    assert ctrl.device_info == DeviceInfo.from_dict(mod.device_info)
 
     await ctrl.deactivate()
     assert ("deactivate", (), {}) in mod.calls
@@ -83,19 +97,31 @@ class _AbsValue:
 
 
 class FakeAbsorbanceReader(_Recorder):
+    is_simulated = False
     status = _AbsStatus()
     lid_status = _AbsValue("on")
-    plate_presence = _AbsValue("present")
+    plate_presence = _AbsValue("absent")
     supported_wavelengths: ClassVar[list[int]] = [450, 600]
     measurement_config = _AbsConfig()
     device_info: ClassVar[dict] = {"serial": "AR1", "model": "absorbanceReaderV1", "version": "1.0"}
 
+    def __init__(self):
+        super().__init__()
+        self._reader = self
+
     async def set_sample_wavelength(self, mode, wavelengths, reference_wavelength):
         self.record("set_sample_wavelength", mode, wavelengths, reference_wavelength)
 
+    async def get_current_lid_status(self):
+        self.record("get_current_lid_status")
+        return self.lid_status
+
+    async def get_plate_presence(self):
+        self.record("get_plate_presence")
+
     async def start_measure(self):
         self.record("start_measure")
-        return [[0.1, 0.2], [0.3, 0.4]]
+        return [[0.1] * 96]
 
     async def deactivate(self):
         self.record("deactivate")
@@ -108,14 +134,16 @@ async def test_absorbance_reader_from_module_maps_calls():
     mod = FakeAbsorbanceReader()
     ctrl = AbsorbanceReaderController.from_module(mod)
 
-    await ctrl.configure_measurement(ABSMeasurementMode.SINGLE, [450], None)
+    await ctrl.initialize_measurement(AbsorbanceMeasurementMode.SINGLE, [450], None)
     assert ("set_sample_wavelength", (ABSMeasurementMode.SINGLE, [450], None), {}) in mod.calls
 
-    measurement = await ctrl.start_measure()
-    assert [row.values for row in measurement.rows] == [[0.1, 0.2], [0.3, 0.4]]
+    mod.plate_presence.value = "present"
+    measurement = await ctrl.read_plate()
+    assert [row.wavelength for row in measurement.rows] == [450]
+    assert [row.values for row in measurement.rows] == [[0.1] * 96]
     assert ("start_measure", (), {}) in mod.calls
 
-    state = await ctrl.get_state()
+    state = ctrl.state
     assert state.status == "idle"
     assert state.lid_status == "on"
     assert state.supported_wavelengths == [450, 600]
@@ -123,7 +151,7 @@ async def test_absorbance_reader_from_module_maps_calls():
     await ctrl.deactivate()
     assert ("deactivate", (), {}) in mod.calls
 
-    assert await ctrl.get_device_info() == DeviceInfo.from_dict(mod.device_info)
+    assert ctrl.device_info == DeviceInfo.from_dict(mod.device_info)
     await ctrl.disconnect()
 
 
@@ -346,33 +374,37 @@ async def test_flex_stacker_from_module_maps_calls():
     await ctrl.home_all(ignore_latch=True)
     assert ("home_all", (True,), {}) in mod.calls
 
-    assert await ctrl.home_axis(StackerAxis.X, Direction.EXTEND) is True
-    assert await ctrl.move_axis(StackerAxis.Z, Direction.RETRACT, 12.5) is True
+    await ctrl.home_axis(FlexStackerAxis.X, FlexStackerDirection.EXTEND)
+    await ctrl.move_axis(FlexStackerAxis.Z, FlexStackerDirection.RETRACT, 12.5)
+    assert ("home_axis", (StackerAxis.X, Direction.EXTEND), {}) in mod.calls
+    assert ("move_axis", (StackerAxis.Z, Direction.RETRACT, 12.5), {}) in mod.calls
 
     await ctrl.open_latch()
     await ctrl.close_latch()
     assert ("open_latch", (), {}) in mod.calls
     assert ("close_latch", (), {}) in mod.calls
 
-    await ctrl.dispense_labware(14.0, True, False)
+    await ctrl.retrieve_labware(14.0, True, False)
     assert ("dispense_labware", (14.0, True, False), {}) in mod.calls
 
     await ctrl.store_labware(14.0, True)
     assert ("store_labware", (14.0, True), {}) in mod.calls
 
-    await ctrl.set_led(0.5, LEDColor.BLUE, LEDPattern.PULSE, 200, -1)
+    await ctrl.set_led(0.5, FlexStackerLedColor.BLUE, FlexStackerLedPattern.PULSE, 0.2, -1)
     assert ("set_led_state", (0.5, LEDColor.BLUE, LEDPattern.PULSE, 200, -1), {}) in mod.calls
 
-    switches = await ctrl.get_limit_switches()
+    switches = ctrl.limit_switches
     assert (switches.x, switches.z, switches.latch) == ("extended", "retracted", "extended")
 
-    state = await ctrl.get_state()
+    state = ctrl.state
     assert state.status == "idle"
     assert state.install_detected is True
 
     await ctrl.deactivate()
     assert ("deactivate", (), {}) in mod.calls
-    assert await ctrl.get_device_info() == DeviceInfo.from_dict(mod.device_info)
+    await ctrl.halt_for_cancellation()
+    assert mod.calls.count(("deactivate", (), {})) == 2
+    assert ctrl.device_info == DeviceInfo.from_dict(mod.device_info)
     await ctrl.disconnect()
 
 

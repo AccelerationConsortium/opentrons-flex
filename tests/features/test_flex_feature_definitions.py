@@ -8,8 +8,10 @@ give. Requires the real unitelabs CDK; skipped when it is stubbed (offline).
 """
 
 import asyncio
+from importlib.resources import files
 
 import pytest
+import xmlschema
 from opentrons.hardware_control.ot3api import OT3API
 
 from unitelabs.cdk import Connector, SiLAServerConfig
@@ -36,6 +38,7 @@ pytestmark = pytest.mark.skipif(
     not hasattr(Connector, "start"),
     reason="real unitelabs CDK not installed (stubbed); SiLA generation runs in CI",
 )
+_SILA_FEATURE_DEFINITION_SCHEMA = xmlschema.XMLSchema(str(files("sila").joinpath("resources", "FeatureDefinition.xsd")))
 
 
 @pytest.mark.asyncio
@@ -97,9 +100,28 @@ async def test_core_features_generate_sila_definitions():
     motion_fdl = Serializer.serialize(motion_feature.serialize)
     liquid_fdl = Serializer.serialize(liquid_feature.serialize)
     labware_fdl = Serializer.serialize(labware_feature.serialize)
+    for fdl in (
+        motion_fdl,
+        liquid_fdl,
+        labware_fdl,
+        pipette_fdl,
+        tip_fdl,
+        gripper_fdl,
+        calibration_fdl,
+    ):
+        _SILA_FEATURE_DEFINITION_SCHEMA.validate(fdl)
+
     assert 'FeatureVersion="2.0"' in motion_fdl
     assert 'FeatureVersion="1.2"' in gripper_fdl
     assert 'FeatureVersion="1.1"' in calibration_fdl
+    assert "<Identifier>MotionController</Identifier>" in motion_fdl
+    assert "<DisplayName>Motion Controller</DisplayName>" in motion_fdl
+    assert "<Identifier>PipetteController</Identifier>" in pipette_fdl
+    assert "<DisplayName>Pipette Controller</DisplayName>" in pipette_fdl
+    assert "<Identifier>GripperController</Identifier>" in gripper_fdl
+    assert "<DisplayName>Gripper Controller</DisplayName>" in gripper_fdl
+    assert "<Identifier>CalibrationController</Identifier>" in calibration_fdl
+    assert "<DisplayName>Calibration Controller</DisplayName>" in calibration_fdl
     assert "<Identifier>NotHomedError</Identifier>" in gripper_fdl
     assert "<Identifier>NotHomedError</Identifier>" in calibration_fdl
     assert "<Identifier>Mix</Identifier>" in liquid_fdl

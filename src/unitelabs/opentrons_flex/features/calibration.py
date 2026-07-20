@@ -13,10 +13,12 @@ raises defined errors (probe missing, calibration failed) the operator can act o
 
 import asyncio
 import enum
+import typing
 from dataclasses import dataclass
 
 from opentrons.hardware_control.types import OT3Mount
 from unitelabs.cdk import sila
+from unitelabs.cdk.sila import constraints
 
 from ..io import (
     CalibrationFailedError,
@@ -26,6 +28,18 @@ from ..io import (
 )
 from ._pipette_types import PIPETTE_MOUNTS, PipetteMount
 from ._progress import OperationPhase, OperationProgress, report_progress
+
+_MILLIMETRE = constraints.Unit(
+    "mm",
+    [constraints.Unit.Component(constraints.Unit.SI.METER)],
+    factor=0.001,
+)
+_Millimetres = typing.Annotated[float, _MILLIMETRE]
+_DeckSlot = typing.Annotated[
+    int,
+    constraints.MinimalInclusive(1),
+    constraints.MaximalInclusive(12),
+]
 
 
 class GripperJaw(enum.Enum):
@@ -39,9 +53,9 @@ class GripperJaw(enum.Enum):
 class Offset:
     """A measured calibration offset in millimetres."""
 
-    x: float
-    y: float
-    z: float
+    x: _Millimetres
+    y: _Millimetres
+    z: _Millimetres
 
 
 def _ot3_pipette_mount(mount: PipetteMount) -> OT3Mount:
@@ -52,14 +66,20 @@ class CalibrationFeature(sila.Feature):
     """SiLA2 feature for Flex automatic pipette, gripper-jaw, and deck calibration."""
 
     def __init__(self, controller: FlexCalibrationController):
-        super().__init__(originator="ca.accelerationconsortium", category="robots", version="1.1")
+        super().__init__(
+            originator="ca.accelerationconsortium",
+            category="robots",
+            identifier="CalibrationController",
+            name="Calibration Controller",
+            version="1.1",
+        )
         self._controller = controller
 
     @sila.ObservableCommand(errors=[CalibrationProbeNotAttachedError, CalibrationFailedError, NotHomedError])
     async def calibrate_pipette(
         self,
         mount: PipetteMount,
-        slot: int,
+        slot: _DeckSlot,
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
@@ -110,7 +130,7 @@ class CalibrationFeature(sila.Feature):
     async def calibrate_gripper_jaw(
         self,
         jaw: GripperJaw,
-        slot: int,
+        slot: _DeckSlot,
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
@@ -174,7 +194,7 @@ class CalibrationFeature(sila.Feature):
 
         Args:
             mount: Pipette mount whose attached pipette drives the routine.
-            pipette_id: Serial of the pipette on that mount (from PipetteFeature).
+            pipette_id: Serial of the pipette on that mount (from PipetteController).
 
         Yields:
             Update: Current calibration progress update.

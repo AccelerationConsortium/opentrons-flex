@@ -13,6 +13,20 @@ the Flex firmware is not modified.
 
 ### Added
 
+- Complete `TemperatureController` v2 surface for Temperature Module GEN2 with
+  4-95 °C unit constraints, structured current/target/status properties, atomic
+  set-and-wait semantics, cancellation deactivation, cross-interface target-change
+  detection without a robot-wide wait lock, explicit simulation, gRPC workflow
+  coverage, and guarded real-hardware heating/cooling acceptance tests
+- Complete `AbsorbanceReaderController` v2 workflow with single, referenced-single,
+  and multi-wavelength initialization, module-capability validation, 96-well
+  A1–H12 structured measurements, explicit simulation, and guarded hardware tests
+- Complete `FlexStackerController` v2 workflow with retrieve/store operations,
+  readiness interlocks, unit-annotated labware geometry and LED duration, explicit
+  simulation, and guarded hardware retrieve/store acceptance tests
+- Defined `InvalidWavelengthError`, `PlateReaderNotReadyError`, and
+  `StackerNotReadyError` recovery paths, plus explicit Stacker travel and firmware
+  configuration validation and re-home enforcement after interrupted motion
 - `LiquidHandlingController` with atomic mix, touch-tip, liquid-level probing,
   aspirate/dispense while tracking, explicit transfer profiles, and execution of
   Opentrons verified liquid-class definitions for water, 80% ethanol, and 50% glycerol
@@ -45,6 +59,42 @@ the Flex firmware is not modified.
 
 ### Changed
 
+- Version 0.8.0 completes the Temperature Module GEN2 SiLA surface and its
+  simulator-to-HITL verification path.
+- **BREAKING**: every public Feature Definition now follows SiLA Part A naming:
+  `MotionController`, `PipetteController`, `GripperController`,
+  `CalibrationController`, `HeaterShakerController`, and
+  `ThermocyclerController` replace identifiers ending in `Feature`. Generated
+  clients must be regenerated for the renamed gRPC packages and services.
+- **BREAKING**: `HeaterShakerController` is version 3.0. `SetSpeed` and
+  `GetSpeed` replace identifiers that embedded the abbreviated rpm unit; rpm is
+  represented only by the SiLA unit constraint.
+- Stacker workflow and maintenance concerns are now separate Feature Definitions:
+  routine retrieve/store operations remain in `FlexStackerController`, while raw
+  axis, latch, LED, motor-stop, and full-home recovery operations are exposed by
+  `FlexStackerMaintenanceController`.
+- Reader, Stacker, and Temperature dynamic status endpoints are observable SiLA
+  properties. The Absorbance Reader's pinned Opentrons compatibility logic and
+  explicit simulator behavior now live behind connector-owned IO adapters.
+- Stacker recovery authority is shared by the SiLA and robot-server module paths,
+  and non-finite Temperature Module targets are rejected before hardware access.
+- Every attached module exposed through the embedded robot-server now uses the
+  connector-wide hardware lock. Stacker recovery is checked after lock acquisition,
+  cancelled Stacker motion deactivates before unlocking, and cancelled Plate Reader
+  work retains ownership until the native operation has settled.
+- **BREAKING**: the Temperature Module Feature Definition is now the
+  `TemperatureController` version 2.0. The parameter is the unit-annotated
+  `Temperature`; `SetTemperatureAndWait` replaces the ambiguous independent wait
+  target; and `Status`/`DeviceInfo` properties replace read commands. Generated
+  SiLA clients must be regenerated; the endpoint mapping is in the README.
+- Version 0.7.0 completes the SiLA surfaces and pre-hardware validation paths for
+  the Flex Stacker and Absorbance Plate Reader official accessories.
+- **BREAKING**: the Stacker and Absorbance Reader Feature Definitions are now
+  version 2.0 controller features. Status and device identity are SiLA properties;
+  Stacker motion returns structured state instead of success booleans; reader
+  results carry wavelength and well identifiers instead of unlabeled matrices.
+  This pre-1.0 migration requires generated SiLA clients to be regenerated; the
+  endpoint mapping is documented in the README.
 - Version 0.6.0 expands the connector from primitive-only pipetting to a
   SiLA-native advanced liquid-handling and labware-movement surface while
   retaining all existing primitive endpoints.

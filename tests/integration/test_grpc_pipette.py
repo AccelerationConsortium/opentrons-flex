@@ -15,8 +15,8 @@ from unitelabs.opentrons_flex.features.tip_controller import PipetteMount
 from unitelabs.opentrons_flex.io import FlexMotionController
 from .observable import call_observable
 
-_PKG = "sila2.ca.accelerationconsortium.robots.pipettefeature.v1"
-_SERVICE = f"{_PKG}.PipetteFeature"
+_PKG = "sila2.ca.accelerationconsortium.robots.pipettecontroller.v1"
+_SERVICE = f"{_PKG}.PipetteController"
 
 
 class _PipetteClient:

@@ -1,4 +1,4 @@
-"""End-to-end gRPC integration tests for the Flex CalibrationFeature (simulate mode).
+"""End-to-end gRPC integration tests for the Flex CalibrationController (simulate mode).
 
 Flex calibration is automatic probe-based calibration, not Smoothie config writes.
 On the bare simulator there is no pipette/gripper/probe, so the routines fail — and
@@ -17,8 +17,8 @@ import pytest_asyncio
 from unitelabs.opentrons_flex.features.calibration import GripperJaw, PipetteMount
 from .observable import call_observable
 
-_PKG = "sila2.ca.accelerationconsortium.robots.calibrationfeature.v1"
-_SERVICE = f"{_PKG}.CalibrationFeature"
+_PKG = "sila2.ca.accelerationconsortium.robots.calibrationcontroller.v1"
+_SERVICE = f"{_PKG}.CalibrationController"
 
 
 class _CalibrationClient:

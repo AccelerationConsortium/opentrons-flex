@@ -10,6 +10,8 @@ running against the raw API directly.
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 import pytest_asyncio
@@ -24,10 +26,12 @@ from opentrons.drivers.smoothie_drivers.simulator import SimulatingDriver
 
 from unitelabs.opentrons_flex.io import (
     DirectGripperControlDisabledError,
+    FlexStackerController,
     LabwareMovementState,
     NotHomedError,
 )
 from unitelabs.opentrons_flex.io.hardware_proxy import HardwareProxy, _TimedLock
+from unitelabs.opentrons_flex.io.recovery_state import stacker_recovery_state_for
 
 
 @pytest_asyncio.fixture
@@ -375,6 +379,264 @@ async def test_proxy_timeout_raises_on_held_lock(api: API) -> None:
         await proxy.home()
 
     shared_lock.release()
+
+
+async def test_stacker_http_failure_and_sila_recovery_share_one_authority() -> None:
+    """Both interfaces gate labware motion until the same complete HomeAll."""
+
+    class _ModuleType:
+        name = "FLEX_STACKER"
+
+    class _StackerModule:
+        MODULE_TYPE = _ModuleType()
+
+        def __init__(self) -> None:
+            self.status = SimpleNamespace(value="idle")
+            self.latch_state = SimpleNamespace(value="closed")
+            self.platform_state = SimpleNamespace(value="retracted")
+            self.hopper_door_state = SimpleNamespace(value="closed")
+            self.install_detected = True
+            self.initialized = True
+            self.limit_switch_status = {
+                "x": SimpleNamespace(value="extended"),
+                "z": SimpleNamespace(value="retracted"),
+                "latch": SimpleNamespace(value="extended"),
+            }
+            self.live_data = {"data": {"errorDetails": None}}
+            self.device_info = {"serial": "FS-1", "model": "flexStackerModuleV1", "version": "1.0"}
+            self.fail_next_move = True
+            self.calls: list[tuple] = []
+
+        async def move_axis(self, *args: object, **kwargs: object) -> bool:
+            self.calls.append(("move_axis", args, kwargs))
+            if self.fail_next_move:
+                raise RuntimeError("simulated HTTP-side interruption")
+            return True
+
+        async def dispense_labware(self, **kwargs: object) -> None:
+            self.calls.append(("dispense_labware", kwargs))
+
+        async def home_all(self, ignore_latch: bool) -> None:
+            self.calls.append(("home_all", ignore_latch))
+
+    class _HardwareApi:
+        def __init__(self, module: object) -> None:
+            self.attached_modules = [module]
+
+    module = _StackerModule()
+    shared_lock = asyncio.Lock()
+    proxy = HardwareProxy(_HardwareApi(module), lock=shared_lock)  # type: ignore[arg-type]
+    sila_controller = FlexStackerController.from_module(module, lock=shared_lock)
+    http_stacker = proxy.attached_modules[0]
+
+    with pytest.raises(RuntimeError, match="HTTP-side interruption"):
+        await http_stacker.move_axis("X", "extend", 10.0)
+
+    assert sila_controller.state.recovery_required is True
+    with pytest.raises(NotHomedError, match="HomeAll"):
+        await http_stacker.dispense_labware(labware_height=14.4)
+
+    module.fail_next_move = False
+    await sila_controller.home_all(ignore_latch=False)
+    assert sila_controller.state.recovery_required is False
+    await http_stacker.dispense_labware(labware_height=14.4)
+
+
+async def test_all_http_module_operations_share_the_connector_lock() -> None:
+    """Non-Stacker robot-server module calls must not bypass SiLA ownership."""
+
+    class _ModuleType:
+        name = "HEATER_SHAKER"
+
+    class _Module:
+        MODULE_TYPE = _ModuleType()
+
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def actuate(self) -> None:
+            self.started.set()
+            await self.release.wait()
+
+    first = _Module()
+    second = _Module()
+    api = SimpleNamespace(attached_modules=[first, second])
+    proxy = HardwareProxy(api)  # type: ignore[arg-type]
+    first_proxy, second_proxy = proxy.attached_modules
+    assert first_proxy is proxy.attached_modules[0]
+    assert second_proxy is proxy.attached_modules[1]
+
+    first_task = asyncio.create_task(first_proxy.actuate())
+    await first.started.wait()
+    second_task = asyncio.create_task(second_proxy.actuate())
+    await asyncio.sleep(0)
+    assert not second.started.is_set()
+
+    first.release.set()
+    await second.started.wait()
+    second.release.set()
+    await asyncio.gather(first_task, second_task)
+
+
+async def test_module_proxies_preserve_protocol_engine_type_identity() -> None:
+    """Native movement flaggers must still find proxied H/S and Thermocycler modules."""
+    from opentrons.hardware_control.modules import HeaterShaker, Thermocycler
+    from opentrons.protocol_engine.execution.heater_shaker_movement_flagger import HeaterShakerMovementFlagger
+    from opentrons.protocol_engine.execution.thermocycler_movement_flagger import ThermocyclerMovementFlagger
+
+    heater_shaker = MagicMock(spec=HeaterShaker)
+    heater_shaker.device_info = {"serial": "HS-1"}
+    thermocycler = MagicMock(spec=Thermocycler)
+    thermocycler.device_info = {"serial": "TC-1"}
+    hardware = HardwareProxy(SimpleNamespace(attached_modules=[heater_shaker, thermocycler]))  # type: ignore[arg-type]
+    proxied_heater_shaker, proxied_thermocycler = hardware.attached_modules
+
+    assert isinstance(proxied_heater_shaker, HeaterShaker)
+    assert isinstance(proxied_thermocycler, Thermocycler)
+
+    heater_shaker_flagger = HeaterShakerMovementFlagger(MagicMock(), hardware)
+    thermocycler_flagger = ThermocyclerMovementFlagger(MagicMock(), hardware, MagicMock())
+    assert await heater_shaker_flagger._find_heater_shaker_by_serial("HS-1") is proxied_heater_shaker
+    assert await thermocycler_flagger._find_thermocycler_by_serial("TC-1") is proxied_thermocycler
+
+
+async def test_cancelled_http_reader_action_holds_lock_until_native_work_finishes() -> None:
+    """HTTP Reader cancellation must not expose a still-running executor action."""
+
+    class _ModuleType:
+        name = "ABSORBANCE_READER"
+
+    class _ReaderModule:
+        MODULE_TYPE = _ModuleType()
+
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def start_measure(self) -> list[list[float]]:
+            self.started.set()
+            await self.release.wait()
+            return [[0.0] * 96]
+
+    module = _ReaderModule()
+    shared_lock = asyncio.Lock()
+    proxy = HardwareProxy(SimpleNamespace(attached_modules=[module]), lock=shared_lock)  # type: ignore[arg-type]
+    http_reader = proxy.attached_modules[0]
+
+    measurement = asyncio.create_task(http_reader.start_measure())
+    await module.started.wait()
+    measurement.cancel()
+    await asyncio.sleep(0)
+    assert shared_lock.locked()
+    assert not measurement.done()
+
+    module.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await measurement
+    assert not shared_lock.locked()
+
+
+async def test_stacker_rechecks_recovery_after_acquiring_shared_lock() -> None:
+    """A queued HTTP labware call must observe a SiLA failure before acting."""
+
+    class _ModuleType:
+        name = "FLEX_STACKER"
+
+    class _StackerModule:
+        MODULE_TYPE = _ModuleType()
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def dispense_labware(self, **kwargs: object) -> None:
+            self.calls += 1
+
+    module = _StackerModule()
+    shared_lock = asyncio.Lock()
+    await shared_lock.acquire()
+    proxy = HardwareProxy(SimpleNamespace(attached_modules=[module]), lock=shared_lock)  # type: ignore[arg-type]
+    http_stacker = proxy.attached_modules[0]
+    request = asyncio.create_task(http_stacker.dispense_labware(labware_height=14.4))
+    await asyncio.sleep(0)
+
+    stacker_recovery_state_for(module).require_full_home()
+    shared_lock.release()
+
+    with pytest.raises(NotHomedError, match="HomeAll"):
+        await request
+    assert module.calls == 0
+
+
+async def test_stacker_http_false_motion_result_requires_full_home() -> None:
+    """A firmware false result must quarantine later HTTP labware movement."""
+
+    class _ModuleType:
+        name = "FLEX_STACKER"
+
+    class _StackerModule:
+        MODULE_TYPE = _ModuleType()
+
+        def __init__(self) -> None:
+            self.dispense_calls = 0
+
+        async def move_axis(self, *args: object) -> bool:
+            return False
+
+        async def dispense_labware(self, **kwargs: object) -> None:
+            self.dispense_calls += 1
+
+    module = _StackerModule()
+    proxy = HardwareProxy(SimpleNamespace(attached_modules=[module]))  # type: ignore[arg-type]
+    http_stacker = proxy.attached_modules[0]
+
+    assert await http_stacker.move_axis("X", "extend", 10.0) is False
+    assert stacker_recovery_state_for(module).full_home_required is True
+    with pytest.raises(NotHomedError, match="HomeAll"):
+        await http_stacker.dispense_labware(labware_height=14.4)
+    assert module.dispense_calls == 0
+
+
+async def test_cancelled_http_stacker_action_deactivates_before_unlocking() -> None:
+    """Cancellation must stop Stacker motors before another owner can acquire the lock."""
+
+    class _ModuleType:
+        name = "FLEX_STACKER"
+
+    class _StackerModule:
+        MODULE_TYPE = _ModuleType()
+
+        def __init__(self) -> None:
+            self.move_started = asyncio.Event()
+            self.deactivate_started = asyncio.Event()
+            self.release_deactivate = asyncio.Event()
+
+        async def move_axis(self, *args: object) -> bool:
+            self.move_started.set()
+            await asyncio.Event().wait()
+            return True
+
+        async def deactivate(self) -> None:
+            self.deactivate_started.set()
+            await self.release_deactivate.wait()
+
+    module = _StackerModule()
+    shared_lock = asyncio.Lock()
+    proxy = HardwareProxy(SimpleNamespace(attached_modules=[module]), lock=shared_lock)  # type: ignore[arg-type]
+    http_stacker = proxy.attached_modules[0]
+
+    move = asyncio.create_task(http_stacker.move_axis("X", "extend", 10.0))
+    await module.move_started.wait()
+    move.cancel()
+    await module.deactivate_started.wait()
+    assert shared_lock.locked()
+    assert not move.done()
+
+    module.release_deactivate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await move
+    assert stacker_recovery_state_for(module).full_home_required is True
+    assert not shared_lock.locked()
 
 
 # ── locked_gen (async generator wrapping) ─────────────────────────────────────

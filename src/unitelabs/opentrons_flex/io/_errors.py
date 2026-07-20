@@ -36,7 +36,6 @@ from opentrons_shared_data.errors.exceptions import (
 _OPERATION_ERRORS = (
     ThermocyclerError,
     TempDeckError,
-    AbsorbanceReaderDisconnectedError,
     FlexStackerHopperLabwareError,
     FlexStackerShuttleLabwareError,
     FlexStackerShuttleMissingError,
@@ -62,6 +61,62 @@ class ModuleOperationError(Exception):
     """
 
 
+class InvalidTemperatureTargetError(Exception):
+    """
+    The requested target is not a finite temperature supported by the module.
+
+    Provide a finite value between 4 and 95 degrees Celsius and retry. Values
+    such as NaN and positive or negative infinity are never sent to hardware.
+    """
+
+
+class InvalidWavelengthError(Exception):
+    """
+    The requested wavelength configuration is not supported by the attached reader.
+
+    Read the SupportedWavelengths field from the AbsorbanceReaderController Status
+    property, choose only values reported by that module, and retry.
+    """
+
+
+class PlateReaderNotReadyError(Exception):
+    """
+    The Absorbance Plate Reader is not ready for the requested operation.
+
+    For initialization, remove the plate and place the lid on the reader. For a
+    measurement, initialize the reader, place the plate, and place the lid on the
+    reader. Use an allowlisted LabwareMovementController lid plan with the Flex
+    Gripper; do not move the reader lid manually.
+    """
+
+
+class StackerNotReadyError(Exception):
+    """
+    The Flex Stacker is not installed, initialized, or safely closed for this operation.
+
+    Confirm the Stacker is mechanically installed, close its hopper door, clear any
+    obstruction, home it if necessary, and retry.
+    """
+
+
+class StackerMovementOutOfRangeError(Exception):
+    """
+    The requested maintenance move exceeds the travel of the selected Stacker axis.
+
+    Use a non-negative distance no greater than the axis-specific limit reported in
+    the error message. Prefer RetrieveLabware and StoreLabware for routine workflows.
+    """
+
+
+class InvalidStackerConfigurationError(Exception):
+    """
+    A Stacker labware or LED setting is outside the supported hardware range.
+
+    Correct the value using the range in the error message and retry. For labware,
+    use the exact assembled height including any lid or adapter.
+    """
+
+
 # Defined errors every module command can raise; the features pass this to their
 # SiLA command declarations (plus any command-specific errors).
 COMMON_MODULE_ERRORS = (ModuleNotRespondingError, ModuleOperationError)
@@ -81,6 +136,8 @@ def translate_module_errors(
             # firmware response (including its error code) for operator recovery.
             raise ModuleOperationError(str(e)) from e
         except SerialException as e:
+            raise ModuleNotRespondingError(str(e)) from e
+        except AbsorbanceReaderDisconnectedError as e:
             raise ModuleNotRespondingError(str(e)) from e
         except _OPERATION_ERRORS as e:
             raise ModuleOperationError(str(e)) from e
@@ -199,7 +256,7 @@ class LiquidVolumeOutOfRangeError(Exception):
     The requested liquid volume is outside the attached pipette's current operating range.
 
     Check the attached pipette model, tip capacity, and liquid already held in
-    the tip. Use a volume within the limits reported by PipetteFeature and retry.
+    the tip. Use a volume within the limits reported by PipetteController and retry.
     """
 
 

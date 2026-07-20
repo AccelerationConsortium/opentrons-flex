@@ -17,7 +17,11 @@ Both servers are backed by one shared `HardwareControlAPI` (the Flex `OT3API`) w
 in `HardwareProxy` — an `asyncio.Lock` around every hardware call. This serialises the
 SiLA gRPC server and the in-process HTTP robot-server so their CAN commands cannot
 interleave, and avoids the "hardware already initialised" error two separate processes
-would otherwise hit.
+would otherwise hit. `HardwareProxy` also wraps every attached module exposed to
+robot-server, so Heater-Shaker, Thermocycler, Temperature Module, Plate Reader, and
+Stacker HTTP operations use that same lock. Cancellation-sensitive Reader work holds
+ownership until its native operation settles; a cancelled Stacker move deactivates its
+motors before releasing ownership and requires a complete home before reuse.
 
 The standard `opentrons-robot-server` systemd service is disabled on deployment. Our
 `sila2-connector` service owns the hardware and starts the HTTP API in-process via
@@ -29,27 +33,98 @@ service.
 Motion is exposed per **mount** (`LEFT`, `RIGHT`, `GRIPPER`) in deck coordinates
 (x, y, z mm), matching how the Flex hardware API models the robot.
 
+### Verified models and environments
+
+Automated verification uses the real Opentrons hardware simulators supplied by
+Opentrons 8.8.1 on Python 3.10/3.11 and Opentrons 9.0.0 on Python 3.12+. The
+connector recognizes these official model identifiers:
+
+| Instrument or accessory | Model identifier | Verification status |
+| --- | --- | --- |
+| Opentrons Flex | OT-3 hardware API | OT3API simulator and guarded physical HITL suite |
+| Heater-Shaker Module | `heaterShakerModuleV1` | Explicit module simulator and guarded physical HITL suite |
+| Flex Stacker | `flexStackerModuleV1` | Explicit module simulator and guarded physical HITL suite |
+| Absorbance Plate Reader | `absorbanceReaderV1` | Explicit module simulator and guarded physical HITL suite |
+| Temperature Module GEN2 | `temperatureModuleV2` | Explicit module simulator and guarded physical HITL suite |
+
+The automated suite does not claim a physical-device pass: hardware tests are
+deliberately opt-in and must be recorded against the serial number and firmware
+of the robot/module under test before that combination is described as validated.
+
 **SiLA features:**
 
 | Feature | Commands / properties |
 |---------|------------------------|
-| `MotionControlFeature` | `Home`, `HomeMount`, `MoveTo`, `MoveRelative`, `GetPosition`, `Aspirate`, `Dispense`, `BlowOut`, `PrepareForAspirate`, `EmergencyStop`, `Pause`, `Resume`, `SetLights`; `Lights`, `IsSimulating`, `MachineStatus` |
+| `MotionController` | `Home`, `HomeMount`, `MoveTo`, `MoveRelative`, `GetPosition`, `Aspirate`, `Dispense`, `BlowOut`, `PrepareForAspirate`, `EmergencyStop`, `Pause`, `Resume`, `SetLights`; `Lights`, `IsSimulating`, `MachineStatus` |
 | `LiquidHandlingController` | `Mix`, `TouchTip`, `ProbeLiquidLevel`, `AspirateWhileTracking`, `DispenseWhileTracking`, atomic `Transfer`, and `TransferWithVerifiedLiquidClass` |
 | `LabwareMovementController` | `MoveLabware` / `MoveLid` execute locally allowlisted plans with server-owned occupancy, module-state, waypoint, pickup-width, and cancellation checks |
-| `PipetteFeature` | `GetAttachedPipettes`; full, single-nozzle, and rectangular partial-tip layouts for 1/8/96-channel heads |
-| `TipController` | Atomic move + `PickUpTip` / `DropTip`, `GetTipPresence`; sensor verification and defined recovery errors (use `MotionControlFeature.EmergencyStop` for a global halt) |
-| `GripperFeature` | `Grip`, `Ungrip`, `HomeJaw`; `Status`, `JawWidth` |
-| `CalibrationFeature` | `CalibratePipette`, `CalibrateGripperJaw`, `CalibrateDeck` (automatic probe-based routines) |
-| Module features | `HeaterShaker`, `Thermocycler`, `Temperature`, `AbsorbanceReader`, `FlexStacker` (registered when attached) |
+| `PipetteController` | `GetAttachedPipettes`; full, single-nozzle, and rectangular partial-tip layouts for 1/8/96-channel heads |
+| `TipController` | Atomic move + `PickUpTip` / `DropTip`, `GetTipPresence`; sensor verification and defined recovery errors (use `MotionController.EmergencyStop` for a global halt) |
+| `GripperController` | `Grip`, `Ungrip`, `HomeJaw`; `Status`, `JawWidth` |
+| `CalibrationController` | `CalibratePipette`, `CalibrateGripperJaw`, `CalibrateDeck` (automatic probe-based routines) |
+| `HeaterShakerController` | Observable heat, shake, stop, and latch commands with constrained °C/rpm inputs |
+| `AbsorbanceReaderController` | `InitializeSingle`, `InitializeSingleWithReference`, `InitializeMultiple`, `ReadPlate`, `Deactivate`; observable `Status`, static `DeviceInfo` |
+| `FlexStackerController` | Routine `RetrieveLabware` and `StoreLabware`; observable `Status`, static `DeviceInfo` |
+| `FlexStackerMaintenanceController` | `HomeAll`, axis/latch, LED, and motor-stop service commands; observable `Status` and `LimitSwitchStatus`, static `DeviceInfo` |
+| `TemperatureController` | `SetTemperature`, atomic `SetTemperatureAndWait`, `Deactivate`; observable `Status`, static `DeviceInfo` |
+| Other module controllers | `ThermocyclerController` (registered when attached) |
 
 The Heater-Shaker controller exposes observable temperature, shaking, and latch
 operations with intermediate execution updates and defined module errors:
-`SetTemperature`, `WaitForTemperature`, `DeactivateHeater`, `SetRpm`,
-`StopShaking`, `OpenLatch`, `CloseLatch`, `GetTemperature`, `GetRpm`,
+`SetTemperature`, `WaitForTemperature`, `DeactivateHeater`, `SetSpeed`,
+`StopShaking`, `OpenLatch`, `CloseLatch`, `GetTemperature`, `GetSpeed`,
 `GetLatchStatus`, `GetStatus`, and `GetDeviceInfo`.
 Temperature inputs carry a degrees Celsius unit constraint and a 0–95 °C range;
 active shaking carries a revolutions-per-minute unit constraint and a 200–3000
-rpm range. Use `StopShaking` instead of sending an implicit zero-speed sentinel.
+rpm range. The physical unit stays in the FDL constraint rather than the endpoint
+identifier. Use `StopShaking` instead of sending an implicit zero-speed sentinel.
+
+The Absorbance Plate Reader workflow follows the official physical sequence:
+use an allowlisted `LabwareMovementController` plan and the Flex Gripper to place
+the lid on an empty reader, initialize one or more wavelengths, move the lid and
+plate, replace the lid, and call `ReadPlate`. Lid and plate movement remain in the
+labware-movement concern; the reader feature validates its live lid/plate state and
+returns measurements grouped by wavelength with explicit A1–H12 well identifiers.
+
+The Flex Stacker workflow uses `RetrieveLabware` to move the bottom item onto the
+shuttle and `StoreLabware` to return the shuttle item to the stack. Both commands
+require the exact assembled labware height, expose millimetre units and physical
+range constraints, and can enforce the Stacker's hopper and shuttle sensors. A
+cancelled or failed motion stops the motors and requires
+`FlexStackerMaintenanceController.HomeAll` before another retrieve/store command,
+preventing an uncertain shuttle position from being reused. The recovery gate is
+shared with the embedded robot-server and also fails closed from polled axis state.
+
+The Temperature Module GEN2 controller supports both heating and cooling across
+the public 4-95 °C range. `SetTemperature` starts control and returns immediately;
+`SetTemperatureAndWait` atomically sets and waits for the same target. Cancelling
+the waiting command deactivates temperature control before returning cancellation.
+The autonomous thermal wait does not monopolize the connector-wide hardware lock,
+so unrelated robot-server operations can continue; if the parallel HTTP path changes
+the module target, the SiLA command stops with a defined error instead of reporting
+false success. Status and identity are exposed as properties with structured state.
+
+The Magnetic Block is passive and has no powered state or command surface, so the
+connector intentionally does not register a Magnetic Block feature. Move plates on
+and off it with server-provisioned `LabwareMovementController` plans and the existing
+Flex Gripper, just like movement between other deck locations.
+
+### Module feature v2 migration
+
+The connector is still pre-1.0; version 0.8.0 completes the Temperature Module
+GEN2 surface and retains the standards-compliant v2 Stacker and reader definitions.
+Regenerate SiLA clients and update these endpoint mappings when upgrading:
+
+| Previous v1 endpoint | v2 endpoint |
+| --- | --- |
+| `ConfigureMeasurement` | `InitializeSingle`, `InitializeSingleWithReference`, or `InitializeMultiple` |
+| `StartMeasure` | `ReadPlate` (typed wavelength and A1-H12 results) |
+| `GetStatus`, `GetDeviceInfo` | `Status`, `DeviceInfo` properties |
+| `DispenseLabware` | `RetrieveLabware` |
+| Boolean maintenance results | Structured `FlexStackerStatus` results or Defined Execution Errors |
+| Temperature `SetTemperature(TemperatureCelsius)` | `SetTemperature(Temperature)` |
+| Temperature `WaitForTemperature` | Atomic `SetTemperatureAndWait` |
+| Temperature `GetTemperature`, `GetDeviceInfo` | `Status`, `DeviceInfo` properties |
 
 Advanced liquid commands retain the low-level primitives for compatibility but
 run multi-step operations atomically under the same hardware lock. Verified
@@ -206,6 +281,11 @@ Key values:
 - `use_simulator` — `true` runs the OT3 hardware simulator (no robot); `false` drives real Flex hardware.
 - `simulated_heater_shaker` — when `true`, explicitly attaches one simulated
   Heater-Shaker to the OT3 simulator. It is rejected when `use_simulator=false`.
+- `simulated_flex_stacker` — explicitly attaches one simulated Flex Stacker.
+- `simulated_absorbance_reader` — explicitly attaches one simulated Absorbance
+  Plate Reader.
+- `simulated_temperature_module` — explicitly attaches one simulated Temperature
+  Module GEN2. All simulated-module settings are rejected in live-hardware mode.
 - `with_robot_server` — `true` additionally starts the in-process opentrons HTTP robot-server.
 
 Note: The `cloud_server_endpoint` values are only necessary if you want to use the connector with the UniteLabs platform.
@@ -242,6 +322,12 @@ uv run --extra test python -m pytest tests/integration -k grpc
 
 # Full Heater-Shaker workflow over SiLA gRPC against the explicit module simulator
 uv run --extra test python -m pytest tests/integration/test_grpc_heater_shaker.py -v
+
+# Flex Stacker, Absorbance Plate Reader, and Temperature Module workflows
+uv run --extra test python -m pytest \
+  tests/integration/test_grpc_flex_stacker.py \
+  tests/integration/test_grpc_absorbance_reader.py \
+  tests/integration/test_grpc_temperature_module.py -v
 
 # Advanced liquid, partial-nozzle, and gripper labware workflows over SiLA gRPC
 uv run --extra test python -m pytest \
@@ -304,6 +390,67 @@ the heater in cleanup:
 uv run --extra test python -m pytest \
   tests/integration/hardware/test_hitl_heater_shaker.py \
     --robot <robot-ip>:50051 --heater-shaker-actuation -v
+```
+
+For a Flex Stacker, run identity/status first. The guarded round trip requires an
+operator-loaded hopper, an empty shuttle, a closed hopper door, and the exact
+assembled labware height:
+
+```sh
+uv run --extra test python -m pytest \
+  tests/integration/hardware/test_hitl_flex_stacker.py \
+  -k identity --robot <robot-ip>:50051 -v
+
+uv run --extra test python -m pytest \
+  tests/integration/hardware/test_hitl_flex_stacker.py \
+  --robot <robot-ip>:50051 --stacker-actuation \
+  --stacker-labware-height 14.4 -v
+```
+
+For an Absorbance Plate Reader, the default hardware check is read-only. The
+separately gated initialization requires an empty reader and a lid placed by the
+Flex Gripper; never move the reader lid by hand:
+
+```sh
+uv run --extra test python -m pytest \
+  tests/integration/hardware/test_hitl_absorbance_reader.py \
+  -k identity --robot <robot-ip>:50051 -v
+
+uv run --extra test python -m pytest \
+  tests/integration/hardware/test_hitl_absorbance_reader.py \
+  --robot <robot-ip>:50051 --plate-reader-actuation \
+  --plate-reader-wavelength 450 -v
+```
+
+After initialization, use the Flex Gripper through an allowlisted movement plan
+to remove the lid, place a compatible plate, and replace the lid. Then run the
+separately gated physical measurement without restarting the connector:
+
+```sh
+uv run --extra test python -m pytest \
+  tests/integration/hardware/test_hitl_absorbance_reader.py \
+  -k guarded_plate_measurement --robot <robot-ip>:50051 \
+  --plate-reader-measurement -v
+```
+
+For a Temperature Module GEN2, begin with the read-only identity/status check:
+
+```sh
+uv run --extra test python -m pytest \
+  tests/integration/hardware/test_hitl_temperature_module.py \
+  -k identity --robot <robot-ip>:50051 -v
+```
+
+Heating and cooling are separately safety-gated and always end by deactivating
+the module. Use compatible labware and provide an explicit target at least 1 °C
+away from the current reading. To verify both directions, run once with a higher
+target and once with a lower target, keeping both within 4-95 °C:
+
+```sh
+uv run --extra test python -m pytest \
+  tests/integration/hardware/test_hitl_temperature_module.py \
+  --robot <robot-ip>:50051 --temperature-module-actuation \
+  --temperature-module-target 37 -v
 ```
 
 Labware movement has a separate physical safety gate. First provision validated

@@ -37,7 +37,7 @@ _TempCelsius = typing.Annotated[
     constraints.MaximalInclusive(95.0),
     _CELSIUS,
 ]
-_Rpm = typing.Annotated[
+_Speed = typing.Annotated[
     int,
     constraints.MinimalInclusive(200),
     constraints.MaximalInclusive(3000),
@@ -106,21 +106,21 @@ class HeaterShakerStatus:
     Current Heater-Shaker temperature, speed, and latch state.
 
     Attributes:
-        temperature_current: Measured plate temperature.
-        temperature_target: Requested target, or zero when TemperatureTargetActive is false.
+        current_temperature: Measured plate temperature.
+        target_temperature: Requested target, or zero when TemperatureTargetActive is false.
         temperature_target_active: Whether the heater currently has an active target.
-        rpm_current: Measured rotation speed.
-        rpm_target: Requested target, or zero when RpmTargetActive is false.
-        rpm_target_active: Whether the shaker currently has an active target.
+        current_speed: Measured rotation speed.
+        target_speed: Requested target, or zero when SpeedTargetActive is false.
+        speed_target_active: Whether the shaker currently has an active target.
         latch_status: Current labware latch state.
     """
 
-    temperature_current: _TemperatureReading
-    temperature_target: _TemperatureReading
+    current_temperature: _TemperatureReading
+    target_temperature: _TemperatureReading
     temperature_target_active: bool
-    rpm_current: _RotationSpeedReading
-    rpm_target: _RotationSpeedReading
-    rpm_target_active: bool
+    current_speed: _RotationSpeedReading
+    target_speed: _RotationSpeedReading
+    speed_target_active: bool
     latch_status: LatchStatus
 
 
@@ -162,9 +162,9 @@ class HeaterShakerFeature(sila.Feature):
         super().__init__(
             originator="ca.accelerationconsortium",
             category="modules",
-            identifier="HeaterShakerFeature",
+            identifier="HeaterShakerController",
             name="Heater Shaker Controller",
-            version="2.0",
+            version="3.0",
         )
         self._controller = controller
 
@@ -273,9 +273,9 @@ class HeaterShakerFeature(sila.Feature):
         return _temperature_response(await self._controller.get_temperature())
 
     @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
-    async def set_rpm(
+    async def set_speed(
         self,
-        rpm: _Rpm,
+        speed: _Speed,
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
@@ -284,24 +284,24 @@ class HeaterShakerFeature(sila.Feature):
         Set the shaking speed.
 
         Args:
-            rpm: Target shaking speed in revolutions per minute (valid range 200-3000).
+            speed: Target shaking speed (valid range 200-3000 revolutions per minute).
                 Use StopShaking to stop and home the shaker.
 
         Returns:
-            Current and target RPM.
+            Current and target rotation speed.
         """
         await run_observable(
             status,
             intermediate,
-            f"Setting heater-shaker speed to {rpm} RPM.",
+            f"Setting heater-shaker speed to {speed} revolutions per minute.",
             "Heater-shaker speed set.",
             "Heater-shaker speed command cancelled.",
-            self._controller.set_rpm(rpm),
+            self._controller.set_rpm(speed),
         )
         return _speed_response(await self._controller.get_rpm())
 
     @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
-    async def get_rpm(
+    async def get_speed(
         self,
         *,
         status: sila.Status,
@@ -311,7 +311,7 @@ class HeaterShakerFeature(sila.Feature):
         Get the current shaking speed.
 
         Returns:
-            Current and target RPM.
+            Current and target rotation speed.
         """
         reading = await run_observable(
             status,
@@ -428,7 +428,7 @@ class HeaterShakerFeature(sila.Feature):
         Get complete module status.
 
         Returns:
-            Temperature, RPM, and latch status.
+            Temperature, rotation speed, and latch status.
         """
         await run_observable(
             status,
@@ -439,16 +439,16 @@ class HeaterShakerFeature(sila.Feature):
             self._controller.is_connected(),
         )
         temp = await self._controller.get_temperature()
-        rpm = await self._controller.get_rpm()
+        speed = await self._controller.get_rpm()
         latch = await self._controller.get_latch_status()
 
         return HeaterShakerStatus(
-            temperature_current=temp.current,
-            temperature_target=temp.target if temp.target is not None else 0.0,
+            current_temperature=temp.current,
+            target_temperature=temp.target if temp.target is not None else 0.0,
             temperature_target_active=temp.target is not None,
-            rpm_current=rpm.current,
-            rpm_target=rpm.target if rpm.target is not None else 0,
-            rpm_target_active=rpm.target is not None,
+            current_speed=speed.current,
+            target_speed=speed.target if speed.target is not None else 0,
+            speed_target_active=speed.target is not None,
             latch_status=LatchStatus(latch.value),
         )
 

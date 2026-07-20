@@ -147,7 +147,13 @@ class MotionControlFeature(sila.Feature):
     """
 
     def __init__(self, controller: FlexMotionController):
-        super().__init__(originator="ca.accelerationconsortium", category="robots", version="2.0")
+        super().__init__(
+            originator="ca.accelerationconsortium",
+            category="robots",
+            identifier="MotionController",
+            name="Motion Controller",
+            version="2.0",
+        )
         self._controller = controller
 
     # ------------------------------------------------------------------ homing

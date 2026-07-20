@@ -9,8 +9,8 @@ from ..observable import call_observable
 
 _PKG = "sila2.ca.accelerationconsortium.robots.labwaremovementcontroller.v1"
 _SERVICE = f"{_PKG}.LabwareMovementController"
-_MOTION_PKG = "sila2.ca.accelerationconsortium.robots.motioncontrolfeature.v2"
-_MOTION_SERVICE = f"{_MOTION_PKG}.MotionControlFeature"
+_MOTION_PKG = "sila2.ca.accelerationconsortium.robots.motioncontroller.v2"
+_MOTION_SERVICE = f"{_MOTION_PKG}.MotionController"
 
 pytestmark = [pytest.mark.hardware_only, pytest.mark.gripper_labware_actuation]
 

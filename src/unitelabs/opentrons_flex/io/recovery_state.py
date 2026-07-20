@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from opentrons.hardware_control import HardwareControlAPI
 
 _STATE_ATTRIBUTE = "_unitelabs_hardware_recovery_state"
+_STACKER_STATE_ATTRIBUTE = "_unitelabs_flex_stacker_recovery_state"
 
 
 @dataclass
@@ -40,7 +41,7 @@ class HardwareRecoveryState:
             mounts = ", ".join(sorted(self.tip_reconciliation_required))
             actions.append(f"reconcile the physical and software tip state for {mounts} and restart the connector")
         if self.gripper_home_required:
-            actions.append("run GripperFeature.HomeJaw")
+            actions.append("run GripperController.HomeJaw")
         return ", then ".join(actions) or "No recovery action is required"
 
     def mark_halted(self) -> None:
@@ -92,6 +93,43 @@ class HardwareRecoveryState:
         return True
 
 
+@dataclass
+class FlexStackerRecoveryState:
+    """Recovery authority shared by SiLA and robot-server for one Stacker."""
+
+    full_home_required: bool = False
+
+    def require_full_home(self) -> None:
+        """Fail closed after an interrupted, cancelled, or rejected movement."""
+        self.full_home_required = True
+
+    def mark_fully_homed(self) -> None:
+        """Clear the explicit gate after a complete home including the latch."""
+        self.full_home_required = False
+
+    def recovery_required(self, module: object) -> bool:
+        """Combine the shared gate with authoritative polled position state."""
+        if self.full_home_required:
+            return True
+        if bool(getattr(module, "is_simulated", False)):
+            # Opentrons' explicit Flex Stacker simulator does not mutate its
+            # platform or limit-switch sensor values when an axis is homed.
+            # A successful full HomeAll is therefore the simulator transport's
+            # only available recovery authority. Real modules continue through
+            # the fail-closed sensor checks below.
+            return False
+        try:
+            limit_states = module.limit_switch_status.values()
+            if any(getattr(state, "value", str(state)) == "unknown" for state in limit_states):
+                return True
+            platform = getattr(module.platform_state, "value", str(module.platform_state))
+            return platform in {"unknown", "missing"}
+        except (AttributeError, TypeError):
+            # A backend that cannot prove a known position must not authorize
+            # labware movement.
+            return True
+
+
 def recovery_state_for(api: HardwareControlAPI) -> HardwareRecoveryState:
     """Return the one recovery-state object associated with ``api``."""
     state = getattr(api, _STATE_ATTRIBUTE, None)
@@ -101,4 +139,18 @@ def recovery_state_for(api: HardwareControlAPI) -> HardwareRecoveryState:
     return state
 
 
-__all__ = ["HardwareRecoveryState", "recovery_state_for"]
+def stacker_recovery_state_for(module: object) -> FlexStackerRecoveryState:
+    """Return the one recovery-state object associated with a Stacker module."""
+    state = getattr(module, _STACKER_STATE_ATTRIBUTE, None)
+    if not isinstance(state, FlexStackerRecoveryState):
+        state = FlexStackerRecoveryState()
+        setattr(module, _STACKER_STATE_ATTRIBUTE, state)
+    return state
+
+
+__all__ = [
+    "FlexStackerRecoveryState",
+    "HardwareRecoveryState",
+    "recovery_state_for",
+    "stacker_recovery_state_for",
+]

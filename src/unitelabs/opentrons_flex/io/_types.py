@@ -1,6 +1,48 @@
-"""Shared data types for module IO wrappers."""
+"""Shared, vendor-neutral data types for module IO wrappers."""
 
+import enum
 from dataclasses import dataclass
+
+
+class AbsorbanceMeasurementMode(enum.Enum):
+    """Connector-owned Absorbance Reader measurement mode."""
+
+    SINGLE = "single"
+    MULTI = "multi"
+
+
+class FlexStackerAxis(enum.Enum):
+    """Connector-owned Flex Stacker maintenance axis."""
+
+    X = "X"
+    Z = "Z"
+    LATCH = "L"
+
+
+class FlexStackerDirection(enum.Enum):
+    """Connector-owned Flex Stacker movement direction."""
+
+    RETRACT = "RETRACT"
+    EXTEND = "EXTEND"
+
+
+class FlexStackerLedColor(enum.Enum):
+    """Connector-owned Flex Stacker LED color."""
+
+    WHITE = "WHITE"
+    RED = "RED"
+    GREEN = "GREEN"
+    BLUE = "BLUE"
+    YELLOW = "YELLOW"
+
+
+class FlexStackerLedPattern(enum.Enum):
+    """Connector-owned Flex Stacker LED pattern."""
+
+    STATIC = "STATIC"
+    FLASH = "FLASH"
+    PULSE = "PULSE"
+    CONFIRM = "CONFIRM"
 
 
 @dataclass
@@ -9,6 +51,15 @@ class Temperature:
 
     current: float
     target: float | None = None
+
+
+@dataclass
+class TemperatureModuleState:
+    """Current Temperature Module temperature-control state."""
+
+    status: str
+    current_temperature: float
+    target_temperature: float | None
 
 
 @dataclass
@@ -52,8 +103,9 @@ class AbsorbanceReaderState:
 
 @dataclass
 class AbsorbanceMeasurementRow:
-    """One row of Absorbance Reader measurement values."""
+    """One wavelength and its row-major 96-well measurement values."""
 
+    wavelength: int
     values: list[float]
 
 
@@ -74,6 +126,7 @@ class FlexStackerState:
     hopper_door_state: str
     install_detected: bool
     initialized: bool
+    recovery_required: bool
     error_details: str
 
 

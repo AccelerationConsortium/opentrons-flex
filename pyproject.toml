@@ -1,6 +1,6 @@
 [project]
 name = "unitelabs-opentrons-flex"
-version = "0.6.0"
+version = "0.8.0"
 description = "A SiLA2 connector for the Opentrons Flex liquid handling robot"
 readme = "README.md"
 authors = [{name = "Acceleration Consortium", email = "developers@accelerationconsortium.ca"},]
@@ -63,6 +63,10 @@ markers = [
     "smoketest_http_only: test requires the local simulator HTTP stack; skipped unless --with-http-server is set",
     "hardware_only: hardware-in-the-loop test; requires a real Flex via --robot/--robot-http, skipped otherwise",
     "heater_shaker_actuation: opt-in Heater-Shaker hardware actuation; requires --heater-shaker-actuation",
+    "stacker_actuation: opt-in Flex Stacker hardware actuation; requires --stacker-actuation",
+    "plate_reader_actuation: opt-in Absorbance Plate Reader initialization; requires --plate-reader-actuation",
+    "plate_reader_measurement: opt-in Absorbance Plate Reader measurement; requires --plate-reader-measurement",
+    "temperature_module_actuation: opt-in Temperature Module GEN2 heating/cooling; requires --temperature-module-actuation",
     "gripper_labware_actuation: opt-in prepared-labware gripper movement; requires --gripper-labware-actuation",
 ]
 

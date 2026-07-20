@@ -12,8 +12,8 @@ from unitelabs.opentrons_flex.io import DeviceInfo
 
 from .observable import call_observable
 
-_PACKAGE = "sila2.ca.accelerationconsortium.modules.heatershakerfeature.v2"
-_SERVICE = f"{_PACKAGE}.HeaterShakerFeature"
+_PACKAGE = "sila2.ca.accelerationconsortium.modules.heatershakercontroller.v3"
+_SERVICE = f"{_PACKAGE}.HeaterShakerController"
 
 
 class HeaterShakerClient:
@@ -59,13 +59,13 @@ class HeaterShakerClient:
         """Deactivate the heater."""
         return await self._observable("DeactivateHeater")
 
-    async def set_rpm(self, rotation_speed: int) -> HeaterShakerSpeed:
+    async def set_speed(self, rotation_speed: int) -> HeaterShakerSpeed:
         """Set the active shaking speed."""
-        return await self._observable("SetRpm", {"rpm": rotation_speed})
+        return await self._observable("SetSpeed", {"speed": rotation_speed})
 
-    async def get_rpm(self) -> HeaterShakerSpeed:
+    async def get_speed(self) -> HeaterShakerSpeed:
         """Read the current and target shaking speed."""
-        return await self._observable("GetRpm")
+        return await self._observable("GetSpeed")
 
     async def stop_shaking(self) -> HeaterShakerSpeed:
         """Stop and home the shaker."""
