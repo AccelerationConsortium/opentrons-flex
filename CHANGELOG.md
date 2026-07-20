@@ -82,6 +82,10 @@ the Flex firmware is not modified.
   connector-wide hardware lock. Stacker recovery is checked after lock acquisition,
   cancelled Stacker motion deactivates before unlocking, and cancelled Plate Reader
   work retains ownership until the native operation has settled.
+- Shared-hardware injection now preserves robot-server's native lifespan and
+  explicitly completes its skipped Protocol Engine post-initialization callbacks,
+  keeping `/runs`, `/protocols`, and `/commands` operational while the connector
+  remains the sole owner of asynchronous hardware cleanup.
 - **BREAKING**: the Temperature Module Feature Definition is now the
   `TemperatureController` version 2.0. The parameter is the unit-annotated
   `Temperature`; `SetTemperatureAndWait` replaces the ambiguous independent wait

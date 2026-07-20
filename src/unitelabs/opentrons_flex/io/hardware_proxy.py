@@ -343,6 +343,17 @@ class HardwareProxy:
         """
         return isinstance(self._api, cls)
 
+    def clean_up(self) -> None:
+        """
+        Leave shared hardware cleanup to the connector lifecycle owner.
+
+        Robot-server treats its hardware singleton as a synchronous
+        ``ThreadManagedHardware`` and calls ``clean_up()`` without awaiting it.
+        The connector owns the underlying async ``OT3API`` and awaits its cleanup
+        after both servers stop, so this compatibility method is intentionally a
+        no-op.
+        """
+
 
 def _is_flex_stacker_module(module: object) -> bool:
     module_type = getattr(module, "MODULE_TYPE", None)

@@ -22,6 +22,12 @@ robot-server, so Heater-Shaker, Thermocycler, Temperature Module, Plate Reader, 
 Stacker HTTP operations use that same lock. Cancellation-sensitive Reader work holds
 ownership until its native operation settles; a cancelled Stacker move deactivates its
 motors before releasing ownership and requires a complete home before reuse.
+The embedded server retains its native lifespan for persistence, notifications,
+and task management. After the connector injects the already-initialized shared
+hardware, it runs the native post-initialization callbacks that prepare Protocol
+Engine services, so `/runs`, `/protocols`, and `/commands` remain available without
+creating a second hardware controller. The connector remains the sole owner of
+the underlying asynchronous hardware cleanup.
 
 The standard `opentrons-robot-server` systemd service is disabled on deployment. Our
 `sila2-connector` service owns the hardware and starts the HTTP API in-process via

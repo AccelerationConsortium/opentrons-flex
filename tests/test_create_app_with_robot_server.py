@@ -24,7 +24,11 @@ _rs_app_mod = sys.modules.get("robot_server.app")
 if _rs_app_mod is None or not isinstance(getattr(_rs_app_mod, "app", None), MagicMock):
     pytest.skip("real robot_server installed; stub-based tests skipped", allow_module_level=True)
 
-from unitelabs.opentrons_flex import OpentronsFlexConfig, create_app
+from unitelabs.opentrons_flex import (
+    OpentronsFlexConfig,
+    _shared_hardware_robot_server_lifespan,
+    create_app,
+)
 from unitelabs.opentrons_flex.features import (
     CalibrationFeature,
     GripperFeature,
@@ -157,6 +161,36 @@ async def test_app_state_receives_hardware_proxy():
         rs_hw._hw_api_accessor.set_on.assert_called_once()
         _, proxy_arg = rs_hw._hw_api_accessor.set_on.call_args[0]
         assert isinstance(proxy_arg, HardwareProxy)
+
+
+@pytest.mark.asyncio
+async def test_shared_hardware_lifespan_runs_protocol_engine_callbacks():
+    """Shared hardware still initializes the native Protocol Engine dependencies."""
+    events: list[str] = []
+
+    @contextlib.asynccontextmanager
+    async def original_lifespan(_app):
+        events.append("native-started")
+        yield
+        events.append("native-stopped")
+
+    start_light_control = AsyncMock(side_effect=lambda *_: events.append("light-started"))
+    mark_startup_finished = AsyncMock(side_effect=lambda *_: events.append("light-ready"))
+    dependencies = MagicMock(
+        start_light_control_task=start_light_control,
+        mark_light_control_startup_finished=mark_startup_finished,
+    )
+    app = MagicMock()
+    proxy = MagicMock(spec=HardwareProxy)
+
+    with patch.dict(sys.modules, {"robot_server.runs.dependencies": dependencies}):
+        lifespan = _shared_hardware_robot_server_lifespan(original_lifespan, proxy)
+        async with lifespan(app):
+            events.append("serving")
+
+    assert events == ["native-started", "light-started", "light-ready", "serving", "native-stopped"]
+    start_light_control.assert_awaited_once_with(app.state, proxy)
+    mark_startup_finished.assert_awaited_once_with(app.state, proxy)
 
 
 # ── uvicorn startup ───────────────────────────────────────────────────────────

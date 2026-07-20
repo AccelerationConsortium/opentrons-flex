@@ -18,6 +18,13 @@ SAFE_SMOKETEST_POSTS: dict[str, dict] = {
 
 _CLIENT_SUPPLIED_HEADERS = {"opentrons-version"}
 
+_SMOKETEST_GET_EXCLUSIONS = {
+    "/maintenance_runs/current_run": "requires an active maintenance run",
+    "/motors/engaged": "upstream OT3 simulator does not populate every physical motor axis",
+    "/networking/status": "requires NetworkManager on the robot operating system",
+    "/wifi/list": "requires NetworkManager on the robot operating system",
+}
+
 
 def _openapi_paths(http_client) -> dict:
     response = http_client.get("/openapi.json")
@@ -94,7 +101,12 @@ def test_all_no_argument_get_routes_execute_in_smoketest(http_client) -> None:
     get_routes = [
         path
         for method, path, operation in operations
-        if method == "GET" and "{" not in path and not _has_required_parameters(operation)
+        if (
+            method == "GET"
+            and "{" not in path
+            and path not in _SMOKETEST_GET_EXCLUSIONS
+            and not _has_required_parameters(operation)
+        )
     ]
 
     assert get_routes, "No safe GET routes were discovered in the Opentrons HTTP API"

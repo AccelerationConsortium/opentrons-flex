@@ -76,6 +76,11 @@ def test_wraps_instance_mismatch(proxy: HardwareProxy) -> None:
     assert proxy.wraps_instance(str) is False
 
 
+def test_robot_server_cleanup_is_a_synchronous_noop(proxy: HardwareProxy) -> None:
+    """Robot-server must not receive an un-awaited OT3API cleanup coroutine."""
+    assert proxy.clean_up() is None
+
+
 # ── Motion (ported from test_moves.py) ───────────────────────────────────────
 
 

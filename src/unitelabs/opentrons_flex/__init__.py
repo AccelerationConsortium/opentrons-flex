@@ -1,7 +1,9 @@
 import asyncio
 import collections.abc
+import contextlib
 import dataclasses
 import logging
+import typing
 from importlib.metadata import version
 
 from unitelabs.cdk import Connector, ConnectorBaseConfig, SiLAServerConfig
@@ -41,6 +43,10 @@ from .io import (
 log = logging.getLogger(__name__)
 
 __version__ = version("unitelabs-opentrons-flex")
+
+
+class _AppWithState(typing.Protocol):
+    state: object
 
 
 @dataclasses.dataclass
@@ -216,6 +222,35 @@ def _register_modules(
             log.info("Registered SiLA feature %s for module %s", feature_cls.__name__, module.MODULE_TYPE.name)
 
 
+def _shared_hardware_robot_server_lifespan(
+    original_lifespan: collections.abc.Callable[[_AppWithState], typing.AsyncContextManager[None]],
+    proxy: HardwareProxy,
+) -> collections.abc.Callable[[_AppWithState], typing.AsyncContextManager[None]]:
+    """
+    Add robot-server post-init callbacks skipped by shared hardware injection.
+
+    The native lifespan sees the completed hardware initialization task installed
+    by the connector, so it deliberately does not run its hardware callbacks.
+    Protocol Engine routes still require the light controller created by those
+    callbacks. Run only that public robot-server initialization pair after the
+    native lifespan has established its task runner and persistence services.
+    """
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app: _AppWithState) -> collections.abc.AsyncGenerator[None, None]:
+        from robot_server.runs.dependencies import (  # type: ignore[import]
+            mark_light_control_startup_finished,
+            start_light_control_task,
+        )
+
+        async with original_lifespan(app):
+            await start_light_control_task(app.state, proxy)
+            await mark_light_control_startup_finished(app.state, proxy)
+            yield
+
+    return lifespan
+
+
 async def create_app(config: OpentronsFlexConfig) -> collections.abc.AsyncGenerator[Connector, None]:
     """
     Create the connector application.
@@ -357,6 +392,12 @@ async def _create_app_with_robot_server(
     _init_task_accessor.set_on(robot_server_app.state, init_task)
     _hw_api_accessor.set_on(robot_server_app.state, proxy)
 
+    original_robot_server_lifespan = robot_server_app.router.lifespan_context
+    robot_server_app.router.lifespan_context = _shared_hardware_robot_server_lifespan(
+        original_robot_server_lifespan,
+        proxy,
+    )
+
     if config.robot_server_tcp_port is not None:
         uv_config = uvicorn.Config(
             robot_server_app,
@@ -391,6 +432,7 @@ async def _create_app_with_robot_server(
     finally:
         uv_server.should_exit = True
         await asyncio.gather(robot_server_task, return_exceptions=True)
+        robot_server_app.router.lifespan_context = original_robot_server_lifespan
         try:
             if labware_state is not None:
                 labware_state.close()
