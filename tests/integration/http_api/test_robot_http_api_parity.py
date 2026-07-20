@@ -16,6 +16,8 @@ SAFE_SMOKETEST_POSTS: dict[str, dict] = {
     "/robot/home": {"target": "pipette", "mount": "left"},
 }
 
+_CLIENT_SUPPLIED_HEADERS = {"opentrons-version"}
+
 
 def _openapi_paths(http_client) -> dict:
     response = http_client.get("/openapi.json")
@@ -35,7 +37,29 @@ def _operations(paths: dict) -> list[tuple[str, str, dict]]:
 
 
 def _has_required_parameters(operation: dict) -> bool:
-    return any(parameter.get("required", False) for parameter in operation.get("parameters", []))
+    """Return whether an operation needs input not supplied by ``http_client``."""
+    for parameter in operation.get("parameters", []):
+        if not parameter.get("required", False):
+            continue
+        if parameter.get("in") == "header" and str(parameter.get("name", "")).casefold() in _CLIENT_SUPPLIED_HEADERS:
+            continue
+        return True
+    return False
+
+
+@pytest.mark.parametrize(
+    ("parameters", "expected"),
+    (
+        ([], False),
+        ([{"name": "Opentrons-Version", "in": "header", "required": True}], False),
+        ([{"name": "opentrons-version", "in": "header", "required": True}], False),
+        ([{"name": "runId", "in": "query", "required": True}], True),
+        ([{"name": "Authorization", "in": "header", "required": True}], True),
+        ([{"name": "optional", "in": "query", "required": False}], False),
+    ),
+)
+def test_required_parameter_filter_accounts_for_client_headers(parameters: list[dict], expected: bool) -> None:
+    assert _has_required_parameters({"parameters": parameters}) is expected
 
 
 @pytest.mark.robot_http_only
