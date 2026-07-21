@@ -98,12 +98,14 @@ async def test_explicit_simulated_stacker_reader_and_temperature_register_featur
         simulated_flex_stacker=True,
         simulated_absorbance_reader=True,
         simulated_temperature_module=True,
+        simulated_thermocycler=True,
     )
     async with _run_app(config) as registered:
         stackers = [feature for feature in registered if isinstance(feature, FlexStackerFeature)]
         stacker_maintenance = [feature for feature in registered if isinstance(feature, FlexStackerMaintenanceFeature)]
         readers = [feature for feature in registered if isinstance(feature, AbsorbanceReaderFeature)]
         temperature_modules = [feature for feature in registered if isinstance(feature, TemperatureModuleFeature)]
+        thermocyclers = [feature for feature in registered if isinstance(feature, ThermocyclerFeature)]
 
     assert len(stackers) == 1
     assert stackers[0]._controller.device_info.serial_number == "FS-SIM-1"
@@ -114,6 +116,9 @@ async def test_explicit_simulated_stacker_reader_and_temperature_register_featur
     assert len(temperature_modules) == 1
     assert temperature_modules[0]._controller.device_info.serial_number == "TM-SIM-1"
     assert temperature_modules[0]._controller.device_info.model
+    assert len(thermocyclers) == 1
+    assert thermocyclers[0]._controller._module.device_info["serial"] == "TC-SIM-1"
+    assert thermocyclers[0]._controller._module.device_info["model"]
 
 
 @pytest.mark.asyncio
@@ -124,6 +129,7 @@ async def test_explicit_simulated_stacker_reader_and_temperature_register_featur
         "simulated_flex_stacker",
         "simulated_absorbance_reader",
         "simulated_temperature_module",
+        "simulated_thermocycler",
     ],
 )
 async def test_simulated_module_is_rejected_in_live_mode(setting: str):

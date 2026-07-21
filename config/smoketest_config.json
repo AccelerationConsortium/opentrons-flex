@@ -12,7 +12,7 @@
     "name": "Opentrons Flex Smoketest",
     "type": "LiquidHandler",
     "description": "Local smoketest config for the Opentrons Flex connector simulator",
-    "version": "0.1",
+    "version": "0.9.0",
     "vendor_url": "https://opentrons.com/",
     "default_lifetime": 3600.0
   },
@@ -43,6 +43,7 @@
   "simulated_flex_stacker": true,
   "simulated_absorbance_reader": true,
   "simulated_temperature_module": true,
+  "simulated_thermocycler": true,
   "with_robot_server": true,
   "robot_server_tcp_port": 31950,
   "lock_timeout_s": 10,

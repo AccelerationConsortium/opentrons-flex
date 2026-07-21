@@ -183,6 +183,21 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=None,
         help="Server-provisioned return plan identifier for the opt-in gripper HITL test.",
     )
+    parser.addoption(
+        "--acceptance-manifest",
+        metavar="PATH",
+        default=None,
+        help="Validated JSON manifest for the guarded end-to-end Flex acceptance workflow.",
+    )
+    parser.addoption(
+        "--acceptance-workflow-actuation",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable the manifest-driven multi-module acceptance workflow. Prepare every declared labware position, "
+            "adapter, module, safe test liquid, tip, lid, and Stacker shuttle before opening this gate."
+        ),
+    )
 
 
 def _is_hardware_run(config: pytest.Config) -> bool:
@@ -233,6 +248,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     has_plate_reader_measurement = bool(config.getoption("--plate-reader-measurement"))
     has_temperature_module_actuation = bool(config.getoption("--temperature-module-actuation"))
     has_gripper_labware_actuation = bool(config.getoption("--gripper-labware-actuation"))
+    has_acceptance_workflow_actuation = bool(config.getoption("--acceptance-workflow-actuation"))
 
     skip_sim = pytest.mark.skip(reason="simulator-only test, skipped when --robot is set")
     skip_http = pytest.mark.skip(reason="robot_http_only test, requires --robot-http, --robot, or --with-http-server")
@@ -259,6 +275,12 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     skip_gripper_labware_actuation = pytest.mark.skip(
         reason="Gripper labware movement requires --gripper-labware-actuation and an operator-prepared deck"
     )
+    skip_acceptance_workflow_actuation = pytest.mark.skip(
+        reason=(
+            "The complete acceptance workflow requires --acceptance-workflow-actuation and a validated "
+            "--acceptance-manifest"
+        )
+    )
 
     for item in items:
         if has_robot and item.get_closest_marker("simulator_only"):
@@ -281,6 +303,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip_temperature_module_actuation)
         if not has_gripper_labware_actuation and item.get_closest_marker("gripper_labware_actuation"):
             item.add_marker(skip_gripper_labware_actuation)
+        if not has_acceptance_workflow_actuation and item.get_closest_marker("acceptance_workflow_actuation"):
+            item.add_marker(skip_acceptance_workflow_actuation)
 
 
 @pytest.fixture(scope="session")
@@ -324,6 +348,17 @@ def _record_run_context(request: pytest.FixtureRequest, run_context: RunContext,
 @pytest.fixture(scope="session")
 def robot_address(request: pytest.FixtureRequest) -> str | None:
     return request.config.getoption("--robot")
+
+
+@pytest.fixture(scope="session")
+def acceptance_manifest(request: pytest.FixtureRequest):
+    """Load the strict hardware acceptance manifest before any gated action."""
+    from unitelabs.opentrons_flex.acceptance import AcceptanceManifest
+
+    path = request.config.getoption("--acceptance-manifest")
+    if path is None:
+        pytest.skip("--acceptance-manifest is required for the full acceptance workflow")
+    return AcceptanceManifest.load(path)
 
 
 @pytest.fixture(scope="session")
@@ -374,6 +409,7 @@ def simulator_stack(request: pytest.FixtureRequest) -> Generator[SimulatorStack 
             simulated_flex_stacker=True,
             simulated_absorbance_reader=True,
             simulated_temperature_module=True,
+            simulated_thermocycler=True,
             with_robot_server=True,
             robot_server_tcp_port=http_port,
             sila_server=SiLAServerConfig(hostname="127.0.0.1", port=grpc_port, tls=False),
@@ -500,6 +536,7 @@ async def sila_channel(robot_address: str | None):
         simulated_flex_stacker=True,
         simulated_absorbance_reader=True,
         simulated_temperature_module=True,
+        simulated_thermocycler=True,
         sila_server=SiLAServerConfig(hostname="127.0.0.1", port=0, tls=False),
         cloud_server_endpoint=None,
         discovery=None,

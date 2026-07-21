@@ -13,6 +13,11 @@ the Flex firmware is not modified.
 
 ### Added
 
+- Version 0.9.0 adds a strict manifest-driven commissioning path, an explicit
+  Thermocycler simulator, a direct gRPC HITL campaign with JUnit identity evidence,
+  and a publishable Unitelabs workflow gated by the exact commissioned manifest digest
+- Shared movement-plan graph and initial-occupancy validation for both acceptance
+  execution paths, including post-move machine and durable deck-ledger checks
 - Complete `TemperatureController` v2 surface for Temperature Module GEN2 with
   4-95 °C unit constraints, structured current/target/status properties, atomic
   set-and-wait semantics, cancellation deactivation, cross-interface target-change
@@ -59,6 +64,9 @@ the Flex firmware is not modified.
 
 ### Changed
 
+- Acceptance manifests now cap Thermocycler profile size/duration and fail closed
+  on module identity, pipette range, reader wavelength, door/E-stop, simulator,
+  liquid geometry, source-volume, and movement-topology mismatches.
 - Version 0.8.0 completes the Temperature Module GEN2 SiLA surface and its
   simulator-to-HITL verification path.
 - **BREAKING**: every public Feature Definition now follows SiLA Part A naming:

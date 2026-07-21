@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "service_name": "Opentrons Flex",
+  "expected_robot_host": "REPLACE_WITH_ROBOT_HOST",
+  "pipetting": {
+    "mount": "LEFT",
+    "tip_length": "REPLACE_WITH_CALIBRATED_TIP_LENGTH_MM",
+    "tiprack_diameter": "REPLACE_WITH_TIPRACK_DIAMETER_MM",
+    "tip_pickup": {"x": "REPLACE", "y": "REPLACE", "z": "REPLACE"},
+    "tip_drop": {"x": "REPLACE", "y": "REPLACE", "z": "REPLACE"},
+    "source": {"x": "REPLACE", "y": "REPLACE", "z": "REPLACE"},
+    "source_retract": {"x": "REPLACE", "y": "REPLACE", "z": "REPLACE"},
+    "destination": {"x": "REPLACE", "y": "REPLACE", "z": "REPLACE"},
+    "destination_retract": {"x": "REPLACE", "y": "REPLACE", "z": "REPLACE"},
+    "source_well": {
+      "x": "REPLACE",
+      "y": "REPLACE",
+      "bottom_z": "REPLACE",
+      "top_z": "REPLACE",
+      "length": "REPLACE",
+      "width": "REPLACE"
+    },
+    "destination_well": {
+      "x": "REPLACE",
+      "y": "REPLACE",
+      "bottom_z": "REPLACE",
+      "top_z": "REPLACE",
+      "length": "REPLACE",
+      "width": "REPLACE"
+    },
+    "transfer_volume": 25.0,
+    "prepared_source_volume": 75.0,
+    "probe_maximum_distance": 20.0,
+    "mix_volume": 25.0,
+    "mix_cycles": 2,
+    "tiprack_uri": "opentrons/opentrons_flex_96_tiprack_1000ul/1"
+  },
+  "modules": {
+    "heater_shaker": {
+      "serial": "REPLACE_WITH_HEATER_SHAKER_SERIAL",
+      "temperature": 37.0,
+      "speed": 200
+    },
+    "thermocycler": {
+      "serial": "REPLACE_WITH_THERMOCYCLER_SERIAL",
+      "lid_temperature": 45.0,
+      "volume": 50.0,
+      "profile": [
+        {"temperature": 37.0, "hold_time": 5.0, "ramp_rate": 0.0},
+        {"temperature": 25.0, "hold_time": 5.0, "ramp_rate": 0.0}
+      ]
+    },
+    "temperature_module": {
+      "serial": "REPLACE_WITH_TEMPERATURE_MODULE_SERIAL",
+      "target": 20.0
+    },
+    "plate_reader": {
+      "serial": "REPLACE_WITH_PLATE_READER_SERIAL",
+      "wavelengths": [450, 600],
+      "reference_wavelength": 600
+    },
+    "stacker": {
+      "serial": "REPLACE_WITH_STACKER_SERIAL",
+      "labware_height": "REPLACE_WITH_ASSEMBLED_LABWARE_HEIGHT_MM"
+    }
+  },
+  "plans": {
+    "process_deck_to_thermocycler": "REPLACE_WITH_PLAN_ID",
+    "thermocycler_to_process_deck": "REPLACE_WITH_PLAN_ID",
+    "process_deck_to_heater_shaker": "REPLACE_WITH_PLAN_ID",
+    "heater_shaker_to_magnetic_block": "REPLACE_WITH_PLAN_ID",
+    "magnetic_block_to_process_deck": "REPLACE_WITH_PLAN_ID",
+    "assay_deck_to_temperature_module": "REPLACE_WITH_PLAN_ID",
+    "temperature_module_to_assay_deck": "REPLACE_WITH_PLAN_ID",
+    "reader_lid_open": "REPLACE_WITH_PLAN_ID",
+    "reader_lid_close": "REPLACE_WITH_PLAN_ID",
+    "assay_deck_to_reader": "REPLACE_WITH_PLAN_ID",
+    "reader_to_assay_deck": "REPLACE_WITH_PLAN_ID"
+  }
+}

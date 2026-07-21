@@ -12,7 +12,7 @@
     "name": "Opentrons Flex",
     "type": "LiquidHandler",
     "description": "SiLA2 connector for Opentrons Flex motion, pipettes, gripper and calibration",
-    "version": "0.1",
+    "version": "0.9.0",
     "vendor_url": "https://opentrons.com/",
     "default_lifetime": 3600.0
   },
@@ -55,6 +55,7 @@
   "simulated_flex_stacker": false,
   "simulated_absorbance_reader": false,
   "simulated_temperature_module": false,
+  "simulated_thermocycler": false,
   "with_robot_server": true,
   "robot_server_uds": "/run/aiohttp.sock",
   "lock_timeout_s": null,

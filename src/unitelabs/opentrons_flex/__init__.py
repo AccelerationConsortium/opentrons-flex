@@ -124,6 +124,9 @@ class OpentronsFlexConfig(ConnectorBaseConfig):
     simulated_temperature_module: bool = False
     """Attach one simulated Temperature Module GEN2 when ``use_simulator`` is enabled."""
 
+    simulated_thermocycler: bool = False
+    """Attach one simulated Thermocycler GEN2 when ``use_simulator`` is enabled."""
+
 
 # Module type -> (IO controller class, SiLA feature class). The Magnetic Module is
 # intentionally absent — the Flex does not support it.
@@ -173,6 +176,13 @@ def _simulator_attached_modules(config: OpentronsFlexConfig) -> dict:
             SimulatingModule(
                 serial_number="TM-SIM-1",
                 model="temperatureModuleV2",
+            )
+        ]
+    if config.simulated_thermocycler:
+        attached_modules["thermocycler"] = [
+            SimulatingModule(
+                serial_number="TC-SIM-1",
+                model="thermocyclerModuleV2",
             )
         ]
     return attached_modules
@@ -275,6 +285,7 @@ async def create_app(config: OpentronsFlexConfig) -> collections.abc.AsyncGenera
             (config.simulated_flex_stacker, "simulated_flex_stacker"),
             (config.simulated_absorbance_reader, "simulated_absorbance_reader"),
             (config.simulated_temperature_module, "simulated_temperature_module"),
+            (config.simulated_thermocycler, "simulated_thermocycler"),
         )
         if enabled
     ]

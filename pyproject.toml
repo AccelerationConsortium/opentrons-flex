@@ -1,6 +1,6 @@
 [project]
 name = "unitelabs-opentrons-flex"
-version = "0.8.0"
+version = "0.9.0"
 description = "A SiLA2 connector for the Opentrons Flex liquid handling robot"
 readme = "README.md"
 authors = [{name = "Acceleration Consortium", email = "developers@accelerationconsortium.ca"},]
@@ -68,6 +68,7 @@ markers = [
     "plate_reader_measurement: opt-in Absorbance Plate Reader measurement; requires --plate-reader-measurement",
     "temperature_module_actuation: opt-in Temperature Module GEN2 heating/cooling; requires --temperature-module-actuation",
     "gripper_labware_actuation: opt-in prepared-labware gripper movement; requires --gripper-labware-actuation",
+    "acceptance_workflow_actuation: opt-in manifest-driven multi-module hardware acceptance workflow",
 ]
 
 [tool.ruff]

@@ -1,0 +1,38 @@
+[project]
+name = "flex-system-acceptance"
+version = "0.1.0"
+description = "Guarded end-to-end Opentrons Flex system acceptance workflow."
+requires-python = ">=3.12"
+dependencies = [
+    "unitelabs-sdk[automate]~=0.11.3",
+    "unitelabs-opentrons-flex~=0.9.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest", "pytest-asyncio"]
+dev = ["ruff", "pre-commit", "commitizen"]
+
+[project.scripts]
+workflow = "flex_system_acceptance.__main__:main"
+
+[tool.unitelabs.workflow]
+display_name = "Flex System Acceptance"
+entrypoint = "workflow.py:flex_system_acceptance_flow"
+tags = ["flex", "liquid-handler", "hardware-acceptance"]
+
+[tool.uv]
+default-groups = "all"
+prerelease = "if-necessary-or-explicit"
+
+[[tool.uv.index]]
+name = "unitelabs"
+url = "https://gitlab.com/api/v4/groups/1009252/-/packages/pypi/simple"
+authenticate = "always"
+
+[tool.uv.sources]
+unitelabs-sdk = { index = "unitelabs" }
+unitelabs-opentrons-flex = { path = "../..", editable = true }
+
+[build-system]
+requires = ["uv_build>=0.4,<0.10"]
+build-backend = "uv_build"

@@ -6,6 +6,8 @@ import inspect
 import sys
 import types
 
+import pytest
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 CI
@@ -19,12 +21,17 @@ WORKFLOW_PACKAGES = (
     "ot2-home",
     "ot2-transfer",
     "ot2-jingle",
+    "flex-system-acceptance",
 )
 
 WORKFLOW_MODULES = {
     "ot2-home": ("ot2_home.workflow", "ot2_home_flow"),
     "ot2-transfer": ("ot2_transfer.workflow", "ot2_transfer_flow"),
     "ot2-jingle": ("ot2_jingle.workflow", "ot2_jingle_flow"),
+    "flex-system-acceptance": (
+        "flex_system_acceptance.workflow",
+        "flex_system_acceptance_flow",
+    ),
 }
 
 
@@ -39,7 +46,7 @@ def _install_workflow_runtime_stubs(monkeypatch) -> None:
     real_version = importlib.metadata.version
 
     def version_with_workflow_fallback(name: str) -> str:
-        if name in {"ot2_home", "ot2_transfer", "ot2_jingle", "shared"}:
+        if name in {"ot2_home", "ot2_transfer", "ot2_jingle", "flex-system-acceptance", "shared"}:
             return "0.0.0+test"
         return real_version(name)
 
@@ -96,9 +103,15 @@ def test_workflow_packages_have_cloud_entrypoints() -> None:
 
 def test_liquid_handler_workflows_are_tagged() -> None:
     """Cloud workflow metadata should preserve liquid-handler discoverability."""
-    for package in WORKFLOW_PACKAGES:
+    for package in ("ot2-home", "ot2-transfer", "ot2-jingle"):
         tags = set(_pyproject(package)["tool"]["unitelabs"]["workflow"]["tags"])
         assert "ot2" in tags
+
+
+def test_flex_acceptance_workflow_is_hardware_tagged() -> None:
+    """The Flex workflow must be unmistakably hardware-facing in the catalog."""
+    tags = set(_pyproject("flex-system-acceptance")["tool"]["unitelabs"]["workflow"]["tags"])
+    assert {"flex", "liquid-handler", "hardware-acceptance"} <= tags
 
 
 def test_transfer_workflow_uses_shared_labware_helpers() -> None:
@@ -129,3 +142,91 @@ def test_workflow_entrypoints_import_and_build_as_flows(monkeypatch) -> None:
         assert inspect.iscoroutinefunction(flow_fn)
         assert getattr(flow_fn, "__prefect_kind__") == "flow"
         assert getattr(flow_fn, "__prefect_name__").startswith("Workflow:")
+
+
+@pytest.mark.asyncio
+async def test_flex_workflow_phases_execute_the_declared_sdk_sequence(monkeypatch) -> None:
+    """Run every hardware phase against a recorder so Python/SDK wiring errors fail offline."""
+    _install_workflow_runtime_stubs(monkeypatch)
+    monkeypatch.syspath_prepend(str(WORKFLOWS / "flex-system-acceptance" / "src"))
+    for loaded in list(sys.modules):
+        if loaded == "flex_system_acceptance" or loaded.startswith("flex_system_acceptance."):
+            monkeypatch.delitem(sys.modules, loaded, raising=False)
+
+    steps = importlib.import_module("flex_system_acceptance._steps")
+    from tests.test_acceptance_manifest import _manifest
+    from unitelabs.opentrons_flex.acceptance import AcceptanceManifest
+
+    manifest = AcceptanceManifest.parse(_manifest())
+    features = {
+        name: object()
+        for name in (
+            "motion",
+            "pipette",
+            "tip",
+            "liquid",
+            "labware",
+            "heater_shaker",
+            "thermocycler",
+            "temperature_module",
+            "reader",
+            "stacker",
+            "stacker_maintenance",
+        )
+    }
+    calls: list[tuple[str, dict]] = []
+
+    async def fake_invoke(_target, method_names, **parameters):
+        method = method_names if isinstance(method_names, str) else next(iter(method_names))
+        calls.append((method, parameters))
+        if method == "read_plate":
+            return {"Measurements": [{"Wells": [0.0] * 96}]}
+        return None
+
+    async def fake_move(_features, plan_identifier: str, *, lid: bool = False):
+        calls.append(("move_lid" if lid else "move_labware", {"plan_identifier": plan_identifier}))
+
+    monkeypatch.setattr(steps, "invoke", fake_invoke)
+    monkeypatch.setattr(steps, "_move", fake_move)
+
+    await steps.home_and_configure_step(features, manifest)
+    await steps.stacker_step(features, manifest)
+    await steps.thermocycler_step(features, manifest)
+    await steps.liquid_handling_step(features, manifest)
+    await steps.heater_shaker_step(features, manifest)
+    await steps.temperature_module_step(features, manifest)
+    await steps.plate_reader_step(features, manifest)
+
+    methods = [method for method, _ in calls]
+    assert methods[:3] == ["set_lights", "home", "configure_full_nozzle_layout"]
+    assert {"retrieve_labware", "execute_profile", "probe_liquid_level", "transfer"} <= set(methods)
+    assert {"transfer_with_verified_liquid_class", "set_speed", "set_temperature_and_wait", "read_plate"} <= set(
+        methods
+    )
+    assert methods.count("move_labware") == 9
+    assert methods.count("move_lid") == 4
+
+
+def test_flex_cloud_workflow_requires_the_direct_hitl_manifest_digest(monkeypatch) -> None:
+    """Runtime callers cannot substitute uncommissioned coordinates or module identities."""
+    _install_workflow_runtime_stubs(monkeypatch)
+    monkeypatch.syspath_prepend(str(WORKFLOWS / "flex-system-acceptance" / "src"))
+    for loaded in list(sys.modules):
+        if loaded == "flex_system_acceptance" or loaded.startswith("flex_system_acceptance."):
+            monkeypatch.delitem(sys.modules, loaded, raising=False)
+
+    workflow = importlib.import_module("flex_system_acceptance.workflow")
+    from tests.test_acceptance_manifest import _manifest
+    from unitelabs.opentrons_flex.acceptance import AcceptanceManifest
+
+    manifest = AcceptanceManifest.parse(_manifest())
+    monkeypatch.delenv("FLEX_ACCEPTANCE_MANIFEST_SHA256", raising=False)
+    with pytest.raises(ValueError, match="64-character digest"):
+        workflow._require_commissioned_manifest(manifest)
+
+    monkeypatch.setenv("FLEX_ACCEPTANCE_MANIFEST_SHA256", "0" * 64)
+    with pytest.raises(ValueError, match="differs"):
+        workflow._require_commissioned_manifest(manifest)
+
+    monkeypatch.setenv("FLEX_ACCEPTANCE_MANIFEST_SHA256", manifest.commissioning_digest())
+    workflow._require_commissioned_manifest(manifest)

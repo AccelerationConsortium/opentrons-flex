@@ -52,6 +52,7 @@ connector recognizes these official model identifiers:
 | Flex Stacker | `flexStackerModuleV1` | Explicit module simulator and guarded physical HITL suite |
 | Absorbance Plate Reader | `absorbanceReaderV1` | Explicit module simulator and guarded physical HITL suite |
 | Temperature Module GEN2 | `temperatureModuleV2` | Explicit module simulator and guarded physical HITL suite |
+| Thermocycler Module GEN2 | `thermocyclerModuleV2` | Explicit module simulator and guarded manifest-driven physical HITL workflow |
 
 The automated suite does not claim a physical-device pass: hardware tests are
 deliberately opt-in and must be recorded against the serial number and firmware
@@ -73,7 +74,7 @@ of the robot/module under test before that combination is described as validated
 | `FlexStackerController` | Routine `RetrieveLabware` and `StoreLabware`; observable `Status`, static `DeviceInfo` |
 | `FlexStackerMaintenanceController` | `HomeAll`, axis/latch, LED, and motor-stop service commands; observable `Status` and `LimitSwitchStatus`, static `DeviceInfo` |
 | `TemperatureController` | `SetTemperature`, atomic `SetTemperatureAndWait`, `Deactivate`; observable `Status`, static `DeviceInfo` |
-| Other module controllers | `ThermocyclerController` (registered when attached) |
+| `ThermocyclerController` | Observable lid control, lid/block temperatures, typed multi-step profiles, deactivation, status, and device identity |
 
 The Heater-Shaker controller exposes observable temperature, shaking, and latch
 operations with intermediate execution updates and defined module errors:
@@ -115,10 +116,16 @@ connector intentionally does not register a Magnetic Block feature. Move plates 
 and off it with server-provisioned `LabwareMovementController` plans and the existing
 Flex Gripper, just like movement between other deck locations.
 
+For commissioning the complete robot plus Heater-Shaker, Thermocycler, Temperature
+Module, Absorbance Plate Reader, Flex Stacker, and passive Magnetic Block, use the
+[manifest-driven system acceptance workflow](docs/flex_system_acceptance.md). It
+provides both a publishable Unitelabs workflow and a guarded direct SiLA gRPC HITL
+runner with JUnit identity evidence.
+
 ### Module feature v2 migration
 
-The connector is still pre-1.0; version 0.8.0 completes the Temperature Module
-GEN2 surface and retains the standards-compliant v2 Stacker and reader definitions.
+The connector is still pre-1.0; version 0.9.0 adds the guarded, manifest-driven
+system acceptance path and retains the standards-compliant module definitions.
 Regenerate SiLA clients and update these endpoint mappings when upgrading:
 
 | Previous v1 endpoint | v2 endpoint |
