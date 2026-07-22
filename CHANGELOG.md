@@ -20,7 +20,8 @@
   and serialized with play; protocol-backed runs and custom definitions fail closed.
   Stop remains available during state-provider failure, command audit is written in
   bounded batches, and the ARM artifact is pinned to the validated Python 3.10/Opentrons
-  8.8.1 runtime.
+  8.8.1 runtime. Python 3.11+ is intentionally outside the supported matrix because
+  robot-server 8.8.1 does not import reliably on current Python 3.11 patch releases.
 
 All notable changes to this project will be documented in this file.
 

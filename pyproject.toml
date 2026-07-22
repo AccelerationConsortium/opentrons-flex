@@ -14,11 +14,10 @@ classifiers = [
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Topic :: Scientific/Engineering :: Human Machine Interfaces",
     "Topic :: System :: Hardware",
 ]
-requires-python=">=3.10,<3.12"
+requires-python=">=3.10,<3.11"
 dependencies=[
     "unitelabs-cdk~=0.9.0",
     "opentrons==8.8.1",

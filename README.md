@@ -42,7 +42,7 @@ Motion is exposed per **mount** (`LEFT`, `RIGHT`, `GRIPPER`) in deck coordinates
 ### Verified models and environments
 
 Automated verification and the ARM deployment artifact use the real Opentrons
-8.8.1 hardware simulators on Python 3.10/3.11. Controlled Protocol Engine
+8.8.1 hardware simulators on Python 3.10. Controlled Protocol Engine
 mutation is intentionally unavailable on unvalidated Opentrons/Python matrices.
 The connector recognizes these official model identifiers:
 

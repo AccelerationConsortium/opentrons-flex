@@ -16,8 +16,6 @@ jobs:
           # the Opentrons 8.8.1 private Protocol Engine state surface.
           - python-version: "3.10"
             opentrons-version: "8.8.1"
-          - python-version: "3.11"
-            opentrons-version: "8.8.1"
 
     steps:
       - uses: actions/checkout@v6
