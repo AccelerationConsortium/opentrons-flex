@@ -23,6 +23,7 @@ def test_smoketest_config_never_targets_real_hardware() -> None:
     assert cfg["simulated_absorbance_reader"] is True
     assert cfg["simulated_temperature_module"] is True
     assert cfg["simulated_thermocycler"] is True
+    assert cfg["simulated_gripper"] is True
     assert cfg["with_robot_server"] is True
     assert cfg["sila_server"]["hostname"] in {"127.0.0.1", "localhost"}
     assert cfg["cloud_server_endpoint"] is None
@@ -39,5 +40,6 @@ def test_real_flex_config_stays_explicitly_live() -> None:
     assert cfg["simulated_absorbance_reader"] is False
     assert cfg["simulated_temperature_module"] is False
     assert cfg["simulated_thermocycler"] is False
+    assert cfg["simulated_gripper"] is False
     assert cfg["with_robot_server"] is True
     assert cfg["sila_server"]["hostname"] == "0.0.0.0"

@@ -92,6 +92,13 @@ class HardwareRecoveryState:
         self.rehome_required = False
         return True
 
+    def mark_motion_preserved_after_stop(self, expected_generation: int) -> bool:
+        """Clear the halt gate when an engaged stop preserved known position."""
+        if self.generation != expected_generation:
+            return False
+        self.rehome_required = False
+        return True
+
 
 @dataclass
 class FlexStackerRecoveryState:

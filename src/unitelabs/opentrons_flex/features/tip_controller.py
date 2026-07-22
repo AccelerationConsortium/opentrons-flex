@@ -16,6 +16,7 @@ from ..io import (
     MovementOutOfBoundsError,
     NotHomedError,
     PipetteNotAttachedError,
+    RunOwnershipError,
     Point,
     StallDetectedError,
     TipDropError,
@@ -46,7 +47,7 @@ _TIP_MOTION_ERRORS = [
     StallDetectedError,
     MachineErrorStateError,
 ]
-_TIP_STATE_ERRORS = [PipetteNotAttachedError, TipStateError]
+_TIP_STATE_ERRORS = [RunOwnershipError, PipetteNotAttachedError, TipStateError]
 _FEATURE_FQI = "ca.accelerationconsortium/robots/TipController/v1"
 _T = typing.TypeVar("_T")
 

@@ -29,6 +29,7 @@ from ..io import (
     MovementOutOfBoundsError,
     NotHomedError,
     PipetteNotAttachedError,
+    RunOwnershipError,
     StallDetectedError,
     TipNotAttachedError,
 )
@@ -39,6 +40,7 @@ from ._progress import OperationPhase, OperationProgress, report_progress, run_o
 # opaque undefined errors. ``MachineErrorStateError`` covers the case where a move
 # returns but the robot has silently entered a hardware error state (e.g. E-stop).
 _MOVE_ERRORS = [
+    RunOwnershipError,
     NotHomedError,
     MovementOutOfBoundsError,
     StallDetectedError,

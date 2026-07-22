@@ -7,6 +7,7 @@ commands on the Flex CAN bus.
 """
 
 import asyncio
+import enum
 import functools
 import inspect
 import logging
@@ -27,6 +28,7 @@ from .recovery_state import (
 
 if typing.TYPE_CHECKING:
     from .labware_state import LabwareMovementState
+    from .simulator_compat import OT3SimulatorCompatibilityAdapter
 
 log = logging.getLogger(__name__)
 
@@ -47,19 +49,44 @@ _RECOVERY_SAFE_CALLS = frozenset(
 class _TimedLock:
     """asyncio.Lock with an optional acquire timeout and a descriptive error on expiry."""
 
-    def __init__(self, lock: asyncio.Lock, timeout_s: float | None = None) -> None:
+    def __init__(
+        self,
+        lock: asyncio.Lock,
+        timeout_s: float | None = None,
+        *,
+        protocol_engine: bool = False,
+        observation: bool = False,
+    ) -> None:
         self._lock = lock
         self._timeout_s = timeout_s
+        self._protocol_engine = protocol_engine
+        self._observation = observation
 
     async def __aenter__(self) -> None:
         try:
-            await asyncio.wait_for(self._lock.acquire(), timeout=self._timeout_s)
+            if self._protocol_engine and hasattr(self._lock, "acquire_protocol_engine"):
+                acquire = self._lock.acquire_protocol_engine
+            elif self._observation and hasattr(self._lock, "acquire_observation"):
+                acquire = self._lock.acquire_observation
+            else:
+                acquire = self._lock.acquire
+            await asyncio.wait_for(acquire(), timeout=self._timeout_s)
         except asyncio.TimeoutError:
             msg = f"Hardware lock not acquired within {self._timeout_s}s — robot_server may be holding the hardware API"
             raise TimeoutError(msg) from None
 
     async def __aexit__(self, *args: object) -> None:
         self._lock.release()
+
+    def assert_direct_control_allowed(self) -> None:
+        """Apply a RunAwareLock ownership check to synchronous direct calls."""
+        authority = getattr(self._lock, "authority", None)
+        if authority is not None:
+            authority.assert_direct_control_allowed()
+
+    def observation(self) -> "_TimedLock":
+        """Return a view that serializes read-only calls without actuation gating."""
+        return _TimedLock(self._lock, self._timeout_s, observation=True)
 
 
 _STACKER_ACTUATION_METHODS = frozenset(
@@ -75,6 +102,13 @@ _STACKER_ACTUATION_METHODS = frozenset(
     }
 )
 _STACKER_LABWARE_METHODS = frozenset({"dispense_labware", "store_labware"})
+
+
+class _PostRunRecoveryMode(enum.Enum):
+    """Protocol Engine cleanup sequences recognized by the shared proxy."""
+
+    STAY_ENGAGED_IN_PLACE = enum.auto()
+    HOME_AFTER_DISENGAGE = enum.auto()
 
 
 class _LockedModuleProxy:
@@ -209,25 +243,33 @@ class HardwareProxy:
     directly.
     """
 
-    _api: HardwareControlAPI
+    _api: "HardwareControlAPI | OT3SimulatorCompatibilityAdapter"
     _lock: _TimedLock
     _recovery_state: HardwareRecoveryState
     _labware_state: "LabwareMovementState | None"
     _module_proxies: dict[int, tuple[object, object]]
+    _post_run_recovery_task: asyncio.Task[object] | None
+    _post_run_recovery_mode: _PostRunRecoveryMode | None
+    _post_run_stopped: bool
+    _post_run_gripper_z_homed: bool
 
     def __init__(
         self,
-        api: HardwareControlAPI,
+        api: "HardwareControlAPI | OT3SimulatorCompatibilityAdapter",
         lock: asyncio.Lock | None = None,
         lock_timeout_s: float | None = None,
         labware_state: "LabwareMovementState | None" = None,
     ) -> None:
         object.__setattr__(self, "_api", api)
         raw_lock = lock if lock is not None else asyncio.Lock()
-        object.__setattr__(self, "_lock", _TimedLock(raw_lock, lock_timeout_s))
+        object.__setattr__(self, "_lock", _TimedLock(raw_lock, lock_timeout_s, protocol_engine=True))
         object.__setattr__(self, "_recovery_state", recovery_state_for(api))
         object.__setattr__(self, "_labware_state", labware_state)
         object.__setattr__(self, "_module_proxies", {})
+        object.__setattr__(self, "_post_run_recovery_task", None)
+        object.__setattr__(self, "_post_run_recovery_mode", None)
+        object.__setattr__(self, "_post_run_stopped", False)
+        object.__setattr__(self, "_post_run_gripper_z_homed", False)
 
     def __setattr__(self, name: str, value: object) -> None:
         setattr(self._api, name, value)
@@ -269,6 +311,23 @@ class HardwareProxy:
 
                 @functools.wraps(attr)
                 async def preemptive_halt(*args: object, **kwargs: object) -> object:
+                    # Protocol Engine always passes this argument explicitly.
+                    # Connector emergency halts call halt() with no argument and
+                    # must remain fail-closed instead of gaining cleanup authority.
+                    protocol_engine_cleanup = bool(args) or "disengage_before_stopping" in kwargs
+                    if protocol_engine_cleanup:
+                        disengage = bool(_argument(args, kwargs, 0, "disengage_before_stopping"))
+                        mode = (
+                            _PostRunRecoveryMode.HOME_AFTER_DISENGAGE
+                            if disengage
+                            else _PostRunRecoveryMode.STAY_ENGAGED_IN_PLACE
+                        )
+                        object.__setattr__(self, "_post_run_recovery_task", asyncio.current_task())
+                        object.__setattr__(self, "_post_run_recovery_mode", mode)
+                        object.__setattr__(self, "_post_run_stopped", False)
+                        object.__setattr__(self, "_post_run_gripper_z_homed", False)
+                    else:
+                        self._clear_post_run_recovery()
                     self._recovery_state.mark_halted()
                     # A halt must not wait behind the operation it is stopping.
                     halt = asyncio.create_task(attr(*args, **kwargs))
@@ -280,6 +339,7 @@ class HardwareProxy:
                             cancelled = True
                     result = await halt
                     if cancelled:
+                        self._clear_post_run_recovery()
                         raise asyncio.CancelledError
                     return result
 
@@ -288,9 +348,16 @@ class HardwareProxy:
             @functools.wraps(attr)
             async def locked(*args: object, **kwargs: object) -> object:
                 async with self._lock:
-                    if self._labware_state is not None and _is_direct_gripper_actuation(name, args, kwargs):
+                    is_post_run_recovery_call = self._is_post_run_recovery_call(name, args, kwargs)
+                    if (
+                        self._labware_state is not None
+                        and _is_direct_gripper_actuation(name, args, kwargs)
+                        and not is_post_run_recovery_call
+                    ):
                         self._labware_state.assert_direct_gripper_control_allowed(f"HTTP {name}")
-                    if not _allowed_during_recovery(name, args, kwargs, self._recovery_state):
+                    if not (
+                        _allowed_during_recovery(name, args, kwargs, self._recovery_state) or is_post_run_recovery_call
+                    ):
                         raise _recovery_error(self._recovery_state)
                     generation = self._recovery_state.generation
                     is_actuation = not _is_status_call(name)
@@ -303,14 +370,22 @@ class HardwareProxy:
                             self._recovery_state.mark_fully_homed(generation)
                         elif name == "home_gripper_jaw":
                             self._recovery_state.mark_gripper_homed(generation)
+                        if is_post_run_recovery_call:
+                            self._advance_post_run_recovery(name, args, kwargs, generation)
                         return result
                     except asyncio.CancelledError:
+                        if is_post_run_recovery_call:
+                            self._clear_post_run_recovery()
                         if task is not None:
                             self._recovery_state.unregister_operation(task)
                         if name in {"grip", "ungrip", "home_gripper_jaw"}:
                             self._recovery_state.require_gripper_home()
                         if is_actuation:
                             await _recover_cancelled_proxy_action(self._api, self._recovery_state)
+                        raise
+                    except Exception:
+                        if is_post_run_recovery_call:
+                            self._clear_post_run_recovery()
                         raise
                     finally:
                         if task is not None:
@@ -330,6 +405,55 @@ class HardwareProxy:
 
         return attr
 
+    def _is_post_run_recovery_call(
+        self,
+        name: str,
+        args: tuple[object, ...],
+        kwargs: dict[str, object],
+    ) -> bool:
+        """Authorize only Protocol Engine's ordered post-run recovery calls."""
+        if self._post_run_recovery_task is not asyncio.current_task():
+            return False
+        if name == "stop":
+            home_after = _argument(args, kwargs, 0, "home_after")
+            return not self._post_run_stopped and home_after is False
+        if name == "home_z":
+            mount = _argument(args, kwargs, 0, "mount")
+            return self._post_run_stopped and not self._post_run_gripper_z_homed and _is_gripper_mount(mount)
+        if name == "home":
+            axes = _argument(args, kwargs, 0, "axes")
+            return (
+                self._post_run_stopped
+                and (self._post_run_gripper_z_homed or not self._api.has_gripper())
+                and _homes_post_run_gantry_axes(axes)
+            )
+        return False
+
+    def _advance_post_run_recovery(
+        self,
+        name: str,
+        args: tuple[object, ...],
+        kwargs: dict[str, object],
+        generation: int,
+    ) -> None:
+        """Advance a successful Protocol Engine halt recovery sequence."""
+        if name == "stop":
+            object.__setattr__(self, "_post_run_stopped", True)
+            if self._post_run_recovery_mode is _PostRunRecoveryMode.STAY_ENGAGED_IN_PLACE:
+                self._recovery_state.mark_motion_preserved_after_stop(generation)
+                self._clear_post_run_recovery()
+        elif name == "home_z":
+            object.__setattr__(self, "_post_run_gripper_z_homed", True)
+        elif name == "home" and _homes_post_run_gantry_axes(_argument(args, kwargs, 0, "axes")):
+            self._recovery_state.mark_fully_homed(generation)
+            self._clear_post_run_recovery()
+
+    def _clear_post_run_recovery(self) -> None:
+        object.__setattr__(self, "_post_run_recovery_task", None)
+        object.__setattr__(self, "_post_run_recovery_mode", None)
+        object.__setattr__(self, "_post_run_stopped", False)
+        object.__setattr__(self, "_post_run_gripper_z_homed", False)
+
     def wrapped(self) -> "HardwareProxy":
         """Return self — satisfies robot-server's ThreadManager.wrapped() call."""
         return self
@@ -341,7 +465,8 @@ class HardwareProxy:
         Satisfies ThreadManager.wraps_instance() used by robot-server hardware
         routes to distinguish OT-2 (API) from OT-3 (OT3API).
         """
-        return isinstance(self._api, cls)
+        wrapped_api = getattr(self._api, "wrapped_api", self._api)
+        return isinstance(wrapped_api, cls)
 
     def clean_up(self) -> None:
         """
@@ -428,6 +553,14 @@ def _contains_gripper_axis(value: object) -> bool:
     return False
 
 
+def _homes_post_run_gantry_axes(value: object) -> bool:
+    """Whether Protocol Engine requested its complete post-run gantry home."""
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return False
+    requested = set(value)
+    return {Axis.X, Axis.Y, Axis.Z_L, Axis.Z_R}.issubset(requested)
+
+
 def _is_status_call(name: str) -> bool:
     return name in _RECOVERY_SAFE_CALLS or name.startswith(("get_", "has_", "is_", "read_"))
 
@@ -450,7 +583,10 @@ def _recovery_error(state: HardwareRecoveryState) -> NotHomedError:
     return NotHomedError(msg)
 
 
-async def _recover_cancelled_proxy_action(api: HardwareControlAPI, state: HardwareRecoveryState) -> None:
+async def _recover_cancelled_proxy_action(
+    api: "HardwareControlAPI | OT3SimulatorCompatibilityAdapter",
+    state: HardwareRecoveryState,
+) -> None:
     """Halt an HTTP-side action before propagating its cancellation."""
     state.mark_halted()
     halt = asyncio.create_task(api.halt())

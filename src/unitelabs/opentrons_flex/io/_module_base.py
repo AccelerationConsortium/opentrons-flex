@@ -55,7 +55,8 @@ def _serialize_module_method(
 
     @functools.wraps(fn)
     async def wrapper(self: "ModuleControllerBase", *args: object, **kwargs: object) -> object:
-        async with self._operation_lock():
+        observation = fn.__name__.startswith("get_") or fn.__name__ == "is_connected"
+        async with self._operation_lock(observation=observation):
             return await fn(self, *args, **kwargs)
 
     return wrapper
@@ -95,7 +96,7 @@ class ModuleControllerBase:
         self._lock_depth = 0
 
     @asynccontextmanager
-    async def _operation_lock(self) -> AsyncIterator[None]:
+    async def _operation_lock(self, *, observation: bool = False) -> AsyncIterator[None]:
         """Acquire the shared lock reentrantly for nested module-controller calls."""
         task = asyncio.current_task()
         if task is not None and self._lock_owner is task:
@@ -106,7 +107,12 @@ class ModuleControllerBase:
                 self._lock_depth -= 1
             return
 
-        async with self._shared_lock:
+        lock_context = (
+            self._shared_lock.observation()
+            if observation and hasattr(self._shared_lock, "observation")
+            else self._shared_lock
+        )
+        async with lock_context:
             self._lock_owner = task
             self._lock_depth = 1
             try:

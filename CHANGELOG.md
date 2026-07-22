@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+- Added a corrected, parameterized AS-MS wash/elution protocol candidate, pinned exact
+  Azenta and Thermo KingFisher custom-labware definitions, exact-vs-shadow offline
+  preflight, full exact-bundle Protocol Engine execution coverage, and a staged real-Flex
+  operator handoff. Axygen gripper qualification remains a hardware prerequisite.
+- Embedded robot-server routes now derive Flex robot/deck identity from the connector's
+  injected OT3API, and simulator mode can explicitly attach a gripper. Ordered Protocol
+  Engine post-run recovery remains gated while allowing its halt/reset/home sequence,
+  and an Opentrons 8.8.1 simulator-only gripper-state inconsistency is repaired without
+  changing real-hardware behavior.
+- Added fail-closed controlled Protocol Engine run mutation: exclusive run ownership
+  across SiLA and HTTP, explicit checkpoint/recovery gates, authoritative state snapshots,
+  clean-tip and liquid/capacity recalculation, PE-only command compilation, authenticated
+  endpoints with environment-bound operator attribution, and a durable hash-chained
+  ledger whose unresolved holds survive restart. Pre-start protocol-less setup is
+  restricted to token-authenticated, audited, non-actuating built-in-resource commands
+  and serialized with play; protocol-backed runs and custom definitions fail closed.
+  Stop remains available during state-provider failure, command audit is written in
+  bounded batches, and the ARM artifact is pinned to the validated Python 3.10/Opentrons
+  8.8.1 runtime.
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),

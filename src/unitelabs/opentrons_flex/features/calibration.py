@@ -25,6 +25,7 @@ from ..io import (
     CalibrationProbeNotAttachedError,
     FlexCalibrationController,
     NotHomedError,
+    RunOwnershipError,
 )
 from ._pipette_types import PIPETTE_MOUNTS, PipetteMount
 from ._progress import OperationPhase, OperationProgress, report_progress
@@ -75,7 +76,9 @@ class CalibrationFeature(sila.Feature):
         )
         self._controller = controller
 
-    @sila.ObservableCommand(errors=[CalibrationProbeNotAttachedError, CalibrationFailedError, NotHomedError])
+    @sila.ObservableCommand(
+        errors=[RunOwnershipError, CalibrationProbeNotAttachedError, CalibrationFailedError, NotHomedError]
+    )
     async def calibrate_pipette(
         self,
         mount: PipetteMount,
@@ -126,7 +129,9 @@ class CalibrationFeature(sila.Feature):
         )
         return Offset(x=x, y=y, z=z)
 
-    @sila.ObservableCommand(errors=[CalibrationProbeNotAttachedError, CalibrationFailedError, NotHomedError])
+    @sila.ObservableCommand(
+        errors=[RunOwnershipError, CalibrationProbeNotAttachedError, CalibrationFailedError, NotHomedError]
+    )
     async def calibrate_gripper_jaw(
         self,
         jaw: GripperJaw,
@@ -180,7 +185,9 @@ class CalibrationFeature(sila.Feature):
         )
         return Offset(x=x, y=y, z=z)
 
-    @sila.ObservableCommand(errors=[CalibrationProbeNotAttachedError, CalibrationFailedError, NotHomedError])
+    @sila.ObservableCommand(
+        errors=[RunOwnershipError, CalibrationProbeNotAttachedError, CalibrationFailedError, NotHomedError]
+    )
     async def calibrate_deck(
         self,
         mount: PipetteMount,

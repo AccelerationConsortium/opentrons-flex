@@ -41,9 +41,10 @@ Motion is exposed per **mount** (`LEFT`, `RIGHT`, `GRIPPER`) in deck coordinates
 
 ### Verified models and environments
 
-Automated verification uses the real Opentrons hardware simulators supplied by
-Opentrons 8.8.1 on Python 3.10/3.11 and Opentrons 9.0.0 on Python 3.12+. The
-connector recognizes these official model identifiers:
+Automated verification and the ARM deployment artifact use the real Opentrons
+8.8.1 hardware simulators on Python 3.10/3.11. Controlled Protocol Engine
+mutation is intentionally unavailable on unvalidated Opentrons/Python matrices.
+The connector recognizes these official model identifiers:
 
 | Instrument or accessory | Model identifier | Verification status |
 | --- | --- | --- |
@@ -298,7 +299,10 @@ Key values:
 - `simulated_absorbance_reader` — explicitly attaches one simulated Absorbance
   Plate Reader.
 - `simulated_temperature_module` — explicitly attaches one simulated Temperature
-  Module GEN2. All simulated-module settings are rejected in live-hardware mode.
+  Module GEN2.
+- `simulated_gripper` — explicitly attaches a simulated Flex Gripper for
+  gripper-movement protocol execution. All simulated-hardware settings are rejected
+  in live-hardware mode.
 - `with_robot_server` — `true` additionally starts the in-process opentrons HTTP robot-server.
 
 Note: The `cloud_server_endpoint` values are only necessary if you want to use the connector with the UniteLabs platform.
@@ -349,6 +353,16 @@ uv run --extra test python -m pytest \
 # Full local smoketest: SiLA gRPC + in-process robot-server HTTP API, both backed
 # by the OT3 simulator. This is the CI/CD end-to-end path before real hardware.
 uv run --extra test python -m pytest tests/integration --with-http-server -v
+
+# AS-MS wash/elution protocol: exact bundled-labware gate
+uv run python scripts/validate_asms_protocol.py
+
+# Optional logic-only AS-MS simulation with explicit non-production substitutes
+uv run python scripts/validate_asms_protocol.py --shadow
+
+# Full two-column AS-MS upload, analysis, and execution through embedded robot-server
+uv run --extra test python -m pytest \
+  tests/integration/http_api/test_asms_protocol_upload.py --with-http-server -v
 ```
 
 The suite covers the controllers and SiLA features driven against the OT3 simulator,
@@ -360,6 +374,44 @@ propagating over the wire.
 `use_simulator=true`, `with_robot_server=true`, and cloud/discovery disabled. The
 deployment config in `config/flex_config.json` remains explicitly live-hardware
 (`use_simulator=false`) so simulator and robot runs do not blur together.
+
+The complete AS-MS plate-wash handoff, including its material-lineage correction,
+custom-labware blockers, tip inventory, and staged real-Flex sequence, is documented
+in [`docs/asms_flex_workflow_test.md`](docs/asms_flex_workflow_test.md).
+
+### Controlled Protocol Engine run mutation
+
+When `with_robot_server=true`, a non-terminal current Protocol Engine run has
+exclusive actuation authority over the Flex. Direct SiLA actuation is rejected,
+and raw `POST /runs/{run_id}/commands` is blocked after the run starts. Optional
+controlled insertion is enabled only when `run_mutation_ledger_path` is configured
+and a bearer token of at least 32 random characters named by
+`run_mutation_token_env` is present at startup. The token is also bound to the
+operator identity named by `run_mutation_actor_env`; callers cannot self-attribute
+another actor in the audit. The current private-state adapter is startup-gated to
+its validated Opentrons 8.8.1 runtime.
+
+Before a run starts, a small set of non-actuating setup commands remains available
+only when robot-server authoritatively identifies the run as protocol-less. This
+path requires the same bearer token, accepts built-in resources only, is durably
+audited, and is serialized with play/resume so the run cannot start between
+authorization and robot-server acceptance. Python/JSON protocol runs (including
+AS-MS), custom labware-definition injection, and all actuating commands cannot use
+this bypass. Stop remains available if run-state inspection is degraded.
+
+The authenticated `/unitelabs/runs/{run_id}/...` API accepts bounded transfer,
+mix, delay, comment, and recovery operations only at explicit Python-protocol
+checkpoints or native recovery state. It snapshots authoritative commands,
+pipettes, tips, labware, modules, disposal areas, and liquid volumes; recalculates
+multi-channel tip/reagent/capacity effects; compiles only Protocol Engine commands;
+accepts one ordered batch per checkpoint; and writes a durable hash-chained audit.
+All other Robot Server writes are blocked while the current run owns the Flex.
+Named-checkpoint and error-recovery resume also require the token and are durably
+audited. Validation failures block resume, and cancellation or ambiguous partial
+enqueue requires stopping the run. Send mutation traffic only through an SSH
+tunnel or authenticated TLS/mTLS proxy; see the
+[controlled mid-run operator procedure](docs/asms_flex_workflow_test.md#controlled-mid-run-steps)
+for token provisioning, endpoint payloads, audit checks, and recovery rules.
 
 ### Testing against a real Flex
 
@@ -562,9 +614,11 @@ ssh root@<robot-ip> 'journalctl -u sila2-connector -f'
 
 ### Why `--system-site-packages`
 
-The `opentrons` package (and the `robot_server` HTTP server) are pre-installed as
-system packages by the Opentrons robot software. They are intentionally excluded from
-`dist_arm/` to avoid version conflicts; the venv inherits them via `--system-site-packages`.
+The `robot_server` HTTP server is pre-installed as a system package by the
+Opentrons robot software and is inherited through `--system-site-packages` because
+it is not published on PyPI. The ARM bundle pins and installs Opentrons 8.8.1 into
+the venv, where it takes precedence; the connector then refuses controlled
+mutation if the effective runtime does not match that validated version.
 
 `robot_server` is not distributed in the public `opentrons` PyPI wheel. Its source lives
 in the Opentrons monorepo under

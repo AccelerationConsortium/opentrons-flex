@@ -130,9 +130,10 @@ async def test_explicit_simulated_stacker_reader_and_temperature_register_featur
         "simulated_absorbance_reader",
         "simulated_temperature_module",
         "simulated_thermocycler",
+        "simulated_gripper",
     ],
 )
-async def test_simulated_module_is_rejected_in_live_mode(setting: str):
+async def test_simulated_hardware_is_rejected_in_live_mode(setting: str):
     """A simulation setting must never substitute hardware in a live connector."""
     config = OpentronsFlexConfig(use_simulator=False, **{setting: True})
     gen = create_app(config)

@@ -19,6 +19,7 @@ SAFE_SMOKETEST_POSTS: dict[str, dict] = {
 _CLIENT_SUPPLIED_HEADERS = {"opentrons-version"}
 
 _SMOKETEST_GET_EXCLUSIONS = {
+    "/camera/stream/settings": "requires the robot operating system's stream configuration file",
     "/maintenance_runs/current_run": "requires an active maintenance run",
     "/motors/engaged": "upstream OT3 simulator does not populate every physical motor axis",
     "/networking/status": "requires NetworkManager on the robot operating system",

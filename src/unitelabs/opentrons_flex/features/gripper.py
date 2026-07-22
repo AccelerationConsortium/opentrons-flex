@@ -21,6 +21,7 @@ from ..io import (
     GripActionError,
     GripperNotAttachedError,
     NotHomedError,
+    RunOwnershipError,
 )
 from ._progress import OperationPhase, OperationProgress, report_progress
 
@@ -75,7 +76,13 @@ class GripperFeature(sila.Feature):
         self._controller = controller
 
     @sila.ObservableCommand(
-        errors=[GripperNotAttachedError, GripActionError, NotHomedError, DirectGripperControlDisabledError]
+        errors=[
+            RunOwnershipError,
+            GripperNotAttachedError,
+            GripActionError,
+            NotHomedError,
+            DirectGripperControlDisabledError,
+        ]
     )
     async def grip(
         self,
@@ -102,7 +109,13 @@ class GripperFeature(sila.Feature):
         report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, "Gripper grip completed.")
 
     @sila.ObservableCommand(
-        errors=[GripperNotAttachedError, GripActionError, NotHomedError, DirectGripperControlDisabledError]
+        errors=[
+            RunOwnershipError,
+            GripperNotAttachedError,
+            GripActionError,
+            NotHomedError,
+            DirectGripperControlDisabledError,
+        ]
     )
     async def ungrip(
         self,
@@ -124,7 +137,7 @@ class GripperFeature(sila.Feature):
             raise
         report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, "Gripper release completed.")
 
-    @sila.ObservableCommand(errors=[GripperNotAttachedError, GripActionError, NotHomedError])
+    @sila.ObservableCommand(errors=[RunOwnershipError, GripperNotAttachedError, GripActionError, NotHomedError])
     async def home_jaw(
         self,
         *,

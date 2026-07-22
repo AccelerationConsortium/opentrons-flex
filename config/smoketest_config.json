@@ -44,8 +44,12 @@
   "simulated_absorbance_reader": true,
   "simulated_temperature_module": true,
   "simulated_thermocycler": true,
+  "simulated_gripper": true,
   "with_robot_server": true,
   "robot_server_tcp_port": 31950,
   "lock_timeout_s": 10,
-  "labware_movement_config": null
+  "labware_movement_config": null,
+  "run_mutation_ledger_path": "/private/tmp/unitelabs-opentrons-flex-smoketest/run-mutations.jsonl",
+  "run_mutation_token_env": "UNITELABS_RUN_MUTATION_TOKEN",
+  "run_mutation_actor_env": "UNITELABS_RUN_MUTATION_ACTOR"
 }

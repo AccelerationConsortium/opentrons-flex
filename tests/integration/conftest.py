@@ -21,9 +21,10 @@ Markers:
 
 import asyncio
 import contextlib
+import logging
+import os
 import socket
 import sys
-import logging
 import threading
 import time
 from collections.abc import Generator
@@ -53,6 +54,7 @@ class SimulatorStack:
     http_url: str
     grpc_address: str
     protobuf: object
+    mutation_token: str
 
 
 @dataclass(frozen=True)
@@ -368,7 +370,10 @@ def is_smoketest_http(request: pytest.FixtureRequest) -> bool:
 
 
 @pytest.fixture(scope="session")
-def simulator_stack(request: pytest.FixtureRequest) -> Generator[SimulatorStack | None, None, None]:
+def simulator_stack(
+    request: pytest.FixtureRequest,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Generator[SimulatorStack | None, None, None]:
     """Start the connector with simulator + robot-server on free local ports.
 
     Runs the asyncio event loop in a background thread so the server stays up
@@ -396,6 +401,8 @@ def simulator_stack(request: pytest.FixtureRequest) -> Generator[SimulatorStack 
 
     http_port, grpc_port = _free_ports(2)
     base_url = f"http://127.0.0.1:{http_port}"
+    mutation_token = "offline-run-mutation-token-32-characters"
+    mutation_ledger_path = tmp_path_factory.mktemp("run-mutation-ledger") / "mutations.jsonl"
 
     ready: threading.Event = threading.Event()
     stop: threading.Event = threading.Event()
@@ -410,20 +417,37 @@ def simulator_stack(request: pytest.FixtureRequest) -> Generator[SimulatorStack 
             simulated_absorbance_reader=True,
             simulated_temperature_module=True,
             simulated_thermocycler=True,
+            simulated_gripper=True,
             with_robot_server=True,
             robot_server_tcp_port=http_port,
             sila_server=SiLAServerConfig(hostname="127.0.0.1", port=grpc_port, tls=False),
             cloud_server_endpoint=None,
             discovery=None,
+            run_mutation_ledger_path=str(mutation_ledger_path),
         )
+        previous_token = os.environ.get(config.run_mutation_token_env)
+        previous_actor = os.environ.get(config.run_mutation_actor_env)
+        os.environ[config.run_mutation_token_env] = mutation_token
+        os.environ[config.run_mutation_actor_env] = "offline-integration-test"
         gen = create_app(config)
-        connector = await gen.__anext__()
+        try:
+            connector = await gen.__anext__()
+        finally:
+            if previous_token is None:
+                os.environ.pop(config.run_mutation_token_env, None)
+            else:
+                os.environ[config.run_mutation_token_env] = previous_token
+            if previous_actor is None:
+                os.environ.pop(config.run_mutation_actor_env, None)
+            else:
+                os.environ[config.run_mutation_actor_env] = previous_actor
         await connector.start()
         stack.append(
             SimulatorStack(
                 http_url=base_url,
                 grpc_address=connector.sila_server._address,
                 protobuf=connector.sila_server.protobuf,
+                mutation_token=mutation_token,
             )
         )
         ready.set()

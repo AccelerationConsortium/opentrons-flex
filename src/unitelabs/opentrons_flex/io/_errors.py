@@ -61,6 +61,17 @@ class ModuleOperationError(Exception):
     """
 
 
+class RunOwnershipError(Exception):
+    """
+    Protocol Engine currently owns the Flex for a prepared or active run.
+
+    Read status through the connector as usual, but do not issue an independent
+    SiLA hardware command. Stop the Protocol Engine run, or add the operation at
+    an explicit UNITELABS mutation checkpoint through the controlled run-mutation
+    HTTP endpoint, then retry.
+    """
+
+
 class InvalidTemperatureTargetError(Exception):
     """
     The requested target is not a finite temperature supported by the module.
@@ -119,7 +130,7 @@ class InvalidStackerConfigurationError(Exception):
 
 # Defined errors every module command can raise; the features pass this to their
 # SiLA command declarations (plus any command-specific errors).
-COMMON_MODULE_ERRORS = (ModuleNotRespondingError, ModuleOperationError)
+COMMON_MODULE_ERRORS = (ModuleNotRespondingError, ModuleOperationError, RunOwnershipError)
 
 
 def translate_module_errors(

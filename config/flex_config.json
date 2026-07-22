@@ -56,8 +56,12 @@
   "simulated_absorbance_reader": false,
   "simulated_temperature_module": false,
   "simulated_thermocycler": false,
+  "simulated_gripper": false,
   "with_robot_server": true,
   "robot_server_uds": "/run/aiohttp.sock",
   "lock_timeout_s": null,
-  "labware_movement_config": null
+  "labware_movement_config": null,
+  "run_mutation_ledger_path": "/var/lib/unitelabs-opentrons-flex/run-mutations.jsonl",
+  "run_mutation_token_env": "UNITELABS_RUN_MUTATION_TOKEN",
+  "run_mutation_actor_env": "UNITELABS_RUN_MUTATION_ACTOR"
 }

@@ -25,7 +25,7 @@ async def test_smoketest_stack_serves_http_and_sila(simulator_stack: object | No
 
     health = http_client.get("/health")
     assert health.status_code == 200
-    assert health.json()["robot_model"] in {"OT-2 Standard", "OT-3 Standard"}
+    assert health.json()["robot_model"] == "OT-3 Standard"
 
     # Shared-hardware injection must still run robot-server's Protocol Engine
     # initialization callbacks; these routes depend on that state.

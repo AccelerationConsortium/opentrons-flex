@@ -19,6 +19,7 @@ from ..io import (
     MachineErrorStateError,
     MovementOutOfBoundsError,
     NotHomedError,
+    RunOwnershipError,
     StallDetectedError,
 )
 from ._progress import OperationPhase, OperationProgress, report_progress
@@ -33,6 +34,7 @@ PlanIdentifier = typing.Annotated[str, constraints.Pattern(r"^\S(?:.*\S)?$")]
 LocationIdentifier = typing.Annotated[str, constraints.Pattern(r"^\S(?:.*\S)?$")]
 
 _LABWARE_ERRORS = [
+    RunOwnershipError,
     NotHomedError,
     MovementOutOfBoundsError,
     StallDetectedError,

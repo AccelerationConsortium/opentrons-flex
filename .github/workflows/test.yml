@@ -12,12 +12,12 @@ jobs:
     strategy:
       matrix:
         include:
-          # opentrons 8.8.1 line (Python 3.10) — older robot software baseline
+          # Controlled mutation and the ARM artifact are validated only against
+          # the Opentrons 8.8.1 private Protocol Engine state surface.
           - python-version: "3.10"
             opentrons-version: "8.8.1"
-          # opentrons 9.0.0 line (Python 3.12) — current Flex robot software (Buildroot, aarch64)
-          - python-version: "3.12"
-            opentrons-version: "9.0.0"
+          - python-version: "3.11"
+            opentrons-version: "8.8.1"
 
     steps:
       - uses: actions/checkout@v6
@@ -32,11 +32,7 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies (opentrons ${{ matrix.opentrons-version }})
-        run: |
-          uv sync --all-extras
-          if [ "${{ matrix.opentrons-version }}" != "8.8.1" ]; then
-            uv pip install "opentrons==${{ matrix.opentrons-version }}"
-          fi
+        run: uv sync --all-extras
 
       - name: Lint
         run: uv run ruff check src

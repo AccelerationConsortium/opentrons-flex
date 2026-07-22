@@ -15,19 +15,14 @@ classifiers = [
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Human Machine Interfaces",
     "Topic :: System :: Hardware",
 ]
-requires-python=">=3.10,<4.0"
+requires-python=">=3.10,<3.12"
 dependencies=[
     "unitelabs-cdk~=0.9.0",
-    "opentrons==8.8.1; python_version < '3.12'",
-    "opentrons==9.0.0; python_version >= '3.12'",
-    "numpy<1.25; python_version < '3.12'",
-    "numpy>=1.26,<2; python_version >= '3.12'",
+    "opentrons==8.8.1",
+    "numpy<1.25",
     "uvicorn>=0.20",
     "wsproto",
 ]

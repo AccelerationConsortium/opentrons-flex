@@ -6,7 +6,13 @@ from dataclasses import dataclass
 from unitelabs.cdk import sila
 from unitelabs.cdk.sila import constraints
 
-from ..io import FlexMotionController, NozzleConfigurationError, NotHomedError, PipetteNotAttachedError
+from ..io import (
+    FlexMotionController,
+    NozzleConfigurationError,
+    NotHomedError,
+    PipetteNotAttachedError,
+    RunOwnershipError,
+)
 from ._pipette_types import PIPETTE_MOUNTS, PipetteMount
 from ._progress import OperationProgress, run_observable
 
@@ -116,7 +122,9 @@ class PipetteFeature(sila.Feature):
             )
         return results
 
-    @sila.UnobservableCommand(errors=[PipetteNotAttachedError, NotHomedError, NozzleConfigurationError])
+    @sila.UnobservableCommand(
+        errors=[RunOwnershipError, PipetteNotAttachedError, NotHomedError, NozzleConfigurationError]
+    )
     async def configure_full_nozzle_layout(
         self,
         mount: PipetteMount,
@@ -132,7 +140,9 @@ class PipetteFeature(sila.Feature):
         )
         return self._nozzle_result(mount, state)
 
-    @sila.UnobservableCommand(errors=[PipetteNotAttachedError, NotHomedError, NozzleConfigurationError])
+    @sila.UnobservableCommand(
+        errors=[RunOwnershipError, PipetteNotAttachedError, NotHomedError, NozzleConfigurationError]
+    )
     async def configure_single_nozzle_layout(
         self,
         mount: PipetteMount,
@@ -149,7 +159,9 @@ class PipetteFeature(sila.Feature):
         )
         return self._nozzle_result(mount, state)
 
-    @sila.UnobservableCommand(errors=[PipetteNotAttachedError, NotHomedError, NozzleConfigurationError])
+    @sila.UnobservableCommand(
+        errors=[RunOwnershipError, PipetteNotAttachedError, NotHomedError, NozzleConfigurationError]
+    )
     async def configure_rectangular_nozzle_layout(
         self,
         mount: PipetteMount,
@@ -168,7 +180,7 @@ class PipetteFeature(sila.Feature):
         )
         return self._nozzle_result(mount, state)
 
-    @sila.UnobservableCommand(errors=[PipetteNotAttachedError, NozzleConfigurationError])
+    @sila.UnobservableCommand(errors=[RunOwnershipError, PipetteNotAttachedError, NozzleConfigurationError])
     def get_nozzle_configuration(self, mount: PipetteMount) -> NozzleConfiguration:
         """Return the current nozzle rectangle for one pipette mount."""
         return self._nozzle_result(mount, self._controller.nozzle_configuration(PIPETTE_MOUNTS[mount]))

@@ -52,6 +52,7 @@ def _reset_robot_server_stubs():
     sys.modules["robot_server.hardware"]._hw_api_accessor.reset_mock()
     sys.modules["robot_server.hardware"]._init_task_accessor.reset_mock()
     sys.modules["robot_server.app"].app.reset_mock()
+    sys.modules["robot_server.app"].app.dependency_overrides.clear()
 
 
 def _make_api() -> AsyncMock:
@@ -161,6 +162,24 @@ async def test_app_state_receives_hardware_proxy():
         rs_hw._hw_api_accessor.set_on.assert_called_once()
         _, proxy_arg = rs_hw._hw_api_accessor.set_on.call_args[0]
         assert isinstance(proxy_arg, HardwareProxy)
+
+
+@pytest.mark.asyncio
+async def test_robot_server_identity_matches_injected_flex_hardware():
+    """Embedded routes must identify as Flex even when the host defaults to OT-2."""
+    rs_hw = sys.modules["robot_server.hardware"]
+    rs_app = sys.modules["robot_server.app"].app
+
+    async with _run():
+        assert await rs_app.dependency_overrides[rs_hw.get_robot_type]() == "OT-3 Standard"
+
+        from opentrons.protocol_engine import DeckType
+        from opentrons_shared_data.robot.types import RobotTypeEnum
+
+        assert await rs_app.dependency_overrides[rs_hw.get_robot_type_enum]() is RobotTypeEnum.FLEX
+        assert await rs_app.dependency_overrides[rs_hw.get_deck_type]() is DeckType.OT3_STANDARD
+
+    assert rs_app.dependency_overrides == {}
 
 
 @pytest.mark.asyncio

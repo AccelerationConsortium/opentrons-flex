@@ -21,6 +21,7 @@ from ..io import (
     MovementOutOfBoundsError,
     NotHomedError,
     PipetteNotAttachedError,
+    RunOwnershipError,
     StallDetectedError,
     TipNotAttachedError,
 )
@@ -61,6 +62,7 @@ TiprackUri = typing.Annotated[str, constraints.Pattern(r"^[^/]+/[^/]+/[0-9]+$")]
 TrackingDelay = typing.Annotated[float, constraints.MinimalInclusive(0.0), _SECOND]
 
 _LIQUID_ERRORS = [
+    RunOwnershipError,
     NotHomedError,
     MovementOutOfBoundsError,
     StallDetectedError,

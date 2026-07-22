@@ -36,8 +36,22 @@ except ImportError:
     _rs_hw = types.ModuleType("robot_server.hardware")
     _rs_hw._hw_api_accessor = MagicMock(name="_hw_api_accessor")
     _rs_hw._init_task_accessor = MagicMock(name="_init_task_accessor")
+
+    async def _stub_get_robot_type():
+        return "OT-2 Standard"
+
+    async def _stub_get_robot_type_enum():
+        return "OT2"
+
+    async def _stub_get_deck_type():
+        return "ot2_standard"
+
+    _rs_hw.get_robot_type = _stub_get_robot_type
+    _rs_hw.get_robot_type_enum = _stub_get_robot_type_enum
+    _rs_hw.get_deck_type = _stub_get_deck_type
     _rs_app = types.ModuleType("robot_server.app")
     _rs_app.app = MagicMock(name="robot_server_app")
+    _rs_app.app.dependency_overrides = {}
     sys.modules["robot_server"] = _rs
     sys.modules["robot_server.hardware"] = _rs_hw
     sys.modules["robot_server.app"] = _rs_app

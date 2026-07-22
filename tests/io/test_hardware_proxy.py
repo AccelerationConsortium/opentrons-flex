@@ -20,6 +20,7 @@ from opentrons import types
 from opentrons.hardware_control import API
 from opentrons.hardware_control.backends.simulator import Simulator
 from opentrons.hardware_control.errors import OutOfBoundsMove
+from opentrons.hardware_control.ot3api import OT3API
 from opentrons.hardware_control.types import Axis, MotionChecks, OT3Mount
 from opentrons_shared_data.errors.exceptions import PositionUnknownError
 from opentrons.drivers.smoothie_drivers.simulator import SimulatingDriver
@@ -32,6 +33,7 @@ from unitelabs.opentrons_flex.io import (
 )
 from unitelabs.opentrons_flex.io.hardware_proxy import HardwareProxy, _TimedLock
 from unitelabs.opentrons_flex.io.recovery_state import stacker_recovery_state_for
+from unitelabs.opentrons_flex.io.simulator_compat import OT3SimulatorCompatibilityAdapter
 
 
 @pytest_asyncio.fixture
@@ -79,6 +81,103 @@ def test_wraps_instance_mismatch(proxy: HardwareProxy) -> None:
 def test_robot_server_cleanup_is_a_synchronous_noop(proxy: HardwareProxy) -> None:
     """Robot-server must not receive an un-awaited OT3API cleanup coroutine."""
     assert proxy.clean_up() is None
+
+
+async def test_ot3_simulator_restores_idle_gripper_after_tip_drop() -> None:
+    """A simulated tip drop must not poison the next gripper movement."""
+    api = await OT3API.build_hardware_simulator(
+        attached_instruments={
+            OT3Mount.LEFT: {"model": "p1000_single_v3.0", "id": "sim-left"},
+            OT3Mount.GRIPPER: {"model": "gripperV1.3", "id": "sim-gripper"},
+        }
+    )
+    proxy = HardwareProxy(OT3SimulatorCompatibilityAdapter(api))
+    try:
+        await proxy.home()
+        await proxy.grip(stay_engaged=False)
+        assert proxy.gripper_jaw_can_home()
+
+        await proxy.tip_drop_moves(OT3Mount.LEFT, ignore_plunger=True)
+
+        assert proxy.gripper_jaw_can_home()
+    finally:
+        await api.clean_up()
+
+
+async def test_protocol_engine_post_run_recovery_is_ordered_and_scoped() -> None:
+    """Normal Protocol Engine cleanup may recover, while arbitrary motion stays gated."""
+    api = await OT3API.build_hardware_simulator(
+        attached_instruments={
+            OT3Mount.GRIPPER: {"model": "gripperV1.3", "id": "sim-gripper"},
+        }
+    )
+    proxy = HardwareProxy(api)
+    try:
+        await proxy.home()
+        await proxy.halt(disengage_before_stopping=True)
+
+        with pytest.raises(NotHomedError, match="Fully re-home"):
+            await proxy.move_to(OT3Mount.LEFT, types.Point(0, 0, 0))
+
+        await proxy.stop(home_after=False)
+        with pytest.raises(NotHomedError, match="Fully re-home"):
+            await proxy.move_to(OT3Mount.LEFT, types.Point(0, 0, 0))
+        await proxy.home_z(OT3Mount.GRIPPER)
+        with pytest.raises(NotHomedError, match="Fully re-home"):
+            await proxy.move_to(OT3Mount.LEFT, types.Point(0, 0, 0))
+        await proxy.home(axes=[Axis.X, Axis.Y, Axis.Z_L, Axis.Z_R])
+
+        assert proxy._recovery_state.operation_ready
+    finally:
+        await api.clean_up()
+
+
+async def test_protocol_engine_post_run_recovery_without_gripper() -> None:
+    """The ordered cleanup also works on a Flex with no attached gripper."""
+    api = await OT3API.build_hardware_simulator()
+    proxy = HardwareProxy(api)
+    try:
+        await proxy.home()
+        await proxy.halt(disengage_before_stopping=True)
+        await proxy.stop(home_after=False)
+        await proxy.home(axes=[Axis.X, Axis.Y, Axis.Z_L, Axis.Z_R])
+
+        assert proxy._recovery_state.operation_ready
+    finally:
+        await api.clean_up()
+
+
+async def test_protocol_engine_stay_engaged_cleanup_preserves_motion_authority() -> None:
+    """Maintenance cleanup may stop in place only when PE declared that mode."""
+    api = await OT3API.build_hardware_simulator()
+    proxy = HardwareProxy(api)
+    try:
+        await proxy.home()
+        await proxy.halt(disengage_before_stopping=False)
+
+        with pytest.raises(NotHomedError, match="Fully re-home"):
+            await proxy.move_to(OT3Mount.LEFT, types.Point(0, 0, 0))
+
+        await proxy.stop(home_after=False)
+
+        assert proxy._recovery_state.operation_ready
+        await proxy.move_to(OT3Mount.LEFT, types.Point(0, 0, 0))
+    finally:
+        await api.clean_up()
+
+
+async def test_unqualified_halt_cannot_claim_stay_engaged_cleanup_authority() -> None:
+    """An ordinary emergency halt remains gated until a complete home."""
+    api = await OT3API.build_hardware_simulator()
+    proxy = HardwareProxy(api)
+    try:
+        await proxy.home()
+        await proxy.halt()
+
+        with pytest.raises(NotHomedError, match="Fully re-home"):
+            await proxy.stop(home_after=False)
+    finally:
+        await api.clean_up()
 
 
 # ── Motion (ported from test_moves.py) ───────────────────────────────────────

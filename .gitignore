@@ -241,6 +241,7 @@ config/ot2_config.local.json
 *.md
 !README.md
 !CHANGELOG.md
+!docs/asms_flex_workflow_test.md
 plan/
 dev/tailscale setup/*.tgz
 .venv-introspect/

@@ -285,7 +285,7 @@ class FlexMotionController:
 
     async def gantry_position(self, mount: OT3Mount) -> Point:
         """Return the current position of ``mount``."""
-        async with self._lock:
+        async with self._lock.observation():
             return await self._api.gantry_position(mount, refresh=True)
 
     async def stop(self) -> None:
@@ -308,12 +308,14 @@ class FlexMotionController:
         """Pause execution (does not touch the bus directly; no lock needed)."""
         from opentrons.hardware_control.types import PauseType
 
+        self._lock.assert_direct_control_allowed()
         self._api.pause(PauseType.PAUSE)
 
     def resume(self) -> None:
         """Resume execution after a pause."""
         from opentrons.hardware_control.types import PauseType
 
+        self._lock.assert_direct_control_allowed()
         self._assert_operation_ready()
         self._api.resume(PauseType.PAUSE)
 
@@ -703,7 +705,7 @@ class FlexMotionController:
     @translate_tip_errors
     async def get_tip_presence(self, mount: OT3Mount) -> TipStateType:
         """Return the tip-presence sensor state for a pipette mount."""
-        async with self._lock:
+        async with self._lock.observation():
             self._assert_pipette_attached(mount)
             return await self._api.get_tip_presence_status(mount)
 
@@ -716,7 +718,7 @@ class FlexMotionController:
 
     async def get_lights(self) -> dict[str, bool]:
         """Return the current light state, e.g. ``{"button": bool, "rails": bool}``."""
-        async with self._lock:
+        async with self._lock.observation():
             return await self._api.get_lights()
 
     # ----------------------------------------------------------------- cleanup
