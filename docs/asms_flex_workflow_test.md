@@ -243,9 +243,25 @@ uv run --extra test python scripts/run_asms_hardware.py \
 ```
 
 Add `--scientific` only for the final real-sample run; it restores the full
-programmed delays. The runner intentionally keeps mutation checkpoints disabled.
-First prove the physical workflow, then use the separately authenticated
-controlled-mutation procedure above.
+programmed delays. After the first one-column mechanics pass, the same runner can
+exercise the complete controlled-insertion path. Export the robot-provisioned
+token without placing it on the command line, then provide the exact actor bound
+to that token:
+
+```sh
+read -r -s UNITELABS_RUN_MUTATION_TOKEN
+export UNITELABS_RUN_MUTATION_TOKEN
+uv run --extra test python scripts/run_asms_hardware.py \
+  --host <robot-ip> --columns 1 --execute \
+  --checkpoint-transfer --mutation-actor <operator-name> \
+  --confirm-deck-ready ASMS-DECK-READY
+```
+
+This inserts one 10 µL eight-channel reservoir-to-waste transfer at the first
+named checkpoint, verifies allocation of eight clean tips and a terminal
+`mutation_enqueued` audit record, then authenticates the remaining six checkpoint
+resumes. The option is rejected for two-column runs because the base protocol
+already consumes every available fresh tip.
 
 1. **Verify the exact bundle offline.** Run the default exact preflight against
    the checked-in protocol and `protocols/asms/labware/`. Continue only when it

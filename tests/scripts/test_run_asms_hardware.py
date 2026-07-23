@@ -78,6 +78,65 @@ class _Client:
         raise AssertionError(f"Unexpected POST {path}")
 
 
+class _CheckpointClient:
+    def __init__(self) -> None:
+        self.posts: list[str] = []
+
+    def get(self, path: str, *, headers: dict | None = None) -> _Response:
+        assert headers == {"Authorization": "Bearer " + ("t" * 32)}
+        if path.endswith("/mutation-snapshot"):
+            return _Response(
+                200,
+                {
+                    "currentCommand": {
+                        "id": "checkpoint-1",
+                        "params": {"message": "UNITELABS_MUTATION_CHECKPOINT:ready-before-initial-separation"},
+                    },
+                    "pipettes": [{"id": "pipette-1", "mount": "right"}],
+                    "tipRacks": {"tips-1": {}},
+                    "labware": [
+                        {"id": "reservoir-1", "loadName": "nest_12_reservoir_22ml"},
+                        {
+                            "id": "waste-1",
+                            "loadName": "thermokingfisherdeepwell_96_wellplate_2000ul",
+                        },
+                    ],
+                    "disposalAreas": [
+                        {
+                            "areaType": "movableTrash",
+                            "addressableAreaName": "movableTrashA3",
+                        }
+                    ],
+                },
+            )
+        if path.endswith("/mutations"):
+            return _Response(200, [{"event": "mutation_enqueued"}])
+        raise AssertionError(f"Unexpected GET {path}")
+
+    def post(
+        self,
+        path: str,
+        *,
+        headers: dict | None = None,
+        json: dict | None = None,
+    ) -> _Response:
+        assert headers == {"Authorization": "Bearer " + ("t" * 32)}
+        self.posts.append(path)
+        if path.endswith("/mutations"):
+            assert json is not None
+            return _Response(
+                201,
+                {
+                    "allocatedTips": [{"tipCount": 8}],
+                    "commandIds": [f"command-{index}" for index in range(6)],
+                },
+            )
+        if path.endswith("/actions"):
+            assert json == {"data": {"actionType": "play"}}
+            return _Response(201, {"data": {"id": "action-1"}})
+        raise AssertionError(f"Unexpected POST {path}")
+
+
 def _ready_deck() -> dict:
     return {
         "data": {
@@ -100,6 +159,18 @@ def test_runtime_parameters_default_to_short_non_mutating_mechanics_run() -> Non
         "connector_test_mode": True,
         "number_of_columns": 1,
         "enable_mutation_checkpoints": False,
+    }
+
+
+def test_runtime_parameters_enable_checkpoints_only_for_explicit_transfer_test() -> None:
+    assert run_asms_hardware._runtime_parameters(
+        columns=1,
+        scientific=False,
+        checkpoint_transfer=True,
+    ) == {
+        "connector_test_mode": True,
+        "number_of_columns": 1,
+        "enable_mutation_checkpoints": True,
     }
 
 
@@ -154,6 +225,60 @@ def test_hardware_inventory_requires_right_flex_pipette_and_temperature_module()
     ]
 
 
+def test_checkpoint_transfer_uses_snapshot_ids_and_eight_channel_resources() -> None:
+    snapshot = {
+        "pipettes": [{"id": "pipette-1", "mount": "right", "name": "flex_8channel_1000"}],
+        "tipRacks": {"tips-1": {"wells": {}}},
+        "labware": [
+            {"id": "reservoir-1", "loadName": "nest_12_reservoir_22ml"},
+            {
+                "id": "waste-1",
+                "loadName": "thermokingfisherdeepwell_96_wellplate_2000ul",
+            },
+        ],
+        "disposalAreas": [
+            {
+                "areaType": "movableTrash",
+                "addressableAreaName": "movableTrashA3",
+            }
+        ],
+    }
+
+    body = run_asms_hardware._checkpoint_transfer_body(
+        snapshot,
+        actor="operator-1",
+        mutation_id="mutation-1",
+    )
+
+    transfer = body["steps"][0]
+    assert body["actor"] == "operator-1"
+    assert transfer["pipetteId"] == "pipette-1"
+    assert transfer["tipRackIds"] == ["tips-1"]
+    assert transfer["source"] == {"labwareId": "reservoir-1", "wellName": "A2"}
+    assert transfer["destination"] == {"labwareId": "waste-1", "wellName": "A1"}
+    assert transfer["volume"] == 10
+
+
+def test_checkpoint_controller_audits_mutation_and_resumes_once() -> None:
+    client = _CheckpointClient()
+    controller = run_asms_hardware._CheckpointController(
+        client,
+        "run-1",
+        token="t" * 32,
+        actor="operator-1",
+    )
+
+    controller.handle_pause()
+    controller.handle_pause()
+
+    assert controller.handled_checkpoint_ids == {"checkpoint-1"}
+    assert controller.mutation_result is not None
+    assert client.posts == [
+        "/unitelabs/runs/run-1/mutations",
+        "/runs/run-1/actions",
+    ]
+
+
 def test_two_column_evidence_requires_the_offline_pinned_counts() -> None:
     counts = Counter(run_asms_hardware._EXPECTED_TWO_COLUMN_COMMANDS)
     run_asms_hardware._verify_two_column_evidence(462, counts)
@@ -170,6 +295,21 @@ def test_execute_requires_explicit_deck_confirmation(monkeypatch, capsys) -> Non
 
     assert result == 2
     assert "ASMS-DECK-READY" in capsys.readouterr().err
+
+
+def test_checkpoint_transfer_rejects_two_column_run_before_network(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(run_asms_hardware, "_validate_exact_bundle", lambda: None)
+
+    result = run_asms_hardware.main(
+        [
+            "--columns",
+            "2",
+            "--checkpoint-transfer",
+        ]
+    )
+
+    assert result == 2
+    assert "no spare tips" in capsys.readouterr().err
 
 
 def test_default_mode_analyzes_without_creating_or_playing_a_run(monkeypatch, capsys) -> None:

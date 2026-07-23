@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
+import os
 import sys
 import time
 from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 
@@ -66,6 +69,24 @@ def _parser() -> argparse.ArgumentParser:
         help="Create and play the analyzed run. Omit this flag for analysis-only mode.",
     )
     parser.add_argument(
+        "--checkpoint-transfer",
+        action="store_true",
+        help=(
+            "In a one-column mechanics run, add one audited 10 uL eight-channel "
+            "transfer at the first named checkpoint and authenticate all seven resumes."
+        ),
+    )
+    parser.add_argument(
+        "--mutation-actor",
+        default=None,
+        help="Audit identity bound to the robot's mutation token.",
+    )
+    parser.add_argument(
+        "--mutation-token-env",
+        default="UNITELABS_RUN_MUTATION_TOKEN",
+        help="Environment variable holding the mutation token; prompts without echo when absent.",
+    )
+    parser.add_argument(
         "--confirm-deck-ready",
         default=None,
         metavar="PHRASE",
@@ -76,11 +97,16 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _runtime_parameters(*, columns: int, scientific: bool) -> dict[str, bool | int]:
+def _runtime_parameters(
+    *,
+    columns: int,
+    scientific: bool,
+    checkpoint_transfer: bool = False,
+) -> dict[str, bool | int]:
     return {
         "connector_test_mode": not scientific,
         "number_of_columns": columns,
-        "enable_mutation_checkpoints": False,
+        "enable_mutation_checkpoints": checkpoint_transfer,
     }
 
 
@@ -191,6 +217,155 @@ def _wait_for_run(client: httpx.Client, run_id: str, *, timeout: float) -> dict:
     raise TimeoutError(f"Run {run_id} did not finish within {timeout:g} seconds")
 
 
+def _checkpoint_transfer_body(snapshot: dict, *, actor: str, mutation_id: str) -> dict:
+    def labware_id(load_name: str) -> str:
+        try:
+            return next(item["id"] for item in snapshot["labware"] if item["loadName"] == load_name)
+        except (KeyError, StopIteration) as exc:
+            raise RuntimeError(f"Checkpoint snapshot is missing {load_name}") from exc
+
+    pipettes = snapshot.get("pipettes")
+    if not isinstance(pipettes, list) or not pipettes:
+        raise RuntimeError("Checkpoint snapshot has no attached pipette")
+    pipette = next(
+        (
+            item
+            for item in pipettes
+            if str(item.get("mount", "")).lower() == "right"
+            or item.get("pipetteName") == "flex_8channel_1000"
+            or item.get("name") == "flex_8channel_1000"
+        ),
+        pipettes[0],
+    )
+
+    tip_racks = snapshot.get("tipRacks")
+    if not isinstance(tip_racks, dict) or not tip_racks:
+        raise RuntimeError("Checkpoint snapshot has no tracked tip rack")
+    disposal_areas = snapshot.get("disposalAreas")
+    if not isinstance(disposal_areas, list):
+        raise RuntimeError("Checkpoint snapshot has no disposal-area inventory")
+    try:
+        disposal_name = next(
+            area["addressableAreaName"] for area in disposal_areas if area.get("areaType") == "movableTrash"
+        )
+    except StopIteration as exc:
+        raise RuntimeError("Checkpoint snapshot has no movable trash area") from exc
+
+    return {
+        "mutationId": mutation_id,
+        "actor": actor,
+        "reason": "real-Flex connector checkpoint insertion acceptance",
+        "mode": "checkpoint",
+        "steps": [
+            {
+                "stepType": "transfer",
+                "pipetteId": pipette["id"],
+                "tipRackIds": [next(iter(tip_racks))],
+                "source": {
+                    "labwareId": labware_id("nest_12_reservoir_22ml"),
+                    "wellName": "A2",
+                },
+                "destination": {
+                    "labwareId": labware_id("thermokingfisherdeepwell_96_wellplate_2000ul"),
+                    "wellName": "A1",
+                },
+                "disposal": {
+                    "disposalType": "addressableArea",
+                    "addressableAreaName": disposal_name,
+                },
+                "volume": 10,
+                "aspirateFlowRate": 10,
+                "dispenseFlowRate": 10,
+            },
+            {
+                "stepType": "comment",
+                "message": "REAL FLEX AUDITED CHECKPOINT MUTATION",
+            },
+        ],
+    }
+
+
+class _CheckpointController:
+    def __init__(self, client: httpx.Client, run_id: str, *, token: str, actor: str) -> None:
+        self._client = client
+        self._run_id = run_id
+        self._actor = actor
+        self._headers = {"Authorization": f"Bearer {token}"}
+        self.handled_checkpoint_ids: set[str] = set()
+        self.mutation_result: dict | None = None
+
+    def handle_pause(self) -> None:
+        base_url = f"/unitelabs/runs/{self._run_id}"
+        snapshot_response = self._client.get(f"{base_url}/mutation-snapshot", headers=self._headers)
+        if not snapshot_response.is_success:
+            raise RuntimeError(
+                f"Paused run is not at an authorized mutation checkpoint: "
+                f"HTTP {snapshot_response.status_code}: {snapshot_response.text}"
+            )
+        snapshot = snapshot_response.json()
+        current = snapshot.get("currentCommand") or {}
+        checkpoint_id = current.get("id")
+        message = (current.get("params") or {}).get("message", "")
+        if not checkpoint_id or not message.startswith("UNITELABS_MUTATION_CHECKPOINT:"):
+            raise RuntimeError(f"Unexpected paused command: {current}")
+        if checkpoint_id in self.handled_checkpoint_ids:
+            return
+
+        checkpoint_number = len(self.handled_checkpoint_ids) + 1
+        print(f"Checkpoint {checkpoint_number}/7: {message}")
+        if not self.handled_checkpoint_ids:
+            body = _checkpoint_transfer_body(snapshot, actor=self._actor, mutation_id=str(uuid4()))
+            response = self._client.post(f"{base_url}/mutations", headers=self._headers, json=body)
+            if response.status_code != 201:
+                raise RuntimeError(f"Checkpoint transfer rejected with HTTP {response.status_code}: {response.text}")
+            result = response.json()
+            allocated_tips = result.get("allocatedTips") or []
+            if not allocated_tips or allocated_tips[0].get("tipCount") != 8:
+                raise RuntimeError(f"Checkpoint transfer did not allocate exactly 8 clean tips: {result}")
+            audit = self._client.get(f"{base_url}/mutations", headers=self._headers)
+            if not audit.is_success:
+                raise RuntimeError(f"Mutation audit failed with HTTP {audit.status_code}: {audit.text}")
+            records = audit.json()
+            if not isinstance(records, list) or not records or records[-1].get("event") != "mutation_enqueued":
+                raise RuntimeError(f"Mutation audit did not end in mutation_enqueued: {records}")
+            self.mutation_result = result
+            print(f"Checkpoint transfer: PASS (8 tips, {len(result.get('commandIds') or [])} Protocol Engine commands)")
+
+        resume = self._client.post(
+            f"/runs/{self._run_id}/actions",
+            headers=self._headers,
+            json={"data": {"actionType": "play"}},
+        )
+        if resume.status_code != 201:
+            raise RuntimeError(f"Authenticated checkpoint resume failed with HTTP {resume.status_code}: {resume.text}")
+        self.handled_checkpoint_ids.add(checkpoint_id)
+
+
+def _wait_for_checkpoint_run(
+    client: httpx.Client,
+    run_id: str,
+    controller: _CheckpointController,
+    *,
+    timeout: float,
+) -> dict:
+    deadline = time.monotonic() + timeout
+    previous = None
+    while time.monotonic() < deadline:
+        run = _response_data(client.get(f"/runs/{run_id}"), action="run status poll")
+        status = run.get("status")
+        current = run.get("current")
+        marker = (status, json.dumps(current, sort_keys=True))
+        if marker != previous:
+            print(f"Run {run_id}: status={status}, current={current}")
+            previous = marker
+        if status in _TERMINAL_RUN_STATES:
+            return run
+        if status == "paused":
+            controller.handle_pause()
+        time.sleep(1)
+    raise TimeoutError(f"Run {run_id} did not finish within {timeout:g} seconds")
+
+
 def _read_command_counts(client: httpx.Client, run_id: str) -> tuple[int, Counter]:
     response = client.get(f"/runs/{run_id}/commands", params={"pageLength": 1000})
     if not response.is_success:
@@ -221,9 +396,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    if args.checkpoint_transfer and args.columns != 1:
+        print(
+            "BLOCKED: --checkpoint-transfer is limited to --columns 1 because the two-column run has no spare tips.",
+            file=sys.stderr,
+        )
+        return 2
+    if args.execute and args.checkpoint_transfer and not args.mutation_actor:
+        print("BLOCKED: --mutation-actor is required with --checkpoint-transfer.", file=sys.stderr)
+        return 2
+
+    mutation_token = None
+    if args.execute and args.checkpoint_transfer:
+        mutation_token = os.environ.get(args.mutation_token_env) or getpass.getpass("Mutation token: ")
+        if len(mutation_token) < 32:
+            print("BLOCKED: mutation token must contain at least 32 characters.", file=sys.stderr)
+            return 2
 
     _validate_exact_bundle()
-    runtime_parameters = _runtime_parameters(columns=args.columns, scientific=args.scientific)
+    runtime_parameters = _runtime_parameters(
+        columns=args.columns,
+        scientific=args.scientific,
+        checkpoint_transfer=args.checkpoint_transfer,
+    )
     base_url = f"http://{args.host}:{args.port}"
     print(f"Target: {base_url}")
     print(f"Runtime parameters: {json.dumps(runtime_parameters, sort_keys=True)}")
@@ -289,7 +484,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise RuntimeError(f"Run start failed with HTTP {response.status_code}: {response.text}")
 
         try:
-            run = _wait_for_run(client, run_id, timeout=args.run_timeout)
+            if args.checkpoint_transfer:
+                if mutation_token is None:
+                    raise RuntimeError("Mutation token was not provisioned before starting the run")
+                checkpoint_controller = _CheckpointController(
+                    client,
+                    run_id,
+                    token=mutation_token,
+                    actor=args.mutation_actor,
+                )
+                run = _wait_for_checkpoint_run(
+                    client,
+                    run_id,
+                    checkpoint_controller,
+                    timeout=args.run_timeout,
+                )
+                if len(checkpoint_controller.handled_checkpoint_ids) != 7:
+                    raise RuntimeError(
+                        "Checkpoint workflow did not authenticate all 7 resumes: "
+                        f"{len(checkpoint_controller.handled_checkpoint_ids)} handled"
+                    )
+                if checkpoint_controller.mutation_result is None:
+                    raise RuntimeError("Checkpoint workflow finished without the required inserted transfer")
+            else:
+                run = _wait_for_run(client, run_id, timeout=args.run_timeout)
         except KeyboardInterrupt:
             print(f"\nInterrupt received; stopping run {run_id}...")
             stop = client.post(
