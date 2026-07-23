@@ -37,11 +37,22 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: List wheels
-        run: ls -la dist_arm/
+        run: |
+          ls -la dist_arm/
+          python scripts/artifact_manifest.py verify dist_arm \
+            --connector-version 0.9.1 \
+            --opentrons-version 9.0.0 \
+            --robot-server-version 9.0.0 \
+            --opentrons-source-commit 44b37a2f91520bf2e7245c70bf799d46c8c2d9a5 \
+            --python-version 3.10 \
+            --architecture aarch64
 
       - name: Upload flex-arm-wheels artifact
         uses: actions/upload-artifact@v7
         with:
           name: flex-arm-wheels
-          path: dist_arm/*.whl
+          path: |
+            dist_arm/*.whl
+            dist_arm/runtime-manifest.json
+            dist_arm/SHA256SUMS
           retention-days: 14

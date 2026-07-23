@@ -203,3 +203,23 @@ async def test_shared_api_cleaned_up_on_shutdown():
             await gen.__anext__()
 
     fake_api.clean_up.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_runtime_preflight_fails_before_simulator_initialization():
+    """A mismatched release must fail before even simulated hardware is built."""
+    with (
+        patch(
+            "unitelabs.opentrons_flex.require_compatible_runtime",
+            side_effect=RuntimeError("runtime preflight failed"),
+        ),
+        patch(
+            "opentrons.hardware_control.ot3api.OT3API.build_hardware_simulator",
+            new_callable=AsyncMock,
+        ) as mock_build,
+    ):
+        gen = create_app(OpentronsFlexConfig(use_simulator=True))
+        with pytest.raises(RuntimeError, match="runtime preflight failed"):
+            await gen.__anext__()
+
+    mock_build.assert_not_awaited()

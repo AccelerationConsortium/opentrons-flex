@@ -12,10 +12,10 @@ jobs:
     strategy:
       matrix:
         include:
-          # Controlled mutation and the ARM artifact are validated only against
-          # the Opentrons 8.8.1 private Protocol Engine state surface.
+          # This is the exact runtime matrix deployed to Flex.
           - python-version: "3.10"
-            opentrons-version: "8.8.1"
+            opentrons-version: "9.0.0"
+            opentrons-commit: "44b37a2f91520bf2e7245c70bf799d46c8c2d9a5"
 
     steps:
       - uses: actions/checkout@v6
@@ -59,29 +59,30 @@ jobs:
       # the util/ subpackage that robot_server imports.
       - name: Install opentrons robot-server ${{ matrix.opentrons-version }}
         run: |
-          VER="${{ matrix.opentrons-version }}"
+          REF="${{ matrix.opentrons-commit }}"
           # robot_server/server_utils are not on PyPI; install with --no-deps to skip the
           # monorepo-internal ==0.0.0 dep constraints that can't be satisfied from PyPI.
           uv pip install --no-deps \
-            "robot_server @ git+https://github.com/Opentrons/opentrons.git@v${VER}#subdirectory=robot-server" \
-            "server_utils @ git+https://github.com/Opentrons/opentrons.git@v${VER}#subdirectory=server-utils"
+            "robot_server @ git+https://github.com/Opentrons/opentrons.git@${REF}#subdirectory=robot-server" \
+            "server_utils @ git+https://github.com/Opentrons/opentrons.git@${REF}#subdirectory=server-utils"
           # Reinstall opentrons monorepo packages from git so robot_server gets all the
           # internal symbols it imports at module load time.  The PyPI builds omit or differ
           # from the monorepo source (e.g. PREVIEW_IMAGE, opentrons_shared_data.util,
           # opentrons_hardware which is not even a dep of the PyPI opentrons package).
           uv pip install --no-deps --reinstall \
-            "opentrons @ git+https://github.com/Opentrons/opentrons.git@v${VER}#subdirectory=api" \
-            "opentrons_shared_data @ git+https://github.com/Opentrons/opentrons.git@v${VER}#subdirectory=shared-data" \
-            "opentrons_hardware @ git+https://github.com/Opentrons/opentrons.git@v${VER}#subdirectory=hardware"
+            "opentrons @ git+https://github.com/Opentrons/opentrons.git@${REF}#subdirectory=api" \
+            "opentrons_shared_data @ git+https://github.com/Opentrons/opentrons.git@${REF}#subdirectory=shared-data" \
+            "opentrons_hardware @ git+https://github.com/Opentrons/opentrons.git@${REF}#subdirectory=hardware"
           # Install robot_server's non-monorepo deps (versions from its Pipfile.lock).
-          # aiohttp: needed by the legacy routers in robot_server 8.8.1.
+          # Versions match the Opentrons 9.0 robot-server lockfile.
           uv pip install \
-            "aiohttp" \
+            "aiohttp==3.12.14" \
+            "anyio==4.9.0" \
             "fastapi==0.100.0" \
             "pydantic==2.11.7" \
             "pydantic-settings==2.4.0" \
             "python-dotenv==1.0.1" \
-            "python-multipart==0.0.6" \
+            "python-multipart==0.0.18" \
             "uvicorn==0.27.0.post1" \
             "wsproto==1.2.0" \
             "sqlalchemy==1.4.51" \

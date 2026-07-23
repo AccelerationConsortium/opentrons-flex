@@ -562,9 +562,11 @@ against the live robot-server OpenAPI so the matrix cannot silently drift.
 
 ## Deploying to the Flex
 
-The Flex host is aarch64 (ARM64) with a modern glibc, so standard PyPI
-`manylinux_2_17_aarch64` wheels for C-extension packages (grpcio, numpy, …) install
-directly — no from-source build is required.
+The Flex host is aarch64 (ARM64) with a modern glibc, so standard
+`manylinux_2_17_aarch64` dependency wheels install directly. The build also
+packages the exact Opentrons 9.0.0 tag for `opentrons`, shared data, hardware,
+server utilities, and `robot_server`; connector mode never relies on an
+unverified mixture of those private packages from the robot image.
 
 ### Building `dist_arm/`
 
@@ -579,15 +581,40 @@ Or trigger the **Build Flex aarch64 Wheels** GitHub Actions workflow
 (`.github/workflows/build-flex-arm-wheels.yml`) and download the `flex-arm-wheels`
 artifact into `dist_arm/`.
 
+The artifact is accepted only when `runtime-manifest.json` and `SHA256SUMS`
+verify every wheel, the connector/Opentrons/robot-server versions are exact, and
+the declared target is Python 3.10 on aarch64.
+
 ### Installing on the Flex
 
-Copy the wheels and create the venv on the robot:
+Provision the mutation credential outside any replaceable release directory:
+
+```sh
+ssh root@<robot-ip> '
+  umask 077
+  mkdir -p /var/lib/unitelabs-opentrons-flex
+  token=$(od -An -N32 -tx1 /dev/urandom | tr -d " \n")
+  actor=operator-name
+  {
+    printf "UNITELABS_RUN_MUTATION_TOKEN=%s\n" "$token"
+    printf "UNITELABS_RUN_MUTATION_ACTOR=%s\n" "$actor"
+  } > /var/lib/unitelabs-opentrons-flex/run-mutation.env
+  printf "Save this token for the no-echo client prompt: %s\n" "$token"
+'
+```
+
+Replace `operator-name` first. Then verify, install to an immutable versioned
+directory, run the no-hardware import/configuration preflight, and atomically
+activate the release:
 
 ```sh
 ./deploy.sh <robot-ip>
 ```
 
-Then install the connector as a persistent systemd service (this disables the Opentrons robot server so the connector owns the hardware):
+Then install the connector service. The stock service is stopped only after the
+runtime preflight passes. If connector startup, gRPC, `/health`,
+`/deck_configuration`, or the mutation OpenAPI check fails within its bounded
+timeout, the script restores the stock robot-server automatically:
 
 ```sh
 ./scripts/install_connector_service.sh <robot-ip>
@@ -600,10 +627,17 @@ Switch between the SiLA connector and the stock opentrons robot-server at any ti
 ./scripts/switch_mode.sh <robot-ip> opentrons
 ```
 
-To deploy Python source changes to a robot that already has the service installed:
+Run all read-only readiness checks before uploading a protocol:
 
 ```sh
-./scripts/deploy_python_changes.sh <robot-ip>
+uv run python scripts/preflight_flex.py <robot-ip>
+```
+
+Restore the previously activated release while leaving stock Opentrons mode
+active:
+
+```sh
+./scripts/rollback_connector.sh <robot-ip>
 ```
 
 Logs:
@@ -612,23 +646,17 @@ Logs:
 ssh root@<robot-ip> 'journalctl -u sila2-connector -f'
 ```
 
-### Why `--system-site-packages`
+### Runtime isolation
 
-The `robot_server` HTTP server is pre-installed as a system package by the
-Opentrons robot software and is inherited through `--system-site-packages` because
-it is not published on PyPI. The ARM bundle pins and installs Opentrons 8.8.1 into
-the venv, where it takes precedence; the connector then refuses controlled
-mutation if the effective runtime does not match that validated version.
-
-`robot_server` is not distributed in the public `opentrons` PyPI wheel. Its source lives
-in the Opentrons monorepo under
-[`robot-server/robot_server`](https://github.com/Opentrons/opentrons/tree/edge/robot-server/robot_server).
-Before the first hardware run, verify the Flex image exposes the same package:
-
-```sh
-ssh root@<robot-ip> \
-  '/var/sila2_flex/bin/python -c "import robot_server, robot_server.hardware, robot_server.app; print(robot_server.__file__)"'
-```
+Each immutable release inherits the robot image only for operating-system
+bindings that Opentrons does not distribute as portable wheels, notably
+`systemd-python`. The ARM artifact supplies the complete portable dependency
+closure plus all five co-versioned Opentrons Python packages from the immutable
+9.0.0 source commit. Deployment rejects incomplete releases and writes a
+completion marker only after no-hardware runtime validation. Startup rejects a
+wrong Python/Opentrons version, a missing private symbol, or any of those five
+Opentrons modules imported from outside the active release before initializing
+OT3API or the CAN bus.
 
 Then start the connector and run the live HTTP integration tests:
 

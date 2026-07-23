@@ -48,13 +48,16 @@ from .io.run_authority import (
     RunMutationHttpGuard,
 )
 from .io.simulator_compat import OT3SimulatorCompatibilityAdapter
-from .run_mutation import MUTATION_CHECKPOINT_PREFIX, MutationLedger, RunMutationCoordinator
+from .run_mutation import MUTATION_CHECKPOINT_PREFIX, MutationLedger, MutationLedgerError, RunMutationCoordinator
+from .runtime_compat import (
+    RuntimeCompatibilityReport,
+    mutation_configuration_issues,
+    require_compatible_runtime,
+)
 
 log = logging.getLogger(__name__)
 
 __version__ = version("unitelabs-opentrons-flex")
-_MINIMUM_MUTATION_TOKEN_LENGTH = 32
-_SUPPORTED_MUTATION_OPENTRONS_VERSIONS = frozenset({"8.8.1"})
 
 
 class _AppWithState(typing.Protocol):
@@ -161,6 +164,14 @@ class OpentronsFlexConfig(ConnectorBaseConfig):
 
     Mutation requests must claim this exact actor, and durable audit records use
     the environment-bound value rather than trusting caller-supplied identity.
+    """
+
+    run_mutation_required: bool = False
+    """Fail connector startup when controlled run mutation is not ready.
+
+    The default keeps the base SiLA and HTTP interfaces available if only the
+    optional mutation extension is misconfigured. Set this to ``True`` for the
+    full workflow so an operator cannot accidentally start without checkpoints.
     """
 
 
@@ -327,6 +338,7 @@ async def create_app(config: OpentronsFlexConfig) -> collections.abc.AsyncGenera
         config.use_simulator,
         config.with_robot_server,
     )
+    compatibility = require_compatible_runtime(require_robot_server=config.with_robot_server)
 
     simulated_modules = [
         name
@@ -355,7 +367,7 @@ async def create_app(config: OpentronsFlexConfig) -> collections.abc.AsyncGenera
     )
 
     if config.with_robot_server:
-        async for connector in _create_app_with_robot_server(config, labware_config):
+        async for connector in _create_app_with_robot_server(config, labware_config, compatibility):
             yield connector
         return
 
@@ -400,6 +412,7 @@ async def create_app(config: OpentronsFlexConfig) -> collections.abc.AsyncGenera
 async def _create_app_with_robot_server(
     config: OpentronsFlexConfig,
     labware_config: LoadedLabwareMovementConfig,
+    compatibility: RuntimeCompatibilityReport,
 ) -> collections.abc.AsyncGenerator[Connector, None]:
     """
     Start both the SiLA2 gRPC server and the opentrons HTTP robot-server in one process.
@@ -435,39 +448,43 @@ async def _create_app_with_robot_server(
     mutation_api_token: str | None = None
     mutation_authenticated_actor: str | None = None
     mutation_ledger: MutationLedger | None = None
-    if config.run_mutation_ledger_path is not None:
-        mutation_api_token = os.environ.get(config.run_mutation_token_env)
-        if mutation_api_token is None or len(mutation_api_token) < _MINIMUM_MUTATION_TOKEN_LENGTH:
-            message = (
-                "Controlled run mutation requires environment variable "
-                f"{config.run_mutation_token_env!r} to contain at least "
-                f"{_MINIMUM_MUTATION_TOKEN_LENGTH} random characters."
-            )
+    mutation_api_token = os.environ.get(config.run_mutation_token_env)
+    mutation_authenticated_actor = os.environ.get(config.run_mutation_actor_env)
+    mutation_issues = mutation_configuration_issues(
+        compatibility,
+        ledger_path=config.run_mutation_ledger_path,
+        token=mutation_api_token,
+        actor=mutation_authenticated_actor,
+    )
+    if mutation_issues:
+        detail = " ".join(mutation_issues)
+        if config.run_mutation_required:
+            message = f"Controlled run mutation preflight failed: {detail}"
             raise RuntimeError(message)
-        mutation_authenticated_actor = os.environ.get(config.run_mutation_actor_env)
-        if (
-            mutation_authenticated_actor is None
-            or not mutation_authenticated_actor.strip()
-            or len(mutation_authenticated_actor) > 200
-        ):
-            message = (
-                "Controlled run mutation requires environment variable "
-                f"{config.run_mutation_actor_env!r} to contain a non-empty operator identity "
-                "of at most 200 characters."
+        log.warning(
+            "Controlled run mutation endpoints are disabled: %s "
+            "Protocol Engine run ownership protection remains active.",
+            detail,
+        )
+        mutation_api_token = None
+        mutation_authenticated_actor = None
+    else:
+        mutation_authenticated_actor = typing.cast(str, mutation_authenticated_actor).strip()
+        try:
+            # Verify durable state before acquiring OT3API or mutating the
+            # global robot-server app. A corrupt ledger must never be ignored
+            # when mutation is required.
+            mutation_ledger = MutationLedger(typing.cast(str, config.run_mutation_ledger_path))
+        except (MutationLedgerError, OSError) as exc:
+            if config.run_mutation_required:
+                message = f"Controlled run mutation ledger preflight failed: {exc}"
+                raise RuntimeError(message) from exc
+            log.error(
+                "Controlled run mutation endpoints are disabled because the durable ledger failed verification: %s",
+                exc,
             )
-            raise RuntimeError(message)
-        mutation_authenticated_actor = mutation_authenticated_actor.strip()
-        opentrons_version = version("opentrons")
-        if opentrons_version not in _SUPPORTED_MUTATION_OPENTRONS_VERSIONS:
-            supported = ", ".join(sorted(_SUPPORTED_MUTATION_OPENTRONS_VERSIONS))
-            message = (
-                f"Controlled run mutation is not validated for Opentrons {opentrons_version}; "
-                f"supported runtime version: {supported}."
-            )
-            raise RuntimeError(message)
-        # Verify durable state before acquiring OT3API or mutating the global
-        # robot-server app. A corrupt ledger must fail without leaking either.
-        mutation_ledger = MutationLedger(config.run_mutation_ledger_path)
+            mutation_api_token = None
+            mutation_authenticated_actor = None
 
     if config.use_simulator:
         log.info("Building shared OT3API (simulator)")
@@ -617,10 +634,7 @@ async def _create_app_with_robot_server(
         robot_server_app.openapi_schema = None
         log.info("Controlled run mutation enabled with durable ledger %s", mutation_ledger.path)
     else:
-        log.warning(
-            "Controlled run mutation endpoints are disabled because run_mutation_ledger_path is not configured; "
-            "Protocol Engine run ownership protection remains active."
-        )
+        log.info("Controlled run mutation routes were not registered.")
 
     guarded_robot_server_app = RunMutationHttpGuard(
         robot_server_app,

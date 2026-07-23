@@ -1,27 +1,14 @@
 #!/bin/sh
-# Deploy the SiLA2 Flex connector to the robot.
-#
-# Usage:
-#   ./deploy.sh [hostname] [wheel_dir]
-#
-# Arguments:
-#   hostname   Flex hostname or IP (default: opentrons-flex)
-#   wheel_dir  Local directory containing built aarch64 wheels (default: dist_arm)
-#
-# The Flex host is aarch64 (ARM64) running a modern glibc, so unlike the OT-2
-# (armv7l / glibc 2.25) the standard manylinux_2_17_aarch64 wheels from PyPI work
-# directly — no from-source grpcio/OpenSSL build is required. The wheel directory
-# must contain the output of the "Build Flex aarch64 Wheels" CI workflow (download
-# the flex-arm-wheels artifact and unzip it into dist_arm/).
-
-set -e
+# Verify, install, preflight, and atomically activate a Flex connector release.
+set -eu
 
 HOST="${1:-opentrons-flex}"
 WHEEL_DIR="${2:-dist_arm}"
-VENV_PATH="/var/sila2_flex"
-REMOTE_DIR="/root/dist_arm"
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+STATE_DIR="/var/lib/unitelabs-opentrons-flex"
+ACTIVE_PATH="/var/sila2_flex"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+ARTIFACT_DIR="$SCRIPT_DIR/$WHEEL_DIR"
+MANIFEST_TOOL="$SCRIPT_DIR/scripts/artifact_manifest.py"
 
 if [ -f "$SCRIPT_DIR/config/flex_config.local.json" ]; then
     CONFIG_SRC="$SCRIPT_DIR/config/flex_config.local.json"
@@ -30,32 +17,180 @@ else
     CONFIG_SRC="$SCRIPT_DIR/config/flex_config.json"
 fi
 
-if [ ! -d "$SCRIPT_DIR/$WHEEL_DIR" ]; then
-    echo "ERROR: Wheel directory '$WHEEL_DIR' not found."
-    echo "Download the flex-arm-wheels artifact from CI and unzip into dist_arm/."
+if [ ! -d "$ARTIFACT_DIR" ]; then
+    echo "ERROR: wheel directory '$ARTIFACT_DIR' not found." >&2
+    echo "Download and extract the flex-arm-wheels artifact first." >&2
     exit 1
 fi
 
-echo "=== Flex SiLA2 Connector Deploy ==="
-echo "Host:      $HOST"
-echo "Wheels:    $WHEEL_DIR"
-echo "Venv:      $VENV_PATH"
+python3 "$MANIFEST_TOOL" verify "$ARTIFACT_DIR" \
+    --connector-version 0.9.1 \
+    --opentrons-version 9.0.0 \
+    --robot-server-version 9.0.0 \
+    --opentrons-source-commit 44b37a2f91520bf2e7245c70bf799d46c8c2d9a5 \
+    --python-version 3.10 \
+    --architecture aarch64
+RELEASE_ID="$(python3 "$MANIFEST_TOOL" field "$ARTIFACT_DIR" releaseId)"
+CONFIG_SHA="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$CONFIG_SRC")"
+CONFIG_ID="$(printf '%s' "$CONFIG_SHA" | cut -c1-12)"
+DEPLOYMENT_ID="$RELEASE_ID-cfg$CONFIG_ID"
 
-echo ""
-echo "Copying wheels and scripts to $HOST:$REMOTE_DIR ..."
-ssh "root@$HOST" "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR"
-scp -O "$SCRIPT_DIR/scripts/install.sh" "$SCRIPT_DIR/$WHEEL_DIR"/*.whl "root@$HOST:$REMOTE_DIR/"
-scp -O "$CONFIG_SRC" "root@$HOST:$REMOTE_DIR/flex_config.json"
+case "$DEPLOYMENT_ID" in
+    *[!A-Za-z0-9._-]*|"")
+        echo "ERROR: unsafe deployment identifier: $DEPLOYMENT_ID" >&2
+        exit 1
+        ;;
+esac
 
-echo ""
-echo "Installing on robot ..."
-ssh "root@$HOST" "rm -rf $VENV_PATH /var/user-packages/var/sila2_flex && sh $REMOTE_DIR/install.sh $VENV_PATH"
+UPLOAD_DIR="/root/unitelabs-flex-upload-$DEPLOYMENT_ID-$$"
+RELEASE_PATH="$STATE_DIR/releases/$DEPLOYMENT_ID"
 
-echo ""
-echo "Verifying ..."
-ssh "root@$HOST" "$VENV_PATH/bin/python -c 'import grpc, unitelabs.opentrons_flex; print(\"OK grpc=\"+grpc.__version__)'"
+echo "=== Flex connector staged deployment ==="
+echo "Host:       $HOST"
+echo "Artifact:   $RELEASE_ID"
+echo "Config:     $CONFIG_ID"
+echo "Install:    $RELEASE_PATH"
+echo "Active:     $ACTIVE_PATH"
 
-echo ""
-echo "=== Deploy complete ==="
-echo "Install and start the service with:"
-echo "  sh scripts/install_connector_service.sh $HOST"
+ssh "root@$HOST" "test ! -e '$UPLOAD_DIR' && mkdir -p '$UPLOAD_DIR'"
+scp -O \
+    "$MANIFEST_TOOL" \
+    "$SCRIPT_DIR/scripts/install.sh" \
+    "$ARTIFACT_DIR"/*.whl \
+    "$ARTIFACT_DIR/runtime-manifest.json" \
+    "$ARTIFACT_DIR/SHA256SUMS" \
+    "root@$HOST:$UPLOAD_DIR/"
+scp -O "$CONFIG_SRC" "root@$HOST:$UPLOAD_DIR/flex_config.json"
+
+ssh "root@$HOST" sh -s -- "$UPLOAD_DIR" "$RELEASE_PATH" "$ACTIVE_PATH" "$STATE_DIR" "$CONFIG_SHA" <<'REMOTE'
+set -eu
+UPLOAD_DIR="$1"
+RELEASE_PATH="$2"
+ACTIVE_PATH="$3"
+STATE_DIR="$4"
+EXPECTED_CONFIG_SHA="$5"
+
+python3 "$UPLOAD_DIR/artifact_manifest.py" verify "$UPLOAD_DIR" \
+    --connector-version 0.9.1 \
+    --opentrons-version 9.0.0 \
+    --robot-server-version 9.0.0 \
+    --opentrons-source-commit 44b37a2f91520bf2e7245c70bf799d46c8c2d9a5 \
+    --python-version 3.10 \
+    --architecture aarch64 \
+    --check-host-python \
+    --check-host-architecture
+UPLOADED_CONFIG_SHA="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$UPLOAD_DIR/flex_config.json")"
+if [ "$UPLOADED_CONFIG_SHA" != "$EXPECTED_CONFIG_SHA" ]; then
+    echo "ERROR: uploaded Flex configuration checksum mismatch." >&2
+    exit 1
+fi
+
+if systemctl is-active --quiet sila2-connector 2>/dev/null; then
+    echo "ERROR: sila2-connector is running. Switch to opentrons mode before deployment." >&2
+    exit 1
+fi
+
+mount -o remount,rw /
+mkdir -p "$STATE_DIR/releases"
+LOCK_DIR="$STATE_DIR/operation.lock"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    echo "ERROR: another Flex deployment or mode transition is in progress ($LOCK_DIR)." >&2
+    exit 1
+fi
+CLEANUP_INCOMPLETE=no
+COMPLETE_MARKER="$RELEASE_PATH/.unitelabs-release-complete"
+cleanup_deploy() {
+    if [ "$CLEANUP_INCOMPLETE" = yes ] &&
+        [ -d "$RELEASE_PATH" ] &&
+        [ ! -f "$COMPLETE_MARKER" ]; then
+        rm -rf "$RELEASE_PATH"
+    fi
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+}
+trap cleanup_deploy 0 HUP INT TERM
+
+if [ ! -f "$STATE_DIR/run-mutation.env" ] && [ -f "$ACTIVE_PATH/run-mutation.env" ]; then
+    cp "$ACTIVE_PATH/run-mutation.env" "$STATE_DIR/run-mutation.env"
+    chmod 600 "$STATE_DIR/run-mutation.env"
+    echo "Migrated the existing mutation credential outside the release directory."
+fi
+if [ -f "$STATE_DIR/run-mutation.env" ]; then
+    set -a
+    . "$STATE_DIR/run-mutation.env"
+    set +a
+fi
+
+if [ -e "$RELEASE_PATH" ] && {
+    [ ! -f "$COMPLETE_MARKER" ] ||
+    [ "$(cat "$COMPLETE_MARKER")" != "$EXPECTED_CONFIG_SHA" ];
+}; then
+    if [ -L "$ACTIVE_PATH" ] && [ "$(readlink -f "$ACTIVE_PATH")" = "$RELEASE_PATH" ]; then
+        echo "ERROR: active release has no valid completion marker; roll back before repairing it." >&2
+        exit 1
+    fi
+    echo "Removing an incomplete, never-activated release at $RELEASE_PATH."
+    rm -rf "$RELEASE_PATH"
+fi
+
+if [ ! -e "$RELEASE_PATH" ]; then
+    CLEANUP_INCOMPLETE=yes
+    sh "$UPLOAD_DIR/install.sh" "$RELEASE_PATH"
+    "$RELEASE_PATH/bin/python" -m unitelabs.opentrons_flex.runtime_preflight \
+        --config "$RELEASE_PATH/config.json" \
+        --require-robot-server \
+        --require-mutation \
+        --require-live-hardware
+    printf '%s\n' "$EXPECTED_CONFIG_SHA" > "$COMPLETE_MARKER"
+    CLEANUP_INCOMPLETE=no
+else
+    echo "Release already installed and complete; reusing $RELEASE_PATH"
+    INSTALLED_CONFIG_SHA="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$RELEASE_PATH/config.json")"
+    if [ "$INSTALLED_CONFIG_SHA" != "$EXPECTED_CONFIG_SHA" ]; then
+        echo "ERROR: immutable release configuration checksum mismatch." >&2
+        exit 1
+    fi
+    if ! cmp -s "$RELEASE_PATH/runtime-manifest.json" "$UPLOAD_DIR/runtime-manifest.json"; then
+        echo "ERROR: immutable release manifest differs from the verified artifact." >&2
+        exit 1
+    fi
+fi
+
+# This imports the exact HTTP and mutation symbols without touching the CAN bus.
+"$RELEASE_PATH/bin/python" -m unitelabs.opentrons_flex.runtime_preflight \
+    --config "$RELEASE_PATH/config.json" \
+    --require-robot-server \
+    --require-mutation \
+    --require-live-hardware
+
+if [ -L "$ACTIVE_PATH" ]; then
+    PREVIOUS_TARGET="$(readlink -f "$ACTIVE_PATH")"
+    if [ "$PREVIOUS_TARGET" = "$RELEASE_PATH" ]; then
+        echo "Release is already active."
+    else
+        printf 'release:%s\n' "$PREVIOUS_TARGET" > "$STATE_DIR/previous-release"
+        ln -sfn "$RELEASE_PATH" "$ACTIVE_PATH"
+    fi
+elif [ -d "$ACTIVE_PATH" ]; then
+    LEGACY_PATH="$STATE_DIR/legacy-pre-versioned-release"
+    if [ -e "$LEGACY_PATH" ]; then
+        echo "ERROR: cannot preserve legacy release because $LEGACY_PATH already exists." >&2
+        exit 1
+    fi
+    mv "$ACTIVE_PATH" "$LEGACY_PATH"
+    printf 'legacy:%s\n' "$LEGACY_PATH" > "$STATE_DIR/previous-release"
+    ln -s "$RELEASE_PATH" "$ACTIVE_PATH"
+elif [ -e "$ACTIVE_PATH" ]; then
+    echo "ERROR: active path exists but is neither a directory nor symlink: $ACTIVE_PATH" >&2
+    exit 1
+else
+    ln -s "$RELEASE_PATH" "$ACTIVE_PATH"
+fi
+
+echo "Activated release: $(readlink -f "$ACTIVE_PATH")"
+echo "Stock robot-server remains in control until the connector service is explicitly installed/switched."
+rmdir "$LOCK_DIR"
+trap - 0 HUP INT TERM
+REMOTE
+
+echo "=== Deploy and no-hardware runtime preflight complete ==="
+echo "Next: sh scripts/install_connector_service.sh $HOST"

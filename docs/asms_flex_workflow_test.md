@@ -104,13 +104,14 @@ Flex, provision a long random token locally on the robot:
 ```sh
 ssh root@<robot-ip> '
   umask 077
+  mkdir -p /var/lib/unitelabs-opentrons-flex
   token=$(od -An -N32 -tx1 /dev/urandom | tr -d " \n")
   actor=operator-name
   {
     printf "UNITELABS_RUN_MUTATION_TOKEN=%s\n" "$token"
     printf "UNITELABS_RUN_MUTATION_ACTOR=%s\n" "$actor"
-  } > /var/sila2_flex/run-mutation.env
-  chmod 600 /var/sila2_flex/run-mutation.env
+  } > /var/lib/unitelabs-opentrons-flex/run-mutation.env
+  chmod 600 /var/lib/unitelabs-opentrons-flex/run-mutation.env
   printf "Copy this token into the no-echo client prompt: %s\n" "$token"
 '
 ```
@@ -120,7 +121,8 @@ process arguments. It must contain at least 32 characters. Replace
 `operator-name` before running the command; every mutation or hold-release
 request must use that exact `actor`. The connector records the environment-bound
 identity, not an untrusted self-declared value. The service also fails closed
-unless the installed Opentrons runtime is the validated 8.8.1 adapter target.
+unless the installed Python 3.10, Opentrons, and embedded robot-server runtime is
+the validated 9.0.0 target.
 Its durable ledger is
 `/var/lib/unitelabs-opentrons-flex/run-mutations.jsonl`.
 
@@ -244,15 +246,15 @@ uv run --extra test python scripts/run_asms_hardware.py \
 
 Add `--scientific` only for the final real-sample run; it restores the full
 programmed delays. After the first one-column mechanics pass, the same runner can
-exercise the complete controlled-insertion path. Export the robot-provisioned
-token without placing it on the command line, then provide the exact actor bound
-to that token:
+exercise the complete controlled-insertion path. Keep the SSH tunnel shown above
+open, export the robot-provisioned token without placing it on the command line,
+then provide the exact actor bound to that token:
 
 ```sh
 read -r -s UNITELABS_RUN_MUTATION_TOKEN
 export UNITELABS_RUN_MUTATION_TOKEN
 uv run --extra test python scripts/run_asms_hardware.py \
-  --host <robot-ip> --columns 1 --execute \
+  --host 127.0.0.1 --port 31951 --columns 1 --execute \
   --checkpoint-transfer --mutation-actor <operator-name> \
   --confirm-deck-ready ASMS-DECK-READY
 ```
@@ -266,9 +268,13 @@ already consumes every available fresh tip.
 1. **Verify the exact bundle offline.** Run the default exact preflight against
    the checked-in protocol and `protocols/asms/labware/`. Continue only when it
    prints `READY`; record the pinned definition hashes.
-2. **Prepare rollback before deployment.** Keep
-   `scripts/switch_mode.sh <robot-ip> opentrons` ready. Confirm the connector
-   deployment uses `use_simulator=false` and `with_robot_server=true`.
+2. **Prepare rollback before deployment.** Provision
+   `/var/lib/unitelabs-opentrons-flex/run-mutation.env`, run `deploy.sh`, and
+   require its artifact and no-hardware runtime preflight to pass. Keep both
+   `scripts/switch_mode.sh <robot-ip> opentrons` and
+   `scripts/rollback_connector.sh <robot-ip>` ready. The checked-in live
+   configuration requires `use_simulator=false`, `with_robot_server=true`, and
+   `run_mutation_required=true`.
 3. **Start read-only.** Verify connector logs, `GET /health`, `GET /pipettes`,
    `GET /modules`, and SiLA `MachineStatus`. Confirm the right pipette model and
    Temperature Module identity; release E-stop, close the door, and clear errors.
@@ -306,6 +312,8 @@ already consumes every available fresh tip.
 ## Offline commands
 
 ```sh
+# Bounded no-motion robot readiness (after connector mode starts)
+uv run python scripts/preflight_flex.py <robot-ip>
 # Exact gate using the checked-in ASMS labware bundle (must print READY)
 uv run python scripts/validate_asms_protocol.py
 

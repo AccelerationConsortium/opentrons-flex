@@ -28,6 +28,7 @@ def test_smoketest_config_never_targets_real_hardware() -> None:
     assert cfg["sila_server"]["hostname"] in {"127.0.0.1", "localhost"}
     assert cfg["cloud_server_endpoint"] is None
     assert cfg["discovery"] is None
+    assert cfg["run_mutation_required"] is True
 
 
 def test_real_flex_config_stays_explicitly_live() -> None:
@@ -43,3 +44,4 @@ def test_real_flex_config_stays_explicitly_live() -> None:
     assert cfg["simulated_gripper"] is False
     assert cfg["with_robot_server"] is True
     assert cfg["sila_server"]["hostname"] == "0.0.0.0"
+    assert cfg["run_mutation_required"] is True

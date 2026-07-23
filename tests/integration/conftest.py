@@ -424,6 +424,7 @@ def simulator_stack(
             cloud_server_endpoint=None,
             discovery=None,
             run_mutation_ledger_path=str(mutation_ledger_path),
+            run_mutation_required=True,
         )
         previous_token = os.environ.get(config.run_mutation_token_env)
         previous_actor = os.environ.get(config.run_mutation_actor_env)

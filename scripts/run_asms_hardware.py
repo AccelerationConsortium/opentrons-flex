@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import ipaddress
 import json
 import os
 import sys
@@ -94,6 +95,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--analysis-timeout", type=float, default=120.0)
     parser.add_argument("--run-timeout", type=float, default=3600.0)
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=10.0,
+        help="Maximum seconds for any individual HTTP request, including deck inventory.",
+    )
     return parser
 
 
@@ -108,6 +115,15 @@ def _runtime_parameters(
         "number_of_columns": columns,
         "enable_mutation_checkpoints": checkpoint_transfer,
     }
+
+
+def _is_literal_loopback(host: str) -> bool:
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
 
 
 def _exact_protocol_files() -> list[tuple[str, tuple[str, bytes, str]]]:
@@ -154,6 +170,20 @@ def _hardware_inventory_errors(pipettes: dict, modules: dict) -> list[str]:
         for module in module_items
     ):
         errors.append("Temperature Module GEN2 is not connected")
+    return errors
+
+
+def _mutation_route_errors(openapi: dict) -> list[str]:
+    paths = openapi.get("paths")
+    mutation_path = "/unitelabs/runs/{run_id}/mutations"
+    snapshot_path = "/unitelabs/runs/{run_id}/mutation-snapshot"
+    if not isinstance(paths, dict):
+        return ["OpenAPI response has no path inventory"]
+    errors = []
+    if mutation_path not in paths:
+        errors.append(f"missing {mutation_path}")
+    if snapshot_path not in paths:
+        errors.append(f"missing {snapshot_path}")
     return errors
 
 
@@ -388,8 +418,25 @@ def _verify_two_column_evidence(total: int, counts: Counter) -> None:
         raise RuntimeError("Two-column command evidence mismatch: " + "; ".join(errors))
 
 
+def _stop_run_best_effort(client: httpx.Client, run_id: str, *, reason: str) -> None:
+    print(f"{reason}; stopping run {run_id}...", file=sys.stderr)
+    try:
+        stop = client.post(
+            f"/runs/{run_id}/actions",
+            json={"data": {"actionType": "stop"}},
+        )
+    except Exception as exc:
+        print(f"WARNING: stop request failed: {exc}", file=sys.stderr)
+        return
+    if stop.status_code != 201:
+        print(f"WARNING: stop returned HTTP {stop.status_code}: {stop.text}", file=sys.stderr)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.request_timeout <= 0:
+        print("BLOCKED: --request-timeout must be greater than zero.", file=sys.stderr)
+        return 2
     if args.execute and args.confirm_deck_ready != _EXECUTION_CONFIRMATION:
         print(
             f"BLOCKED: execution requires --confirm-deck-ready {_EXECUTION_CONFIRMATION}",
@@ -404,6 +451,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     if args.execute and args.checkpoint_transfer and not args.mutation_actor:
         print("BLOCKED: --mutation-actor is required with --checkpoint-transfer.", file=sys.stderr)
+        return 2
+    if args.execute and args.checkpoint_transfer and not _is_literal_loopback(args.host):
+        print(
+            "BLOCKED: authenticated checkpoint mode requires --host 127.0.0.1 or localhost "
+            "through the documented SSH tunnel; mutation tokens must not cross plaintext robot HTTP.",
+            file=sys.stderr,
+        )
         return 2
 
     mutation_token = None
@@ -426,12 +480,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     with httpx.Client(
         base_url=base_url,
         headers={_HTTP_API_VERSION_HEADER: "*"},
-        timeout=30.0,
+        timeout=httpx.Timeout(args.request_timeout, connect=min(args.request_timeout, 5.0)),
     ) as client:
         health = client.get("/health")
         if not health.is_success:
             raise RuntimeError(f"Connector health check failed with HTTP {health.status_code}: {health.text}")
         print("Connector health: PASS")
+
+        if args.checkpoint_transfer:
+            openapi_response = client.get("/openapi.json")
+            if not openapi_response.is_success:
+                raise RuntimeError(
+                    "Controlled mutation readiness failed before any protocol upload: "
+                    f"HTTP {openapi_response.status_code}: {openapi_response.text}"
+                )
+            route_errors = _mutation_route_errors(openapi_response.json())
+            if route_errors:
+                raise RuntimeError(
+                    "Controlled mutation is unavailable before any protocol upload: " + "; ".join(route_errors)
+                )
+            print("Controlled mutation routes: PASS")
 
         pipettes_response = client.get("/pipettes")
         if not pipettes_response.is_success:
@@ -476,14 +544,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         run = _response_data(response, action="run creation")
         run_id = run["id"]
         print(f"Created run {run_id}")
-        response = client.post(
-            f"/runs/{run_id}/actions",
-            json={"data": {"actionType": "play"}},
-        )
-        if response.status_code != 201:
-            raise RuntimeError(f"Run start failed with HTTP {response.status_code}: {response.text}")
-
+        run_terminal = run.get("status") in _TERMINAL_RUN_STATES
         try:
+            response = client.post(
+                f"/runs/{run_id}/actions",
+                json={"data": {"actionType": "play"}},
+            )
+            if response.status_code != 201:
+                raise RuntimeError(f"Run start failed with HTTP {response.status_code}: {response.text}")
             if args.checkpoint_transfer:
                 if mutation_token is None:
                     raise RuntimeError("Mutation token was not provisioned before starting the run")
@@ -499,6 +567,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     checkpoint_controller,
                     timeout=args.run_timeout,
                 )
+                run_terminal = run.get("status") in _TERMINAL_RUN_STATES
                 if len(checkpoint_controller.handled_checkpoint_ids) != 7:
                     raise RuntimeError(
                         "Checkpoint workflow did not authenticate all 7 resumes: "
@@ -508,15 +577,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                     raise RuntimeError("Checkpoint workflow finished without the required inserted transfer")
             else:
                 run = _wait_for_run(client, run_id, timeout=args.run_timeout)
+                run_terminal = run.get("status") in _TERMINAL_RUN_STATES
         except KeyboardInterrupt:
-            print(f"\nInterrupt received; stopping run {run_id}...")
-            stop = client.post(
-                f"/runs/{run_id}/actions",
-                json={"data": {"actionType": "stop"}},
-            )
-            if stop.status_code != 201:
-                print(f"WARNING: stop returned HTTP {stop.status_code}: {stop.text}", file=sys.stderr)
+            if not run_terminal:
+                _stop_run_best_effort(client, run_id, reason="\nInterrupt received")
             return 130
+        except Exception:
+            if not run_terminal:
+                _stop_run_best_effort(client, run_id, reason="Run ownership aborted by an error")
+            raise
 
         total, counts = _read_command_counts(client, run_id)
         print(

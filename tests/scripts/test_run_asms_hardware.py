@@ -137,6 +137,21 @@ class _CheckpointClient:
         raise AssertionError(f"Unexpected POST {path}")
 
 
+class _FailingRunClient(_Client):
+    def post(
+        self,
+        path: str,
+        *,
+        files: list | None = None,
+        data: dict | None = None,
+        json: dict | None = None,
+    ) -> _Response:
+        if path == "/runs/run-1/actions" and json == {"data": {"actionType": "stop"}}:
+            self.posts.append("stop")
+            return _Response(201, {"data": {"id": "stop-action"}})
+        return super().post(path, files=files, data=data, json=json)
+
+
 def _ready_deck() -> dict:
     return {
         "data": {
@@ -225,6 +240,19 @@ def test_hardware_inventory_requires_right_flex_pipette_and_temperature_module()
     ]
 
 
+def test_checkpoint_preflight_requires_both_controlled_mutation_routes() -> None:
+    openapi = {
+        "paths": {
+            "/unitelabs/runs/{run_id}/mutations": {},
+            "/unitelabs/runs/{run_id}/mutation-snapshot": {},
+        }
+    }
+    assert run_asms_hardware._mutation_route_errors(openapi) == []
+
+    openapi["paths"].pop("/unitelabs/runs/{run_id}/mutation-snapshot")
+    assert run_asms_hardware._mutation_route_errors(openapi) == ["missing /unitelabs/runs/{run_id}/mutation-snapshot"]
+
+
 def test_checkpoint_transfer_uses_snapshot_ids_and_eight_channel_resources() -> None:
     snapshot = {
         "pipettes": [{"id": "pipette-1", "mount": "right", "name": "flex_8channel_1000"}],
@@ -297,6 +325,15 @@ def test_execute_requires_explicit_deck_confirmation(monkeypatch, capsys) -> Non
     assert "ASMS-DECK-READY" in capsys.readouterr().err
 
 
+def test_request_timeout_must_be_positive_before_network(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(run_asms_hardware, "_validate_exact_bundle", lambda: None)
+
+    result = run_asms_hardware.main(["--request-timeout", "0"])
+
+    assert result == 2
+    assert "greater than zero" in capsys.readouterr().err
+
+
 def test_checkpoint_transfer_rejects_two_column_run_before_network(monkeypatch, capsys) -> None:
     monkeypatch.setattr(run_asms_hardware, "_validate_exact_bundle", lambda: None)
 
@@ -310,6 +347,24 @@ def test_checkpoint_transfer_rejects_two_column_run_before_network(monkeypatch, 
 
     assert result == 2
     assert "no spare tips" in capsys.readouterr().err
+
+
+def test_checkpoint_transfer_requires_encrypted_loopback_tunnel(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(run_asms_hardware, "_validate_exact_bundle", lambda: None)
+
+    result = run_asms_hardware.main(
+        [
+            "--execute",
+            "--checkpoint-transfer",
+            "--mutation-actor",
+            "operator-1",
+            "--confirm-deck-ready",
+            "ASMS-DECK-READY",
+        ]
+    )
+
+    assert result == 2
+    assert "SSH tunnel" in capsys.readouterr().err
 
 
 def test_default_mode_analyzes_without_creating_or_playing_a_run(monkeypatch, capsys) -> None:
@@ -342,3 +397,25 @@ def test_confirmed_two_column_execution_requires_pinned_command_evidence(monkeyp
     assert result == 0
     assert client.posts == ["/protocols", "/runs", "/runs/run-1/actions"]
     assert "AS-MS hardware workflow PASS" in capsys.readouterr().out
+
+
+def test_execution_error_stops_non_terminal_owned_run(monkeypatch) -> None:
+    client = _FailingRunClient()
+    monkeypatch.setattr(run_asms_hardware, "_validate_exact_bundle", lambda: None)
+    monkeypatch.setattr(run_asms_hardware.httpx, "Client", lambda *args, **kwargs: client)
+    monkeypatch.setattr(
+        run_asms_hardware,
+        "_wait_for_run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("poll timed out")),
+    )
+
+    with pytest.raises(TimeoutError, match="poll timed out"):
+        run_asms_hardware.main(
+            [
+                "--execute",
+                "--confirm-deck-ready",
+                "ASMS-DECK-READY",
+            ]
+        )
+
+    assert client.posts[-1] == "stop"

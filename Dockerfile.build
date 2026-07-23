@@ -11,27 +11,56 @@
 #       --target export --output type=local,dest=dist_arm .
 #
 # The resulting dist_arm/ feeds deploy.sh.
-FROM --platform=linux/arm64 ghcr.io/astral-sh/uv:python3.10-bookworm AS wheels
+FROM ghcr.io/astral-sh/uv:python3.10-bookworm AS wheels
+
+ARG OPENTRONS_VERSION=9.0.0
+ARG OPENTRONS_COMMIT=44b37a2f91520bf2e7245c70bf799d46c8c2d9a5
+ARG CONNECTOR_VERSION=0.9.1
 
 ENV UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never
 
 # libusb is a runtime dep of opentrons; present here only so resolution matches
 # the device. Wheels are platform artifacts and do not embed system libs.
-RUN apt-get -y update && apt-get -y install --no-install-recommends libusb-1.0-0 && rm -rf /var/lib/apt/lists/*
+RUN apt-get -y update && \
+    apt-get -y install --no-install-recommends git libusb-1.0-0 && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 ADD pyproject.toml uv.lock README.md /build/
 ADD src /build/src
+ADD scripts/artifact_manifest.py /build/scripts/artifact_manifest.py
 
 # Download/build wheels for the project and all runtime deps into /wheels.
-# robot_server (an Opentrons system package) is NOT on PyPI and is intentionally
-# excluded — it is provided by the Flex system site-packages at install time
-# (see scripts/install.sh --system-site-packages).
+# Build the exact tagged robot_server and its four co-versioned Opentrons
+# packages. The public PyPI artifacts do not contain every internal module that
+# the embedded robot-server imports, so deployment must not mix a PyPI API wheel
+# with whatever robot-server happens to be present in the system image.
 RUN uv build --wheel --out-dir /wheels . && \
     uv pip compile pyproject.toml --output-file /tmp/req.txt && \
-    (python -m pip download --no-deps -r /tmp/req.txt --dest /wheels --only-binary :all: || \
-        python -m pip download --no-deps -r /tmp/req.txt --dest /wheels)
+    python -m pip wheel --no-deps -r /tmp/req.txt --wheel-dir /wheels
+
+RUN git clone --depth 1 --branch "v${OPENTRONS_VERSION}" \
+        https://github.com/Opentrons/opentrons.git /opt/opentrons-source && \
+    test "$(git -C /opt/opentrons-source rev-parse HEAD)" = "$OPENTRONS_COMMIT" && \
+    rm -f \
+        /wheels/opentrons-[0-9]*.whl \
+        /wheels/opentrons_shared_data-[0-9]*.whl \
+        /wheels/opentrons_hardware-[0-9]*.whl \
+        /wheels/server_utils-[0-9]*.whl \
+        /wheels/robot_server-[0-9]*.whl && \
+    uv build --wheel --out-dir /wheels /opt/opentrons-source/shared-data && \
+    uv build --wheel --out-dir /wheels /opt/opentrons-source/api && \
+    uv build --wheel --out-dir /wheels /opt/opentrons-source/hardware && \
+    uv build --wheel --out-dir /wheels /opt/opentrons-source/server-utils && \
+    uv build --wheel --out-dir /wheels /opt/opentrons-source/robot-server && \
+    python /build/scripts/artifact_manifest.py build /wheels \
+        --connector-version "$CONNECTOR_VERSION" \
+        --opentrons-version "$OPENTRONS_VERSION" \
+        --robot-server-version "$OPENTRONS_VERSION" \
+        --opentrons-source-commit "$OPENTRONS_COMMIT" \
+        --python-version "3.10" \
+        --architecture "aarch64"
 
 FROM scratch AS export
 COPY --from=wheels /wheels /

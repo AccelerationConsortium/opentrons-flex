@@ -1,58 +1,93 @@
 #!/bin/sh
-# Switch the Flex between two operating modes.
-#
-# Usage:
-#   sh scripts/switch_mode.sh <host> <connector|opentrons>
-#
-# Modes
-# -----
-#   connector  (recommended)
-#       Runs the SiLA2 connector, which owns the hardware exclusively.
-#       The connector starts the opentrons HTTP robot-server IN-PROCESS,
-#       sharing one HardwareControlAPI (OT3API) so there is no CAN-bus conflict.
-#       Both interfaces are available simultaneously after switching:
-#         - SiLA2 gRPC:             port 50051
-#         - opentrons HTTP API:     port 31950  (nginx -> /run/aiohttp.sock)
-#       All standard opentrons HTTP endpoints (/health, /pipettes, /runs, etc.)
-#       work exactly as they do under the original robot-server, because our
-#       connector injects the shared hardware into the robot-server app state
-#       before uvicorn starts.  The opentrons-robot-server systemd service is
-#       intentionally disabled in this mode; the sila2-connector service owns
-#       the hardware.
-#
-#   opentrons
-#       Runs only the original opentrons-robot-server (standalone).
-#       No SiLA2 interface is available.  Use this when you need direct access
-#       via the Opentrons app or other opentrons-native tooling without the
-#       SiLA2 layer.
-#
-# Persistence
-# -----------
-#   The switch enables/disables the relevant systemd units so the selected
-#   mode survives a reboot.  The Flex root filesystem is read-only; this
-#   script remounts it read-write before writing systemd enable/disable
-#   symlinks (the same pattern used by install_connector_service.sh).
-#
-# Hardware ownership
-# ------------------
-#   Both modes need exclusive access to the CAN bus that reaches the Flex
-#   motor-controller boards (gantry, head, pipettes, gripper). The Flex has no
-#   serial Smoothie port; the connector releases the bus when its process exits,
-#   so this script stops the current mode and waits for the next mode's port to
-#   come up rather than polling a serial device.
-
-set -e
+# Safely switch exclusive Flex hardware ownership between connector and stock.
+set -eu
 
 HOST="${1:?Usage: $0 <host> <connector|opentrons>}"
 MODE="${2:?Usage: $0 <host> <connector|opentrons>}"
-
 case "$MODE" in
     connector|opentrons) ;;
-    *) echo "ERROR: mode must be 'connector' or 'opentrons'"; exit 1 ;;
+    *)
+        echo "ERROR: mode must be connector or opentrons" >&2
+        exit 1
+        ;;
 esac
 
-ssh "root@${HOST}" sh << EOF
-set -e
+ssh "root@$HOST" sh -s -- "$MODE" <<'REMOTE'
+set -eu
+MODE="$1"
+STATE_DIR="/var/lib/unitelabs-opentrons-flex"
+ACTIVE_PATH="/var/sila2_flex"
+ENV_FILE="$STATE_DIR/run-mutation.env"
+SERVICE_STATE="$STATE_DIR/stock-service-state"
+HARDWARE_SERVICES="opentrons-robot-server opentrons-status-bar opentrons-gpio-setup opentrons-status-leds"
+
+restore_stock_services() {
+    if [ -f "$SERVICE_STATE" ]; then
+        while IFS='|' read -r svc enabled active; do
+            [ -n "$svc" ] || continue
+            if [ "$enabled" = yes ]; then
+                systemctl enable "$svc" 2>/dev/null || true
+            fi
+            if [ "$active" = yes ] || [ "$svc" = opentrons-robot-server ]; then
+                systemctl start "$svc" 2>/dev/null || true
+            fi
+        done < "$SERVICE_STATE"
+    else
+        systemctl enable opentrons-robot-server 2>/dev/null || true
+        systemctl start opentrons-robot-server
+    fi
+}
+
+stop_stock_services() {
+    for svc in $HARDWARE_SERVICES; do
+        systemctl stop "$svc" 2>/dev/null || true
+    done
+}
+
+wait_for_connector() {
+    i=60
+    while [ "$i" -gt 0 ]; do
+        if python3 -c "import socket; s=socket.create_connection(('127.0.0.1',50051),2); s.close()" 2>/dev/null &&
+            curl --fail --silent --connect-timeout 2 --max-time 5 \
+                http://127.0.0.1:31950/health >/dev/null 2>&1; then
+            curl --fail --silent --connect-timeout 2 --max-time 10 \
+                http://127.0.0.1:31950/deck_configuration >/dev/null &&
+            curl --fail --silent --connect-timeout 2 --max-time 10 \
+                http://127.0.0.1:31950/openapi.json |
+                python3 -c "import json,sys; assert '/unitelabs/runs/{run_id}/mutations' in json.load(sys.stdin).get('paths',{})"
+            return $?
+        fi
+        i=$((i - 1))
+        sleep 2
+    done
+    return 1
+}
+
+wait_for_stock() {
+    i=60
+    while [ "$i" -gt 0 ]; do
+        if systemctl is-active --quiet opentrons-robot-server 2>/dev/null &&
+            curl --fail --silent --connect-timeout 2 --max-time 5 \
+                http://127.0.0.1:31950/health >/dev/null 2>&1; then
+            return 0
+        fi
+        i=$((i - 1))
+        sleep 2
+    done
+    return 1
+}
+
+mount -o remount,rw /
+mkdir -p "$STATE_DIR"
+LOCK_DIR="$STATE_DIR/operation.lock"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    echo "ERROR: another Flex deployment or mode transition is in progress ($LOCK_DIR)." >&2
+    exit 1
+fi
+release_operation_lock() {
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+}
+trap release_operation_lock 0 HUP INT TERM
 
 if systemctl is-active --quiet sila2-connector 2>/dev/null; then
     CURRENT=connector
@@ -61,99 +96,68 @@ elif systemctl is-active --quiet opentrons-robot-server 2>/dev/null; then
 else
     CURRENT=none
 fi
+echo "Current: $CURRENT -> Target: $MODE"
 
-echo "Current: \$CURRENT  ->  Target: $MODE"
+if [ "$MODE" = connector ]; then
+    if [ ! -L "$ACTIVE_PATH" ] || [ ! -x "$ACTIVE_PATH/bin/python" ]; then
+        echo "ERROR: no activated versioned connector; run deploy.sh first." >&2
+        exit 1
+    fi
+    if [ ! -f "$ENV_FILE" ]; then
+        echo "ERROR: missing $ENV_FILE." >&2
+        exit 1
+    fi
+    set -a
+    . "$ENV_FILE"
+    set +a
+    "$ACTIVE_PATH/bin/python" -m unitelabs.opentrons_flex.runtime_preflight \
+        --config "$ACTIVE_PATH/config.json" \
+        --require-robot-server \
+        --require-mutation \
+        --require-live-hardware
 
-if [ "\$CURRENT" = "$MODE" ]; then
-    echo "Already in $MODE mode."
+    if [ "$CURRENT" = connector ] && wait_for_connector; then
+        echo "Connector mode is already healthy."
+        exit 0
+    fi
+
+    systemctl stop sila2-connector 2>/dev/null || true
+    stop_stock_services
+    systemctl reset-failed sila2-connector 2>/dev/null || true
+    if ! systemctl start sila2-connector || ! wait_for_connector; then
+        echo "ERROR: connector mode failed; restoring stock Opentrons mode." >&2
+        systemctl status sila2-connector --no-pager || true
+        journalctl -u sila2-connector -n 100 --no-pager || true
+        systemctl stop sila2-connector 2>/dev/null || true
+        systemctl disable sila2-connector 2>/dev/null || true
+        restore_stock_services
+        if ! wait_for_stock; then
+            echo "ERROR: stock robot-server did not recover within 120 seconds." >&2
+            systemctl status opentrons-robot-server --no-pager || true
+        fi
+        exit 1
+    fi
+    for svc in $HARDWARE_SERVICES; do
+        systemctl disable "$svc" 2>/dev/null || true
+    done
+    systemctl enable sila2-connector
+    echo "Connector mode healthy: gRPC 50051, embedded HTTP 31950."
     exit 0
 fi
 
-# Remount root read-write so systemd enable/disable can write symlinks.
-mount -o remount,rw /
+if [ "$CURRENT" = opentrons ] && wait_for_stock; then
+    echo "Stock Opentrons mode is already healthy."
+    exit 0
+fi
 
-# Stop current mode first — the CAN bus must be free before starting the next.
-echo ""
-echo "Stopping \$CURRENT..."
-case "\$CURRENT" in
-    connector)
-        systemctl stop sila2-connector
-        ;;
-    opentrons)
-        systemctl stop opentrons-robot-server || true
-        ;;
-esac
-
-# The hardware controller releases the CAN bus as its process exits. Give it a
-# moment to tear down before the next owner brings the bus back up.
-sleep 3
-echo "Stopped."
-
-# Enable the target set and disable the outgoing set so the choice survives reboot.
-echo ""
-echo "Persisting mode selection..."
-case "$MODE" in
-    connector)
-        systemctl enable sila2-connector
-        systemctl disable opentrons-robot-server 2>/dev/null || true
-        ;;
-    opentrons)
-        systemctl disable sila2-connector 2>/dev/null || true
-        systemctl enable opentrons-robot-server 2>/dev/null || true
-        ;;
-esac
-
-# Start target mode and verify.
-echo ""
-echo "Starting $MODE..."
-case "$MODE" in
-    connector)
-        systemctl reset-failed sila2-connector 2>/dev/null || true
-        systemctl start sila2-connector
-        echo "Waiting for connector on port 50051 (up to 5 minutes on first start)..."
-        i=300
-        while ! python3 -c "
-import socket
-s = socket.socket()
-s.settimeout(1)
-s.connect(('127.0.0.1', 50051))
-s.close()
-" 2>/dev/null; do
-            i=\$((i - 2))
-            if [ \$i -le 0 ]; then
-                echo "ERROR: timed out waiting for port 50051"
-                systemctl status sila2-connector --no-pager
-                exit 1
-            fi
-            printf '.'
-            sleep 2
-        done
-        echo " up."
-        echo ""
-        echo "SiLA2 gRPC:         port 50051"
-        echo "opentrons HTTP API: port 31950 (via nginx -> /run/aiohttp.sock)"
-        echo ""
-        systemctl status sila2-connector --no-pager
-        ;;
-    opentrons)
-        systemctl start opentrons-robot-server
-        echo "Waiting for opentrons-robot-server to become active..."
-        i=120
-        while ! systemctl is-active --quiet opentrons-robot-server 2>/dev/null; do
-            i=\$((i - 2))
-            if [ \$i -le 0 ]; then
-                echo "ERROR: timed out waiting for opentrons-robot-server"
-                systemctl status opentrons-robot-server --no-pager
-                exit 1
-            fi
-            printf '.'
-            sleep 2
-        done
-        echo " up."
-        echo ""
-        echo "opentrons HTTP API: port 31950"
-        echo ""
-        systemctl status opentrons-robot-server --no-pager
-        ;;
-esac
-EOF
+systemctl stop sila2-connector 2>/dev/null || true
+systemctl disable sila2-connector 2>/dev/null || true
+restore_stock_services
+if ! wait_for_stock; then
+    echo "ERROR: stock robot-server failed its bounded health check." >&2
+    systemctl status opentrons-robot-server --no-pager || true
+    journalctl -u opentrons-robot-server -n 100 --no-pager || true
+    exit 1
+fi
+echo "Stock Opentrons mode healthy: HTTP 31950; SiLA gRPC disabled."
+REMOTE

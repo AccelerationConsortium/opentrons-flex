@@ -52,9 +52,15 @@ except ImportError:
     _rs_app = types.ModuleType("robot_server.app")
     _rs_app.app = MagicMock(name="robot_server_app")
     _rs_app.app.dependency_overrides = {}
+    _rs_runs = types.ModuleType("robot_server.runs")
+    _rs_dependencies = types.ModuleType("robot_server.runs.dependencies")
+    _rs_dependencies.start_light_control_task = MagicMock(name="start_light_control_task")
+    _rs_dependencies.mark_light_control_startup_finished = MagicMock(name="mark_light_control_startup_finished")
     sys.modules["robot_server"] = _rs
     sys.modules["robot_server.hardware"] = _rs_hw
     sys.modules["robot_server.app"] = _rs_app
+    sys.modules["robot_server.runs"] = _rs_runs
+    sys.modules["robot_server.runs.dependencies"] = _rs_dependencies
 
 try:
     import unitelabs.bus.testing.fixtures

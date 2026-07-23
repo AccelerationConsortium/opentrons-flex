@@ -12,6 +12,7 @@ Boundaries:
 
 import asyncio
 import contextlib
+import dataclasses
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -138,6 +139,26 @@ async def test_hardware_built_via_ot3api():
         mock_build.assert_awaited_once_with()
         with contextlib.suppress(StopAsyncIteration):
             await gen.__anext__()
+
+
+@pytest.mark.asyncio
+async def test_required_mutation_configuration_fails_before_hardware(monkeypatch, tmp_path):
+    """Full-workflow mode cannot silently start without its credential."""
+    config = dataclasses.replace(
+        _CONFIG,
+        run_mutation_ledger_path=str(tmp_path / "mutations.jsonl"),
+        run_mutation_required=True,
+    )
+    monkeypatch.delenv(config.run_mutation_token_env, raising=False)
+    monkeypatch.delenv(config.run_mutation_actor_env, raising=False)
+    mock_build = AsyncMock()
+
+    with patch(_OT3API_BUILD, mock_build):
+        gen = create_app(config)
+        with pytest.raises(RuntimeError, match="Controlled run mutation preflight failed"):
+            await gen.__anext__()
+
+    mock_build.assert_not_awaited()
 
 
 # ── app.state pre-population ──────────────────────────────────────────────────

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Version 0.9.1 aligns the deployable runtime with Flex Opentrons 9.0.0 on
+  Python 3.10, packages the co-versioned private robot-server stack, verifies a
+  checksummed ARM artifact manifest built from an immutable upstream commit, and
+  rejects cross-release imports before any hardware initialization. Deployments
+  now use versioned immutable releases with completion markers, bounded
+  no-motion/live health checks, automatic stock robot-server recovery, and
+  explicit release rollback. The multipart upload parser is upgraded to the
+  patched 0.0.18 release, and authenticated mutation clients are restricted to
+  an encrypted loopback tunnel.
 - Added a corrected, parameterized AS-MS wash/elution protocol candidate, pinned exact
   Azenta and Thermo KingFisher custom-labware definitions, exact-vs-shadow offline
   preflight, full exact-bundle Protocol Engine execution coverage, and a staged real-Flex
@@ -19,9 +28,9 @@
   restricted to token-authenticated, audited, non-actuating built-in-resource commands
   and serialized with play; protocol-backed runs and custom definitions fail closed.
   Stop remains available during state-provider failure, command audit is written in
-  bounded batches, and the ARM artifact is pinned to the validated Python 3.10/Opentrons
-  8.8.1 runtime. Python 3.11+ is intentionally outside the supported matrix because
-  robot-server 8.8.1 does not import reliably on current Python 3.11 patch releases.
+  bounded batches, and the ARM artifact is pinned to the validated Python
+  3.10/Opentrons 9.0.0 runtime. Python 3.11+ remains intentionally outside the
+  supported Flex deployment matrix.
 
 All notable changes to this project will be documented in this file.
 
