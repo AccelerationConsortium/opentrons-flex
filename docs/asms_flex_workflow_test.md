@@ -215,6 +215,38 @@ have the same token and audit requirement while the run is `awaiting-recovery`.
 
 ## Fastest safe real-Flex sequence
 
+From macOS or Linux, `scripts/run_asms_hardware.py` provides the shortest
+operator path through exact offline preflight, live connector health, deck
+fixture validation, upload, analysis, execution, and command-count evidence.
+Its default is analysis-only and cannot move hardware:
+
+```sh
+uv run --extra test python scripts/run_asms_hardware.py \
+  --host <robot-ip> --columns 1
+```
+
+After the empty-plate gripper qualification and the physical deck checklist
+below are complete, opt in to the shortened one-column mechanics run:
+
+```sh
+uv run --extra test python scripts/run_asms_hardware.py \
+  --host <robot-ip> --columns 1 --execute \
+  --confirm-deck-ready ASMS-DECK-READY
+```
+
+Replace all test liquids and both complete tip racks before the two-column run:
+
+```sh
+uv run --extra test python scripts/run_asms_hardware.py \
+  --host <robot-ip> --columns 2 --execute \
+  --confirm-deck-ready ASMS-DECK-READY
+```
+
+Add `--scientific` only for the final real-sample run; it restores the full
+programmed delays. The runner intentionally keeps mutation checkpoints disabled.
+First prove the physical workflow, then use the separately authenticated
+controlled-mutation procedure above.
+
 1. **Verify the exact bundle offline.** Run the default exact preflight against
    the checked-in protocol and `protocols/asms/labware/`. Continue only when it
    prints `READY`; record the pinned definition hashes.
