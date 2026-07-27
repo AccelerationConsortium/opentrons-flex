@@ -8,6 +8,7 @@ module call/property and that disconnect() is a no-op (the API owns the tty).
 """
 
 import asyncio
+from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
@@ -22,6 +23,9 @@ from unitelabs.opentrons_flex.io import (
     FlexStackerLedColor,
     FlexStackerLedPattern,
     HeaterShakerController,
+    InvalidHeaterShakerTemperatureError,
+    InvalidThermocyclerProfileError,
+    ModuleOperationError,
     TemperatureModuleController,
     ThermocyclerController,
 )
@@ -231,6 +235,53 @@ async def test_module_action_waits_for_shared_hardware_lock():
     assert ("close_labware_latch", (), {}) in mod.calls
 
 
+@pytest.mark.asyncio
+async def test_heater_shaker_wait_releases_shared_lock_and_tracks_target() -> None:
+    """Autonomous heating must not block unrelated Flex hardware calls."""
+    mod = FakeHeaterShaker()
+    mod.target_temperature = 42.0
+    mod.temperature = 25.0
+    shared_lock = asyncio.Lock()
+    ctrl = HeaterShakerController.from_module(mod, lock=shared_lock)
+
+    waiting = asyncio.create_task(ctrl.wait_for_temperature(42.0))
+    await asyncio.sleep(0)
+
+    await asyncio.wait_for(shared_lock.acquire(), timeout=0.2)
+    shared_lock.release()
+    mod.temperature = 42.0
+    await waiting
+
+
+@pytest.mark.asyncio
+async def test_heater_shaker_wait_detects_target_changed_by_http_path() -> None:
+    """A parallel target change cannot make the original SiLA wait report success."""
+    mod = FakeHeaterShaker()
+    mod.target_temperature = 42.0
+    mod.temperature = 25.0
+    ctrl = HeaterShakerController.from_module(mod)
+
+    waiting = asyncio.create_task(ctrl.wait_for_temperature(42.0))
+    await asyncio.sleep(0)
+    mod.target_temperature = 55.0
+
+    with pytest.raises(ModuleOperationError, match="target changed while waiting"):
+        await waiting
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("temperature", [0.0, 36.9, 95.1, float("nan"), float("inf"), float("-inf")])
+async def test_heater_shaker_rejects_unreachable_or_non_finite_targets(temperature: float) -> None:
+    """Invalid targets are rejected before the module receives a command."""
+    mod = FakeHeaterShaker()
+    ctrl = HeaterShakerController.from_module(mod)
+
+    with pytest.raises(InvalidHeaterShakerTemperatureError, match="37 to 95"):
+        await ctrl.set_temperature(temperature)
+
+    assert not [call for call in mod.calls if call[0] == "start_set_temperature"]
+
+
 # ── Thermocycler ──────────────────────────────────────────────────────────────
 
 
@@ -244,6 +295,7 @@ class FakeThermocycler(_Recorder):
     lid_temp = 100.0
     lid_target = 105.0
     lid_status = _LidStatus()
+    hold_time = None
     device_info: ClassVar[dict] = {"serial": "TC1", "model": "tc_v2", "version": "3.0"}
 
     async def open(self):
@@ -301,6 +353,143 @@ async def test_thermocycler_from_module_maps_calls():
 
     assert await ctrl.get_device_info() == DeviceInfo.from_dict(mod.device_info)
     await ctrl.disconnect()  # no-op
+
+
+@pytest.mark.asyncio
+async def test_thermocycler_wait_releases_shared_lock_and_detects_target_change() -> None:
+    """Block waits release the robot lock and fail if another interface changes the target."""
+    mod = FakeThermocycler()
+    mod.temperature = 25.0
+    mod.target = 60.0
+    shared_lock = asyncio.Lock()
+    ctrl = ThermocyclerController.from_module(mod, lock=shared_lock)
+
+    waiting = asyncio.create_task(ctrl.wait_for_plate_temperature())
+    await asyncio.sleep(0)
+    await asyncio.wait_for(shared_lock.acquire(), timeout=0.2)
+    shared_lock.release()
+
+    mod.target = 55.0
+    with pytest.raises(ModuleOperationError, match="block target changed while waiting"):
+        await waiting
+
+
+@pytest.mark.asyncio
+async def test_thermocycler_profile_releases_shared_lock_between_device_calls() -> None:
+    """A profile wait must permit concurrent robot-server gantry operations."""
+
+    class _ProfileThermocycler(FakeThermocycler):
+        def __init__(self) -> None:
+            super().__init__()
+            self.target_started = asyncio.Event()
+
+        async def set_target_block_temperature(
+            self,
+            celsius,
+            hold_time_seconds=None,
+            volume=None,
+            ramp_rate=None,
+        ):
+            self.record("set_target_block_temperature", celsius, hold_time_seconds, volume, ramp_rate)
+            self.target = celsius
+            self.target_started.set()
+
+    mod = _ProfileThermocycler()
+    mod.temperature = 25.0
+    shared_lock = asyncio.Lock()
+    ctrl = ThermocyclerController.from_module(mod, lock=shared_lock)
+    profile = asyncio.create_task(
+        ctrl.execute_profile(
+            [{"temperature": 60.0, "hold_time_seconds": None, "ramp_rate": 1.0}],
+            repetitions=1,
+            volume=25.0,
+        )
+    )
+    await mod.target_started.wait()
+
+    await asyncio.wait_for(shared_lock.acquire(), timeout=0.2)
+    shared_lock.release()
+    mod.temperature = 60.0
+    await profile
+
+    assert ctrl.profile_progress == (1, 1, 1, 1, False)
+
+
+@pytest.mark.asyncio
+async def test_thermocycler_driver_waits_for_firmware_hold_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The standalone serial backend must not advance while firmware hold time remains."""
+
+    class _Driver:
+        def __init__(self) -> None:
+            self.hold = 5.0
+            self.read_count = 0
+
+        async def get_plate_temperature(self) -> SimpleNamespace:
+            self.read_count += 1
+            return SimpleNamespace(current=60.0, target=60.0, hold=self.hold)
+
+    driver = _Driver()
+    ctrl = ThermocyclerController(driver=driver)
+    original_sleep = asyncio.sleep
+
+    async def finish_hold(_: float) -> None:
+        driver.hold = 0.0
+        await original_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", finish_hold)
+
+    await ctrl.wait_for_plate_temperature()
+
+    assert driver.read_count == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ramp_rate", [2.01, 4.25])
+async def test_thermocycler_rejects_ramp_rate_above_cooling_limit(ramp_rate: float) -> None:
+    """Cooling uses the lower physical ramp-rate ceiling."""
+    mod = FakeThermocycler()
+    mod.temperature = 70.0
+    ctrl = ThermocyclerController.from_module(mod)
+
+    with pytest.raises(InvalidThermocyclerProfileError, match=r"cooling.*0.01 and 2.0"):
+        await ctrl.set_plate_temperature(60.0, ramp_rate=ramp_rate)
+
+    assert not [call for call in mod.calls if call[0] == "set_target_block_temperature"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"temperature": float("nan")}, "Block temperature"),
+        ({"temperature": 60.0, "hold_time": float("inf")}, "Hold time"),
+        ({"temperature": 60.0, "volume": 0.5}, "Block maximum volume"),
+        ({"temperature": 60.0, "ramp_rate": 0.001}, "Ramp rate"),
+    ],
+)
+async def test_thermocycler_rejects_invalid_values_before_actuation(kwargs: dict, message: str) -> None:
+    """Non-finite and out-of-range values never reach the Thermocycler."""
+    mod = FakeThermocycler()
+    ctrl = ThermocyclerController.from_module(mod)
+
+    with pytest.raises(InvalidThermocyclerProfileError, match=message):
+        await ctrl.set_plate_temperature(**kwargs)
+
+    assert not [call for call in mod.calls if call[0] == "set_target_block_temperature"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("step_count", [0, 21])
+async def test_thermocycler_rejects_invalid_profile_size_before_actuation(step_count: int) -> None:
+    """Profile list limits are enforced at both the FDL and IO boundaries."""
+    mod = FakeThermocycler()
+    ctrl = ThermocyclerController.from_module(mod)
+    steps = [{"temperature": 60.0, "hold_time_seconds": 1.0, "ramp_rate": 1.0}] * step_count
+
+    with pytest.raises(InvalidThermocyclerProfileError, match="between 1 and 20 steps"):
+        await ctrl.execute_profile(steps, repetitions=1, volume=25.0)
+
+    assert not [call for call in mod.calls if call[0] == "set_target_block_temperature"]
 
 
 # ── Flex Stacker ──────────────────────────────────────────────────────────────

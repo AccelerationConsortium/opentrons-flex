@@ -22,6 +22,10 @@ robot-server, so Heater-Shaker, Thermocycler, Temperature Module, Plate Reader, 
 Stacker HTTP operations use that same lock. Cancellation-sensitive Reader work holds
 ownership until its native operation settles; a cancelled Stacker move deactivates its
 motors before releasing ownership and requires a complete home before reuse.
+Autonomous Heater-Shaker and Thermocycler temperature waits release that global
+lock between short state reads, so unrelated gantry, pipette, or gripper work can
+continue. A target changed through the parallel HTTP API fails the original SiLA
+wait with a defined error instead of reporting success against the wrong target.
 The embedded server retains its native lifespan for persistence, notifications,
 and task management. After the connector injects the already-initialized shared
 hardware, it runs the native post-initialization callbacks that prepare Protocol
@@ -70,22 +74,26 @@ of the robot/module under test before that combination is described as validated
 | `TipController` | Atomic move + `PickUpTip` / `DropTip`, `GetTipPresence`; sensor verification and defined recovery errors (use `MotionController.EmergencyStop` for a global halt) |
 | `GripperController` | `Grip`, `Ungrip`, `HomeJaw`; `Status`, `JawWidth` |
 | `CalibrationController` | `CalibratePipette`, `CalibrateGripperJaw`, `CalibrateDeck` (automatic probe-based routines) |
-| `HeaterShakerController` | Observable heat, shake, stop, and latch commands with constrained °C/rpm inputs |
+| `HeaterShakerController` | Observable heat, shake, stop, and latch commands with constrained °C/rpm inputs; observable `Status`, static `DeviceInfo` |
 | `AbsorbanceReaderController` | `InitializeSingle`, `InitializeSingleWithReference`, `InitializeMultiple`, `ReadPlate`, `Deactivate`; observable `Status`, static `DeviceInfo` |
 | `FlexStackerController` | Routine `RetrieveLabware` and `StoreLabware`; observable `Status`, static `DeviceInfo` |
 | `FlexStackerMaintenanceController` | `HomeAll`, axis/latch, LED, and motor-stop service commands; observable `Status` and `LimitSwitchStatus`, static `DeviceInfo` |
 | `TemperatureController` | `SetTemperature`, atomic `SetTemperatureAndWait`, `Deactivate`; observable `Status`, static `DeviceInfo` |
-| `ThermocyclerController` | Observable lid control, lid/block temperatures, typed multi-step profiles, deactivation, status, and device identity |
+| `ThermocyclerController` | Observable lid control, lid/block temperatures, typed multi-step profiles and deactivation; observable `Status`, static `DeviceInfo` |
 
 The Heater-Shaker controller exposes observable temperature, shaking, and latch
 operations with intermediate execution updates and defined module errors:
 `SetTemperature`, `WaitForTemperature`, `DeactivateHeater`, `SetSpeed`,
 `StopShaking`, `OpenLatch`, `CloseLatch`, `GetTemperature`, `GetSpeed`,
 `GetLatchStatus`, `GetStatus`, and `GetDeviceInfo`.
-Temperature inputs carry a degrees Celsius unit constraint and a 0–95 °C range;
+The read commands remain for compatibility; new clients should subscribe to
+`Status` and read the static `DeviceInfo` property. Temperature inputs carry a
+degrees Celsius unit constraint and the public 37–95 °C operating range;
 active shaking carries a revolutions-per-minute unit constraint and a 200–3000
 rpm range. The physical unit stays in the FDL constraint rather than the endpoint
 identifier. Use `StopShaking` instead of sending an implicit zero-speed sentinel.
+Cancelling `WaitForTemperature` stops the wait but intentionally leaves the active
+target enabled; call `DeactivateHeater` when heating must stop.
 
 The Absorbance Plate Reader workflow follows the official physical sequence:
 use an allowlisted `LabwareMovementController` plan and the Flex Gripper to place
@@ -111,6 +119,20 @@ The autonomous thermal wait does not monopolize the connector-wide hardware lock
 so unrelated robot-server operations can continue; if the parallel HTTP path changes
 the module target, the SiLA command stops with a defined error instead of reporting
 false success. Status and identity are exposed as properties with structured state.
+
+The Thermocycler validates finite temperatures, hold times, block maximum volume,
+profile size, and direction-dependent ramp rates before actuation. A zero block
+volume selects the Opentrons default of 25 µL; non-zero values are the greatest
+volume in any individual well. Long waits and profiles publish current/target and
+step progress without monopolizing the global hardware lock. Cancelling a profile
+deactivates both thermal controllers, while cancelling a standalone wait leaves
+its target active and reports that explicitly.
+
+The current Feature Definitions represent one physical instance of each accessory
+type. If two supported modules of the same type are attached, startup fails with
+their serial numbers instead of silently replacing one Feature registration.
+Disconnect the extra module until a serial-routed, multi-instance Feature contract
+is deployed.
 
 The Magnetic Block is passive and has no powered state or command surface, so the
 connector intentionally does not register a Magnetic Block feature. Move plates on

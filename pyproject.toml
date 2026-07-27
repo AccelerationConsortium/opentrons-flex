@@ -48,6 +48,7 @@ test = [
     "pytest-asyncio",
     "pytest-cov",
     "httpx",
+    "lxml>=5,<7",
 ]
 dev = [
     "unitelabs-cdk[dev]",

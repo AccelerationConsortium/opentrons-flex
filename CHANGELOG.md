@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Hardened accessory correctness and SiLA conformance: duplicate same-type
+  modules now fail connector startup with their serial numbers instead of
+  silently replacing a Feature; Heater-Shaker and Thermocycler autonomous waits
+  release the connector-wide lock and detect parallel target changes; thermal
+  values and direction-dependent Thermocycler ramp rates are validated before
+  actuation; long operations emit measured progress; cancelled profiles
+  deactivate thermal control. `HeaterShakerController` v3.1 and
+  `ThermocyclerController` v2.1 add observable `Status` and static `DeviceInfo`
+  properties while retaining read commands for existing clients. CI now runs
+  the vendored official SiLA v1.2 semantic XSLT in addition to XSD validation.
 - Version 0.9.1 aligns the deployable runtime with Flex Opentrons 9.0.0 on
   Python 3.10, packages the co-versioned private robot-server stack, verifies a
   checksummed ARM artifact manifest built from an immutable upstream commit, and

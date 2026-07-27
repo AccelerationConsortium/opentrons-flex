@@ -1,5 +1,6 @@
 """SiLA2 feature for Thermocycler module control."""
 
+import asyncio
 import enum
 import logging
 import typing
@@ -11,10 +12,11 @@ from unitelabs.cdk.sila import constraints
 from ..io import (
     COMMON_MODULE_ERRORS,
     DeviceInfo,
+    InvalidThermocyclerProfileError,
     ThermocyclerController,
     Temperature,
 )
-from ._progress import OperationProgress, run_observable
+from ._progress import OperationProgress, run_observable, run_observable_with_updates
 
 # Sourced from opentrons protocol_api/module_contexts.py: block 4-99 C, lid 37-110 C.
 _CELSIUS = constraints.Unit(
@@ -52,12 +54,23 @@ _LidTemperature = typing.Annotated[
 ]
 _TemperatureReading = typing.Annotated[float, _CELSIUS]
 _Duration = typing.Annotated[float, constraints.MinimalInclusive(0.0), _SECOND]
-_Volume = typing.Annotated[float, constraints.MinimalInclusive(0.0), _MICROLITRE]
-_RampRate = typing.Annotated[float, constraints.MinimalInclusive(0.0), _CELSIUS_PER_SECOND]
+_Volume = typing.Annotated[
+    float,
+    constraints.MinimalInclusive(0.0),
+    constraints.MaximalInclusive(200.0),
+    _MICROLITRE,
+]
+_RampRate = typing.Annotated[
+    float,
+    constraints.MinimalInclusive(0.0),
+    constraints.MaximalInclusive(4.25),
+    _CELSIUS_PER_SECOND,
+]
 _PositiveInteger = typing.Annotated[int, constraints.MinimalInclusive(1)]
 
 
 log = logging.getLogger(__name__)
+_THERMOCYCLER_PROFILE_ERRORS = (*COMMON_MODULE_ERRORS, InvalidThermocyclerProfileError)
 
 
 class LidStatus(enum.Enum):
@@ -99,6 +112,13 @@ class ThermocyclerProfileStep:
     ramp_rate: _RampRate
 
 
+_ProfileSteps = typing.Annotated[
+    list[ThermocyclerProfileStep],
+    constraints.MinimalElementCount(1),
+    constraints.MaximalElementCount(20),
+]
+
+
 @dataclass
 class ThermocyclerTemperature:
     """Current and target temperature without an optional wire value."""
@@ -138,7 +158,7 @@ class ThermocyclerFeature(sila.Feature):
             category="modules",
             identifier="ThermocyclerController",
             name="Thermocycler Controller",
-            version="2.0",
+            version="2.1",
         )
         self._controller = controller
 
@@ -215,7 +235,7 @@ class ThermocyclerFeature(sila.Feature):
 
     # ============ Temperature Control ============
 
-    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    @sila.ObservableCommand(errors=_THERMOCYCLER_PROFILE_ERRORS)
     async def set_lid_temperature(
         self,
         temperature: _LidTemperature,
@@ -258,13 +278,29 @@ class ThermocyclerFeature(sila.Feature):
         Returns:
             Current and target lid temperature.
         """
-        await run_observable(
+        initial = await self._controller.get_lid_temperature()
+        target = initial.target if initial.target is not None else initial.current
+
+        async def read_update() -> tuple[float, str]:
+            reading = await self._controller.get_lid_temperature()
+            active_target = reading.target if reading.target is not None else target
+            span = abs(target - initial.current)
+            remaining = abs(active_target - reading.current)
+            progress = 0.5 if span <= 0.5 else max(0.0, 1.0 - remaining / span)
+            return (
+                progress,
+                f"Thermocycler lid is {reading.current:.1f} °C; waiting for {active_target:.1f} °C.",
+            )
+
+        await run_observable_with_updates(
             status,
             intermediate,
             "Waiting for thermocycler lid target temperature.",
             "Thermocycler lid reached target temperature.",
-            "Thermocycler lid temperature wait cancelled.",
+            "Thermocycler lid temperature wait cancelled; the lid target remains enabled. "
+            "Call DeactivateLid if heating should stop.",
             self._controller.wait_for_lid_temperature(),
+            read_update,
         )
         return _temperature(await self._controller.get_lid_temperature())
 
@@ -291,7 +327,7 @@ class ThermocyclerFeature(sila.Feature):
         )
         return _temperature(reading)
 
-    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    @sila.ObservableCommand(errors=_THERMOCYCLER_PROFILE_ERRORS)
     async def set_plate_temperature(
         self,
         temperature: _BlockTemperature,
@@ -308,7 +344,8 @@ class ThermocyclerFeature(sila.Feature):
         Args:
             temperature: Target block temperature (valid range 4-99 degrees Celsius).
             hold_time: Hold time, or 0 for no hold time.
-            volume: Sample volume, or 0 for no volume.
+            volume: Greatest volume in any block well, or 0 to use the
+                Opentrons default of 25 microlitres.
             ramp_rate: Temperature ramp rate, or 0 for module default.
 
         Returns:
@@ -345,13 +382,29 @@ class ThermocyclerFeature(sila.Feature):
         Returns:
             Current and target plate temperature.
         """
-        await run_observable(
+        initial = await self._controller.get_plate_temperature()
+        target = initial.target if initial.target is not None else initial.current
+
+        async def read_update() -> tuple[float, str]:
+            reading = await self._controller.get_plate_temperature()
+            active_target = reading.target if reading.target is not None else target
+            span = abs(target - initial.current)
+            remaining = abs(active_target - reading.current)
+            progress = 0.5 if span <= 0.5 else max(0.0, 1.0 - remaining / span)
+            return (
+                progress,
+                f"Thermocycler block is {reading.current:.1f} °C; waiting for {active_target:.1f} °C.",
+            )
+
+        await run_observable_with_updates(
             status,
             intermediate,
             "Waiting for thermocycler plate target temperature.",
             "Thermocycler plate reached target temperature.",
-            "Thermocycler plate temperature wait cancelled.",
+            "Thermocycler block temperature wait cancelled; the block target remains enabled. "
+            "Call DeactivateBlock if heating or cooling should stop.",
             self._controller.wait_for_plate_temperature(),
+            read_update,
         )
         return _temperature(await self._controller.get_plate_temperature())
 
@@ -378,10 +431,10 @@ class ThermocyclerFeature(sila.Feature):
         )
         return _temperature(reading)
 
-    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    @sila.ObservableCommand(errors=_THERMOCYCLER_PROFILE_ERRORS)
     async def execute_profile(
         self,
-        steps: list[ThermocyclerProfileStep],
+        steps: _ProfileSteps,
         repetitions: _PositiveInteger,
         volume: _Volume,
         *,
@@ -394,7 +447,8 @@ class ThermocyclerFeature(sila.Feature):
         Args:
             steps: Ordered profile steps.
             repetitions: Number of repetitions.
-            volume: Sample volume, or 0 for no volume.
+            volume: Greatest volume in any block well, or 0 to use the
+                Opentrons default of 25 microlitres.
 
         Yields:
             Update: Current profile execution progress update.
@@ -410,18 +464,36 @@ class ThermocyclerFeature(sila.Feature):
             }
             for step in steps
         ]
-        await run_observable(
-            status,
-            intermediate,
-            "Starting thermocycler profile.",
-            "Thermocycler profile completed.",
-            "Thermocycler profile cancelled.",
-            self._controller.execute_profile(
-                steps=profile,
-                repetitions=repetitions,
-                volume=volume if volume > 0 else None,
-            ),
-        )
+
+        async def read_update() -> tuple[float, str]:
+            completed, total, repetition, step, _ = self._controller.profile_progress
+            reading = await self._controller.get_plate_temperature()
+            progress = completed / total if total else 0.0
+            target = reading.target if reading.target is not None else 0.0
+            message = (
+                f"Thermocycler profile repetition {repetition}, step {step}: "
+                f"{reading.current:.1f} °C toward {target:.1f} °C "
+                f"({completed} of {total} steps completed)."
+            )
+            return progress, message
+
+        try:
+            await run_observable_with_updates(
+                status,
+                intermediate,
+                "Starting thermocycler profile.",
+                "Thermocycler profile completed.",
+                "Thermocycler profile cancelled; lid and block control are being deactivated.",
+                self._controller.execute_profile(
+                    steps=profile,
+                    repetitions=repetitions,
+                    volume=volume if volume > 0 else None,
+                ),
+                read_update,
+            )
+        except asyncio.CancelledError:
+            await self._controller.deactivate_all()
+            raise
         return await self._status()
 
     @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
@@ -555,3 +627,19 @@ class ThermocyclerFeature(sila.Feature):
             "Thermocycler device information read cancelled.",
             self._controller.get_device_info(),
         )
+
+    @sila.ObservableProperty(errors=COMMON_MODULE_ERRORS)
+    async def subscribe_status(self) -> sila.Stream[ThermocyclerStatus]:
+        """Subscribe to lid, block, target, and lid-position changes."""
+        previous: object = object()
+        while True:
+            current = await self._status()
+            if current != previous:
+                yield current
+                previous = current
+            await asyncio.sleep(0.25)
+
+    @sila.UnobservableProperty(errors=COMMON_MODULE_ERRORS)
+    def device_info(self) -> DeviceInfo:
+        """Return the attached module serial number, model, and firmware version."""
+        return self._controller.device_info

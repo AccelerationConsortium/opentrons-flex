@@ -81,6 +81,26 @@ class InvalidTemperatureTargetError(Exception):
     """
 
 
+class InvalidHeaterShakerTemperatureError(Exception):
+    """
+    The requested Heater-Shaker target is outside its supported operating range.
+
+    Provide a finite value between 37 and 95 degrees Celsius and retry. Lower
+    targets are not exposed because they may be physically unreachable and can
+    otherwise leave a waiting workflow blocked indefinitely.
+    """
+
+
+class InvalidThermocyclerProfileError(Exception):
+    """
+    A Thermocycler temperature, hold, volume, ramp rate, or profile is invalid.
+
+    Correct the value using the range in the error message and retry. Ramp-rate
+    limits depend on whether the block is heating or cooling, so the attached
+    module's current temperature is included when that distinction matters.
+    """
+
+
 class InvalidWavelengthError(Exception):
     """
     The requested wavelength configuration is not supported by the attached reader.

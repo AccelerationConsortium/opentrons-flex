@@ -8,12 +8,13 @@ Hardware boundary: the OT3API simulator is real (fast, no mocks); the Connector
 is patched to capture registrations without starting a gRPC server.
 """
 
+import asyncio
 import contextlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from unitelabs.opentrons_flex import OpentronsFlexConfig, create_app
+from unitelabs.opentrons_flex import OpentronsFlexConfig, _register_modules, create_app
 from unitelabs.opentrons_flex.features import (
     AbsorbanceReaderFeature,
     CalibrationFeature,
@@ -181,6 +182,24 @@ async def test_attached_flex_modules_register_features():
     assert HeaterShakerFeature in types
     assert TemperatureModuleFeature in types
     assert ThermocyclerFeature in types
+
+
+def test_duplicate_same_type_modules_fail_before_sila_module_registration() -> None:
+    """Two modules with one FQI must fail closed instead of last-write-wins replacement."""
+    from opentrons.hardware_control.modules.types import ModuleType
+
+    class _Module:
+        MODULE_TYPE = ModuleType.HEATER_SHAKER
+
+        def __init__(self, serial: str) -> None:
+            self.device_info = {"serial": serial}
+
+    connector = MagicMock()
+
+    with pytest.raises(RuntimeError, match=r"HEATER_SHAKER: HS-1, HS-2.*serial-number routing"):
+        _register_modules(connector, [_Module("HS-1"), _Module("HS-2")], asyncio.Lock())
+
+    connector.register.assert_not_called()
 
 
 @pytest.mark.asyncio

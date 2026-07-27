@@ -85,7 +85,7 @@ async def test_set_speed_rejects_values_outside_operating_range(
 
 @pytest.mark.asyncio
 @pytest.mark.simulator_only
-@pytest.mark.parametrize("temperature", [-0.1, 95.1])
+@pytest.mark.parametrize("temperature", [0.0, 36.9, 95.1])
 async def test_set_temperature_rejects_values_outside_operating_range(
     heater_shaker: HeaterShakerClient,
     temperature: float,

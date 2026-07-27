@@ -280,8 +280,32 @@ def _register_modules(
     attached_modules: collections.abc.Iterable,
     shared_lock: asyncio.Lock | RunAwareLock,
 ) -> None:
+    modules = list(attached_modules)
     factories = _module_factories()
-    for module in attached_modules:
+    modules_by_type: dict[object, list[object]] = {}
+    for module in modules:
+        if module.MODULE_TYPE in factories:
+            modules_by_type.setdefault(module.MODULE_TYPE, []).append(module)
+    duplicates = {module_type: group for module_type, group in modules_by_type.items() if len(group) > 1}
+    if duplicates:
+        details = []
+        for module_type, group in sorted(duplicates.items(), key=lambda item: item[0].name):
+            serials = []
+            for module in group:
+                device_info = getattr(module, "device_info", {})
+                serial = device_info.get("serial") if isinstance(device_info, collections.abc.Mapping) else None
+                serials.append(str(serial or "unknown"))
+            details.append(f"{module_type.name}: {', '.join(serials)}")
+        duplicate_summary = "; ".join(details)
+        message = (
+            "Multiple attached modules of the same type cannot be represented by the current "
+            "single-instance SiLA feature contract. Connector startup was refused to prevent "
+            f"silent feature replacement. Duplicate modules: {duplicate_summary}. "
+            "Disconnect the extra module or use a connector release with serial-number routing."
+        )
+        raise RuntimeError(message)
+
+    for module in modules:
         factory = factories.get(module.MODULE_TYPE)
         if factory is None:
             log.info("Skipping unsupported module type %s", module.MODULE_TYPE.name)

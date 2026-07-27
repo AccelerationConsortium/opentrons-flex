@@ -1,5 +1,6 @@
 """SiLA2 feature for Heater-Shaker module control."""
 
+import asyncio
 import enum
 import logging
 import typing
@@ -12,13 +13,15 @@ from ..io import (
     COMMON_MODULE_ERRORS,
     DeviceInfo,
     HeaterShakerController,
+    InvalidHeaterShakerTemperatureError,
     Temperature,
     RPM,
 )
-from ._progress import OperationProgress, run_observable
+from ._progress import OperationProgress, run_observable, run_observable_with_updates
 
 # The constraints mirror the public Opentrons Heater-Shaker contract. A target
-# below ambient may not be reachable, but API 2.25+ accepts 0-95 degrees Celsius.
+# below the documented operating range may not be reachable even if the lower
+# hardware layer accepts it.
 # Active shaking is 200-3000 revolutions per minute; stopping is a separate
 # command so 0 is not overloaded as a hidden control value.
 _CELSIUS = constraints.Unit(
@@ -33,7 +36,7 @@ _REVOLUTIONS_PER_MINUTE = constraints.Unit(
 )
 _TempCelsius = typing.Annotated[
     float,
-    constraints.MinimalInclusive(0.0),
+    constraints.MinimalInclusive(37.0),
     constraints.MaximalInclusive(95.0),
     _CELSIUS,
 ]
@@ -48,6 +51,7 @@ _RotationSpeedReading = typing.Annotated[int, _REVOLUTIONS_PER_MINUTE]
 
 
 log = logging.getLogger(__name__)
+_HEATER_SHAKER_TEMPERATURE_ERRORS = (*COMMON_MODULE_ERRORS, InvalidHeaterShakerTemperatureError)
 
 
 class LatchStatus(enum.Enum):
@@ -164,11 +168,11 @@ class HeaterShakerFeature(sila.Feature):
             category="modules",
             identifier="HeaterShakerController",
             name="Heater Shaker Controller",
-            version="3.0",
+            version="3.1",
         )
         self._controller = controller
 
-    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    @sila.ObservableCommand(errors=_HEATER_SHAKER_TEMPERATURE_ERRORS)
     async def set_temperature(
         self,
         temperature: _TempCelsius,
@@ -180,8 +184,7 @@ class HeaterShakerFeature(sila.Feature):
         Set the target temperature.
 
         Args:
-            temperature: Target temperature in Celsius (valid range 0-95 C;
-                the module heats only, so the effective minimum is ambient).
+            temperature: Target temperature in Celsius (valid range 37-95 C).
 
         Returns:
             Current and target temperature.
@@ -196,7 +199,7 @@ class HeaterShakerFeature(sila.Feature):
         )
         return _temperature_response(await self._controller.get_temperature())
 
-    @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
+    @sila.ObservableCommand(errors=_HEATER_SHAKER_TEMPERATURE_ERRORS)
     async def wait_for_temperature(
         self,
         temperature: _TempCelsius,
@@ -216,13 +219,28 @@ class HeaterShakerFeature(sila.Feature):
         Returns:
             Current and target temperature.
         """
-        await run_observable(
+        initial = await self._controller.get_temperature()
+
+        async def read_update() -> tuple[float, str]:
+            reading = await self._controller.get_temperature()
+            span = abs(temperature - initial.current)
+            remaining = abs(temperature - reading.current)
+            progress = 0.5 if span <= 0.5 else max(0.0, 1.0 - remaining / span)
+            message = (
+                f"Heater-Shaker temperature is {reading.current:.1f} °C; "
+                f"waiting for {temperature:.1f} °C. The active target remains enabled."
+            )
+            return progress, message
+
+        await run_observable_with_updates(
             status,
             intermediate,
             f"Waiting for heater-shaker to reach {temperature} C.",
             "Heater-shaker reached target temperature.",
-            "Heater-shaker temperature wait cancelled.",
+            "Heater-shaker temperature wait cancelled; the active heater target remains enabled. "
+            "Call DeactivateHeater if heating should stop.",
             self._controller.wait_for_temperature(temperature),
+            read_update,
         )
         return _temperature_response(await self._controller.get_temperature())
 
@@ -438,19 +456,7 @@ class HeaterShakerFeature(sila.Feature):
             "Heater-shaker status read cancelled.",
             self._controller.is_connected(),
         )
-        temp = await self._controller.get_temperature()
-        speed = await self._controller.get_rpm()
-        latch = await self._controller.get_latch_status()
-
-        return HeaterShakerStatus(
-            current_temperature=temp.current,
-            target_temperature=temp.target if temp.target is not None else 0.0,
-            temperature_target_active=temp.target is not None,
-            current_speed=speed.current,
-            target_speed=speed.target if speed.target is not None else 0,
-            speed_target_active=speed.target is not None,
-            latch_status=LatchStatus(latch.value),
-        )
+        return await self._status()
 
     @sila.ObservableCommand(errors=COMMON_MODULE_ERRORS)
     async def get_device_info(
@@ -473,3 +479,34 @@ class HeaterShakerFeature(sila.Feature):
             "Heater-shaker device information read cancelled.",
             self._controller.get_device_info(),
         )
+
+    async def _status(self) -> HeaterShakerStatus:
+        """Read the structured state shared by the command and property surfaces."""
+        temp = await self._controller.get_temperature()
+        speed = await self._controller.get_rpm()
+        latch = await self._controller.get_latch_status()
+        return HeaterShakerStatus(
+            current_temperature=temp.current,
+            target_temperature=temp.target if temp.target is not None else 0.0,
+            temperature_target_active=temp.target is not None,
+            current_speed=speed.current,
+            target_speed=speed.target if speed.target is not None else 0,
+            speed_target_active=speed.target is not None,
+            latch_status=LatchStatus(latch.value),
+        )
+
+    @sila.ObservableProperty(errors=COMMON_MODULE_ERRORS)
+    async def subscribe_status(self) -> sila.Stream[HeaterShakerStatus]:
+        """Subscribe to temperature, speed, target, and latch-state changes."""
+        previous: object = object()
+        while True:
+            current = await self._status()
+            if current != previous:
+                yield current
+                previous = current
+            await asyncio.sleep(0.25)
+
+    @sila.UnobservableProperty(errors=COMMON_MODULE_ERRORS)
+    def device_info(self) -> DeviceInfo:
+        """Return the attached module serial number, model, and firmware version."""
+        return self._controller.device_info

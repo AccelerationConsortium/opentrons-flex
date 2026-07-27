@@ -2,12 +2,14 @@
 
 import asyncio
 import logging
+import math
 
 from opentrons.drivers.heater_shaker.driver import HeaterShakerDriver
 from opentrons.drivers.heater_shaker.abstract import HeaterShakerLabwareLatchStatus
 
+from ._errors import InvalidHeaterShakerTemperatureError, ModuleOperationError
 from ._module_base import ModuleControllerBase
-from ._types import RPM, Temperature
+from ._types import DeviceInfo, RPM, Temperature
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +26,26 @@ class HeaterShakerController(ModuleControllerBase):
       attached to a shared ``HardwareControlAPI`` (in-process robot-server mode).
     """
 
+    _SHARED_LOCK_EXEMPT_METHODS = frozenset(
+        {
+            "deactivate_heater",
+            "set_temperature",
+            "wait_for_temperature",
+        }
+    )
+
+    def __init__(self, driver: object = None, module: object = None, lock: asyncio.Lock | None = None) -> None:
+        super().__init__(driver=driver, module=module, lock=lock)
+        self._temperature_control_lock = asyncio.Lock()
+        self._driver_device_info = DeviceInfo(serial_number="", model="", firmware_version="")
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return the attached module identity without an additional device call."""
+        if self._module is not None:
+            return DeviceInfo.from_dict(dict(self._module.device_info))
+        return self._driver_device_info
+
     @classmethod
     async def build(cls, port: str) -> "HeaterShakerController":
         """
@@ -37,14 +59,18 @@ class HeaterShakerController(ModuleControllerBase):
         """
         driver = await HeaterShakerDriver.create(port=port, loop=None)
         await driver.connect()
-        return cls(driver=driver)
+        controller = cls(driver=driver)
+        controller._driver_device_info = await controller.get_device_info()
+        return controller
 
     async def set_temperature(self, temperature: float) -> None:
         """Set target temperature in Celsius (does not wait for the target to be reached)."""
-        if self._module is not None:
-            await self._module.start_set_temperature(temperature)
-        else:
-            await self._driver.set_temperature(temperature=temperature)
+        self._validate_temperature(temperature)
+        async with self._temperature_control_lock, self._operation_lock():
+            if self._module is not None:
+                await self._module.start_set_temperature(temperature)
+            else:
+                await self._driver.set_temperature(temperature=temperature)
 
     async def get_temperature(self) -> Temperature:
         """Get current and target temperature."""
@@ -54,22 +80,28 @@ class HeaterShakerController(ModuleControllerBase):
         return Temperature(current=t.current, target=t.target)
 
     async def wait_for_temperature(self, temperature: float) -> None:
-        """Wait for the heater to reach a target temperature."""
-        if self._module is not None:
-            await self._module.await_temperature(temperature)
-        else:
+        """Wait for one active target without monopolizing the connector-wide lock."""
+        self._validate_temperature(temperature)
+        async with self._temperature_control_lock:
             while True:
-                current = (await self.get_temperature()).current
-                if abs(current - temperature) <= 0.5:
+                reading = await self.get_temperature()
+                if reading.target is None or abs(float(reading.target) - temperature) > 0.01:
+                    message = (
+                        f"Heater-Shaker target changed while waiting: expected {temperature} °C, "
+                        f"observed {reading.target!r}. Another client may have changed or deactivated the module."
+                    )
+                    raise ModuleOperationError(message)
+                if abs(reading.current - temperature) <= 0.5:
                     return
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(0.25 if self._module is not None else 1.0)
 
     async def deactivate_heater(self) -> None:
         """Turn off the heater."""
-        if self._module is not None:
-            await self._module.deactivate_heater()
-        else:
-            await self._driver.deactivate_heater()
+        async with self._temperature_control_lock, self._operation_lock():
+            if self._module is not None:
+                await self._module.deactivate_heater()
+            else:
+                await self._driver.deactivate_heater()
 
     async def set_rpm(self, rpm: int) -> None:
         """Set shaking speed in RPM."""
@@ -111,3 +143,16 @@ class HeaterShakerController(ModuleControllerBase):
         if self._module is not None:
             return self._module.labware_latch_status
         return await self._driver.get_labware_latch_status()
+
+    @staticmethod
+    def _validate_temperature(temperature: float) -> None:
+        """Reject values that are not reliably reachable by the public workflow."""
+        try:
+            is_valid = math.isfinite(temperature) and 37.0 <= temperature <= 95.0
+        except (TypeError, ValueError):
+            is_valid = False
+        if not is_valid:
+            message = (
+                f"Heater-Shaker target temperature must be a finite value from 37 to 95 °C; received {temperature!r}."
+            )
+            raise InvalidHeaterShakerTemperatureError(message)

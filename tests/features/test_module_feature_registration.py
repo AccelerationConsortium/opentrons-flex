@@ -102,7 +102,7 @@ def test_heater_shaker_definition_has_units_constraints_and_controller_name() ->
     feature.attach()
     fdl = Serializer.serialize(feature.serialize)
 
-    assert 'FeatureVersion="3.0"' in fdl
+    assert 'FeatureVersion="3.1"' in fdl
     assert "<Identifier>HeaterShakerController</Identifier>" in fdl
     assert "<DisplayName>Heater Shaker Controller</DisplayName>" in fdl
     assert "<Identifier>SetSpeed</Identifier>" in fdl
@@ -112,6 +112,11 @@ def test_heater_shaker_definition_has_units_constraints_and_controller_name() ->
     assert "<Identifier>TemperatureCelsius</Identifier>" not in fdl
     assert "<MinimalInclusive>200</MinimalInclusive>" in fdl
     assert "<MaximalInclusive>3000</MaximalInclusive>" in fdl
+    assert "<MinimalInclusive>37</MinimalInclusive>" in fdl
+    assert "<Identifier>Status</Identifier>" in fdl
+    assert _property_is_observable(fdl, "Status")
+    assert "<Identifier>DeviceInfo</Identifier>" in fdl
+    assert "<Identifier>InvalidHeaterShakerTemperatureError</Identifier>" in fdl
     assert "<Label>rpm</Label>" in fdl
     assert "<SIUnit>Second</SIUnit>" in fdl
     assert "<Exponent>-1</Exponent>" in fdl
@@ -129,13 +134,19 @@ def test_thermocycler_definition_uses_controller_naming() -> None:
 
     assert "<Identifier>ThermocyclerController</Identifier>" in fdl
     assert "<DisplayName>Thermocycler Controller</DisplayName>" in fdl
-    assert 'FeatureVersion="2.0"' in fdl
+    assert 'FeatureVersion="2.1"' in fdl
     assert "<Identifier>TemperatureCelsius</Identifier>" not in fdl
     assert "<Identifier>HoldTimeSeconds</Identifier>" not in fdl
     assert "<Identifier>VolumeUl</Identifier>" not in fdl
     assert "<Label>°C</Label>" in fdl
     assert "<Label>s</Label>" in fdl
     assert "<Label>µL</Label>" in fdl
+    assert "<MaximalInclusive>4.25</MaximalInclusive>" in fdl
+    assert "<MaximalInclusive>200</MaximalInclusive>" in fdl
+    assert "<MinimalElementCount>1</MinimalElementCount>" in fdl
+    assert "<MaximalElementCount>20</MaximalElementCount>" in fdl
+    assert _property_is_observable(fdl, "Status")
+    assert "<Identifier>InvalidThermocyclerProfileError</Identifier>" in fdl
 
 
 @_REQUIRES_REAL_CDK
