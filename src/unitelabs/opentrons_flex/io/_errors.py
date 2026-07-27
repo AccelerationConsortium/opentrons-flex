@@ -85,9 +85,9 @@ class InvalidHeaterShakerTemperatureError(Exception):
     """
     The requested Heater-Shaker target is outside its supported operating range.
 
-    Provide a finite value between 37 and 95 degrees Celsius and retry. Lower
-    targets are not exposed because they may be physically unreachable and can
-    otherwise leave a waiting workflow blocked indefinitely.
+    Provide a finite value between 0 and 95 degrees Celsius and retry. Targets
+    below the surrounding ambient temperature are accepted by the module API
+    but may be physically unreachable because the device does not actively cool.
     """
 
 

@@ -270,13 +270,13 @@ async def test_heater_shaker_wait_detects_target_changed_by_http_path() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("temperature", [0.0, 36.9, 95.1, float("nan"), float("inf"), float("-inf")])
-async def test_heater_shaker_rejects_unreachable_or_non_finite_targets(temperature: float) -> None:
+@pytest.mark.parametrize("temperature", [-0.1, 95.1, float("nan"), float("inf"), float("-inf")])
+async def test_heater_shaker_rejects_out_of_range_or_non_finite_targets(temperature: float) -> None:
     """Invalid targets are rejected before the module receives a command."""
     mod = FakeHeaterShaker()
     ctrl = HeaterShakerController.from_module(mod)
 
-    with pytest.raises(InvalidHeaterShakerTemperatureError, match="37 to 95"):
+    with pytest.raises(InvalidHeaterShakerTemperatureError, match="0 to 95"):
         await ctrl.set_temperature(temperature)
 
     assert not [call for call in mod.calls if call[0] == "start_set_temperature"]

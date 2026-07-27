@@ -35,6 +35,20 @@ class ThermocyclerClient:
         )
         return next(iter(decoded.values()))
 
+    async def _subscription(self, method: str) -> object:
+        stub = self._channel.unary_stream(f"/{_SERVICE}/{method}")
+        call = stub(b"")
+        response = await call.read()
+        call.cancel()
+        decoded = await self._protobuf.decode(f"{_PACKAGE}.{method}_Responses", response)
+        return next(iter(decoded.values()))
+
+    async def _property(self, method: str) -> object:
+        stub = self._channel.unary_unary(f"/{_SERVICE}/{method}")
+        response = await stub(b"")
+        decoded = await self._protobuf.decode(f"{_PACKAGE}.{method}_Responses", response)
+        return next(iter(decoded.values()))
+
     async def open_lid(self) -> LidStatus:
         """Open the Thermocycler lid."""
         return await self._observable("OpenLid")
@@ -116,3 +130,11 @@ class ThermocyclerClient:
     async def get_device_info(self) -> DeviceInfo:
         """Read Thermocycler identity information."""
         return await self._observable("GetDeviceInfo")
+
+    async def get_status_property(self) -> ThermocyclerStatus:
+        """Read the first Status property update."""
+        return await self._subscription("Subscribe_Status")
+
+    async def get_device_info_property(self) -> DeviceInfo:
+        """Read the static DeviceInfo property."""
+        return await self._property("Get_DeviceInfo")

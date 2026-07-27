@@ -1,5 +1,8 @@
 """End-to-end SiLA gRPC workflow tests for the simulated Flex Thermocycler."""
 
+import base64
+
+import grpc
 import pytest
 import pytest_asyncio
 from sila.framework.protobuf import ConversionError
@@ -27,6 +30,8 @@ async def test_thermocycler_workflow_round_trip(thermocycler: ThermocyclerClient
     info = await thermocycler.get_device_info()
     assert info.serial_number == "TC-SIM-1"
     assert info.model
+    property_info = await thermocycler.get_device_info_property()
+    assert property_info == info
 
     assert await thermocycler.open_lid() is LidStatus.OPEN
     assert await thermocycler.get_lid_status() is LidStatus.OPEN
@@ -62,7 +67,9 @@ async def test_thermocycler_workflow_round_trip(thermocycler: ThermocyclerClient
     deactivated = await thermocycler.deactivate_all()
     assert deactivated.lid_target_active is False
     assert deactivated.plate_target_active is False
-    assert isinstance(await thermocycler.get_status(), ThermocyclerStatus)
+    status = await thermocycler.get_status()
+    assert isinstance(status, ThermocyclerStatus)
+    assert await thermocycler.get_status_property() == status
 
 
 @pytest.mark.asyncio
@@ -87,3 +94,18 @@ async def test_thermocycler_rejects_invalid_lid_temperature(
     """The FDL blocks invalid lid temperatures before hardware execution."""
     with pytest.raises(ConversionError):
         await thermocycler.set_lid_temperature(temperature)
+
+
+@pytest.mark.asyncio
+@pytest.mark.simulator_only
+async def test_thermocycler_rejects_excessive_cooling_ramp_as_defined_error(
+    thermocycler: ThermocyclerClient,
+) -> None:
+    """The direction-dependent cooling limit is enforced through the generated gRPC surface."""
+    await thermocycler.set_plate_temperature(30.0, 0.0, 50.0, 0.0)
+
+    with pytest.raises(grpc.aio.AioRpcError) as excinfo:
+        await thermocycler.set_plate_temperature(20.0, 0.0, 50.0, 4.25)
+
+    assert excinfo.value.code() is grpc.StatusCode.ABORTED
+    assert b"InvalidThermocyclerProfileError" in base64.b64decode(excinfo.value.details() or "")

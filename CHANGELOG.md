@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Aligned `HeaterShakerController` v3.2 with the pinned Opentrons 9.0 API:
+  finite 0–95 °C targets are accepted while the documentation warns that
+  below-ambient targets may be physically unreachable.
 - Hardened accessory correctness and SiLA conformance: duplicate same-type
   modules now fail connector startup with their serial numbers instead of
   silently replacing a Feature; Heater-Shaker and Thermocycler autonomous waits

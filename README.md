@@ -88,7 +88,8 @@ operations with intermediate execution updates and defined module errors:
 `GetLatchStatus`, `GetStatus`, and `GetDeviceInfo`.
 The read commands remain for compatibility; new clients should subscribe to
 `Status` and read the static `DeviceInfo` property. Temperature inputs carry a
-degrees Celsius unit constraint and the public 37–95 °C operating range;
+degrees Celsius unit constraint and the Opentrons 9.0 API's 0–95 °C range;
+targets below ambient may be physically unreachable because the module does not cool.
 active shaking carries a revolutions-per-minute unit constraint and a 200–3000
 rpm range. The physical unit stays in the FDL constraint rather than the endpoint
 identifier. Use `StopShaking` instead of sending an implicit zero-speed sentinel.

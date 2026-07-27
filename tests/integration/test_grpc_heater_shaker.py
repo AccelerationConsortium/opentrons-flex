@@ -1,5 +1,8 @@
 """End-to-end SiLA gRPC workflow tests for the simulated Flex Heater-Shaker."""
 
+import base64
+
+import grpc
 import pytest
 import pytest_asyncio
 from sila.framework.protobuf import ConversionError
@@ -29,6 +32,8 @@ async def test_heater_shaker_workflow_round_trip(heater_shaker: HeaterShakerClie
     # The Opentrons SimulatingDriver currently reports its own non-empty
     # ``dummyModelHS`` identifier rather than echoing the configured model.
     assert info.model
+    property_info = await heater_shaker.get_device_info_property()
+    assert property_info == info
 
     assert await heater_shaker.close_latch() is LatchStatus.IDLE_CLOSED
     assert await heater_shaker.get_latch_status() is LatchStatus.IDLE_CLOSED
@@ -58,6 +63,8 @@ async def test_heater_shaker_workflow_round_trip(heater_shaker: HeaterShakerClie
     assert status.target_speed == 500
     assert status.speed_target_active is True
     assert status.latch_status is LatchStatus.IDLE_CLOSED
+    property_status = await heater_shaker.get_status_property()
+    assert property_status == status
 
     stopped = await heater_shaker.stop_shaking()
     assert stopped.current == 0
@@ -85,7 +92,7 @@ async def test_set_speed_rejects_values_outside_operating_range(
 
 @pytest.mark.asyncio
 @pytest.mark.simulator_only
-@pytest.mark.parametrize("temperature", [0.0, 36.9, 95.1])
+@pytest.mark.parametrize("temperature", [-0.1, 95.1])
 async def test_set_temperature_rejects_values_outside_operating_range(
     heater_shaker: HeaterShakerClient,
     temperature: float,
@@ -93,3 +100,28 @@ async def test_set_temperature_rejects_values_outside_operating_range(
     """The FDL constraint rejects invalid temperature targets before execution."""
     with pytest.raises(ConversionError):
         await heater_shaker.set_temperature(temperature)
+
+
+@pytest.mark.asyncio
+@pytest.mark.simulator_only
+async def test_set_temperature_accepts_current_opentrons_low_target(
+    heater_shaker: HeaterShakerClient,
+) -> None:
+    """Opentrons API 2.25+ accepts finite targets below the former 37 °C limit."""
+    reading = await heater_shaker.set_temperature(20.0)
+
+    assert reading.target == pytest.approx(20.0)
+    assert reading.target_active is True
+    await heater_shaker.deactivate_heater()
+
+
+@pytest.mark.asyncio
+@pytest.mark.simulator_only
+async def test_set_temperature_rejects_nan_as_defined_error(
+    heater_shaker: HeaterShakerClient,
+) -> None:
+    """NaN reaches runtime validation and surfaces as a Defined Execution Error."""
+    with pytest.raises(grpc.aio.AioRpcError) as excinfo:
+        await heater_shaker.set_temperature(float("nan"))
+    assert excinfo.value.code() is grpc.StatusCode.ABORTED
+    assert b"InvalidHeaterShakerTemperatureError" in base64.b64decode(excinfo.value.details() or "")

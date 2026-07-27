@@ -19,9 +19,9 @@ from ..io import (
 )
 from ._progress import OperationProgress, run_observable, run_observable_with_updates
 
-# The constraints mirror the public Opentrons Heater-Shaker contract. A target
-# below the documented operating range may not be reachable even if the lower
-# hardware layer accepts it.
+# The constraints mirror the Opentrons 9.0 Heater-Shaker contract. API 2.25+
+# accepts 0-95 degrees Celsius, although targets below ambient may be
+# physically unreachable.
 # Active shaking is 200-3000 revolutions per minute; stopping is a separate
 # command so 0 is not overloaded as a hidden control value.
 _CELSIUS = constraints.Unit(
@@ -36,7 +36,7 @@ _REVOLUTIONS_PER_MINUTE = constraints.Unit(
 )
 _TempCelsius = typing.Annotated[
     float,
-    constraints.MinimalInclusive(37.0),
+    constraints.MinimalInclusive(0.0),
     constraints.MaximalInclusive(95.0),
     _CELSIUS,
 ]
@@ -168,7 +168,7 @@ class HeaterShakerFeature(sila.Feature):
             category="modules",
             identifier="HeaterShakerController",
             name="Heater Shaker Controller",
-            version="3.1",
+            version="3.2",
         )
         self._controller = controller
 
@@ -184,7 +184,8 @@ class HeaterShakerFeature(sila.Feature):
         Set the target temperature.
 
         Args:
-            temperature: Target temperature in Celsius (valid range 37-95 C).
+            temperature: Target temperature in Celsius (valid range 0-95 C).
+                Targets below ambient may be physically unreachable.
 
         Returns:
             Current and target temperature.

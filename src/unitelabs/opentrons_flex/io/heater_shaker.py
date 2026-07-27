@@ -146,13 +146,13 @@ class HeaterShakerController(ModuleControllerBase):
 
     @staticmethod
     def _validate_temperature(temperature: float) -> None:
-        """Reject values that are not reliably reachable by the public workflow."""
+        """Reject values outside the pinned Opentrons Heater-Shaker contract."""
         try:
-            is_valid = math.isfinite(temperature) and 37.0 <= temperature <= 95.0
+            is_valid = math.isfinite(temperature) and 0.0 <= temperature <= 95.0
         except (TypeError, ValueError):
             is_valid = False
         if not is_valid:
             message = (
-                f"Heater-Shaker target temperature must be a finite value from 37 to 95 °C; received {temperature!r}."
+                f"Heater-Shaker target temperature must be a finite value from 0 to 95 °C; received {temperature!r}."
             )
             raise InvalidHeaterShakerTemperatureError(message)

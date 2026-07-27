@@ -7,8 +7,17 @@ rename before the connector is started on a robot.
 
 import inspect
 
+import pytest
+
 from opentrons.hardware_control import ot3_calibration
+from opentrons.hardware_control.modules.heater_shaker import HeaterShaker
+from opentrons.hardware_control.modules.thermocycler import Thermocycler
 from opentrons.hardware_control.ot3api import OT3API
+from opentrons.protocol_api.module_validation_and_errors import (
+    APIVersion,
+    InvalidTargetTemperatureError,
+    validate_heater_shaker_temperature,
+)
 
 
 def _params(fn: object) -> list[str]:
@@ -41,3 +50,25 @@ def test_ot3_calibration_contract() -> None:
     assert {"hcapi", "mount", "slot"}.issubset(_params(ot3_calibration.calibrate_pipette))
     assert {"hcapi", "probe", "slot"}.issubset(_params(ot3_calibration.calibrate_gripper_jaw))
     assert {"hcapi", "mount", "pipette_id"}.issubset(_params(ot3_calibration.calibrate_belts))
+
+
+def test_accessory_module_method_contracts() -> None:
+    """Catch upstream changes to the high-level module methods used by the connector."""
+    assert {"celsius"}.issubset(_params(HeaterShaker.start_set_temperature))
+    assert {"celsius", "hold_time_seconds", "volume", "ramp_rate"}.issubset(
+        _params(Thermocycler.set_target_block_temperature)
+    )
+    assert {"celsius"}.issubset(_params(Thermocycler.set_target_lid_temperature))
+
+
+def test_heater_shaker_temperature_contract_matches_opentrons_api_2_25_plus() -> None:
+    """Guard the API 2.25 removal of the former 37 °C lower limit."""
+    api_version = APIVersion(2, 25)
+
+    assert validate_heater_shaker_temperature(0.0, api_version) == 0.0
+    assert validate_heater_shaker_temperature(36.9, api_version) == 36.9
+    assert validate_heater_shaker_temperature(95.0, api_version) == 95.0
+    with pytest.raises(InvalidTargetTemperatureError):
+        validate_heater_shaker_temperature(-0.1, api_version)
+    with pytest.raises(InvalidTargetTemperatureError):
+        validate_heater_shaker_temperature(95.1, api_version)
