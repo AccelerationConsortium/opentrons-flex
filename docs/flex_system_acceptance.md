@@ -69,46 +69,61 @@ Operator preparation checklist:
 First run the simulator and static acceptance tests:
 
 ```sh
-PYTHONPATH=src .venv/bin/pytest -p no:cacheprovider \
-  tests/test_acceptance_manifest.py \
-  tests/integration/test_grpc_thermocycler.py \
-  tests/integration/test_grpc_advanced_flex.py \
-  tests/integration/test_grpc_tip_controller.py \
-  tests/integration/test_grpc_pipette.py -q
+uv run pytest -p no:cacheprovider tests/test_acceptance_manifest.py tests/integration/test_grpc_thermocycler.py tests/integration/test_grpc_advanced_flex.py tests/integration/test_grpc_tip_controller.py tests/integration/test_grpc_pipette.py -q
 ```
 
-Then run only the guarded campaign against the robot. The manifest gate and the explicit actuation gate are both
-required. Keep the JUnit file with the robot/module identity evidence:
+Immediately before actuation, generate a no-motion readiness report from the operator computer:
 
-```sh
-PYTHONPATH=src .venv/bin/pytest -p no:cacheprovider \
-  tests/integration/hardware/test_hitl_full_workflow.py \
-  --robot ROBOT_HOST:50051 \
-  --acceptance-manifest /absolute/path/flex_acceptance.json \
-  --acceptance-workflow-actuation \
-  --junitxml=flex-acceptance.xml -vv
+```powershell
+uv run python scripts/preflight_flex.py ROBOT_HOST --acceptance-manifest C:\path\to\flex_acceptance.json --runtime-manifest C:\path\to\verified-artifact\runtime-manifest.json --output .\flex-hitl-readiness.json
+```
+
+This command is native Python and works from PowerShell, Command Prompt, macOS, or Linux. On Windows it uses the
+built-in OpenSSH client to run the robot-side, no-hardware runtime check; install the Windows OpenSSH Client feature if
+`ssh` is unavailable. The remote shell remains on the Flex and is not executed locally. Use the
+`runtime-manifest.json` from the wheel bundle that was verified before deployment. The check compares that artifact's
+release ID and bundle digest with both the active Flex venv and the immutable release identity captured by the
+currently running connector process. A symlink change without a service restart therefore blocks readiness instead
+of approving the stale process.
+
+Then run only the guarded campaign against the robot. The manifest gate, fresh readiness evidence, and explicit
+actuation gate are all required. The pytest fixture reruns the same live preflight in-process and overwrites the
+specified report immediately before any actuation; an old or hand-edited JSON file is not an authorization token.
+Keep the JUnit file with the robot/module/release identity evidence:
+
+```powershell
+uv run pytest -p no:cacheprovider tests/integration/hardware/test_hitl_full_workflow.py --robot ROBOT_HOST:50051 --acceptance-manifest C:\path\to\flex_acceptance.json --acceptance-runtime-manifest C:\path\to\verified-artifact\runtime-manifest.json --acceptance-readiness-report .\flex-hitl-readiness.json --acceptance-workflow-actuation --junitxml=.\flex-acceptance.xml -vv
 ```
 
 On failure, the runner de-energizes module actuators and lights, but it never guesses a Gripper recovery route. Inspect
 the physical deck, reconcile the state ledger, home the robot, and only then restart the campaign.
 
+Evidence states are deliberately non-interchangeable:
+
+- `OFFLINE_VALIDATED` describes simulator/static coverage only;
+- `READY_FOR_HITL` is emitted by the live, no-motion preflight and never claims physical success;
+- `HARDWARE_PASSED` appears only in JUnit after every guarded physical phase and every safety-settlement operation
+  completes. Cleanup failure blocks this state.
+
 ## Run or publish the Unitelabs workflow
 
-The workflow package uses the same connector-side `AcceptanceManifest` contract and calls the independent SiLA
+The workflow package uses the same shared `AcceptanceManifest` contract as the connector and calls the independent SiLA
 features through the Unitelabs SDK. After the direct run passes, provision its JUnit
 `commissioned_manifest_sha256` in the workflow worker environment, then run the identical manifest:
 
-```sh
-FLEX_ACCEPTANCE_MANIFEST_SHA256=THE_PASSED_JUNIT_DIGEST \
-uv run --directory workflows/flex-system-acceptance workflow \
-  --manifest /absolute/path/flex_acceptance.json \
-  --device "Opentrons Flex"
+```powershell
+$env:FLEX_ACCEPTANCE_MANIFEST_SHA256 = "THE_PASSED_JUNIT_DIGEST"
+uv run --directory workflows/flex-system-acceptance workflow --manifest C:\path\to\flex_acceptance.json --device "Opentrons Flex"
 ```
+
+`uv` selects the workflow's Python 3.12 environment. It does not install the
+Python 3.10 hardware connector into Windows: both sides share the dependency-free
+`unitelabs-flex-acceptance-contract` package instead.
 
 To publish it with the repository's existing workflow tooling:
 
-```sh
-cd workflows
+```powershell
+Set-Location workflows
 uv run scripts/publish_workflows.py flex-system-acceptance
 ```
 
@@ -117,3 +132,8 @@ module serials, pipette identity, manifest fingerprint, phase names, and the fin
 workflow for routine operator execution after that exact hardware/layout combination has passed commissioning. If any
 coordinate, labware, module identity, or operating value changes, rerun direct commissioning and update the approved
 fingerprint; never compute and approve a new fingerprint merely to bypass a failed workflow gate.
+
+Deployment and robot service switching are a separate maintainer path. The repository's `deploy.sh` and service
+scripts target the Flex Linux host and require CI, macOS, WSL, or Git Bash; the lab's native PowerShell path above does
+not depend on those scripts. The Mac checkout can therefore remain a backup/test operator without becoming the source
+of truth for the Windows `main` deployment.

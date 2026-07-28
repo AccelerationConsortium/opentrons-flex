@@ -8,23 +8,21 @@ from prefect import task
 from prefect.cache_policies import NONE
 from unitelabs.sdk import get_logger
 
-from unitelabs.opentrons_flex.acceptance import (
+from unitelabs_flex_acceptance_contract import (
     AcceptanceManifest,
     Coordinate,
-    PlanContract,
-    WellGeometryConfig,
-    validate_plan_contract,
-)
-from unitelabs.opentrons_flex.features import (
     LiquidPosition,
     Mount,
     PipetteMount,
+    PlanContract,
+    ThermocyclerProfileStep,
     TipLocation,
     TransferProfile,
     VerifiedLiquidClass,
     WellGeometry,
+    WellGeometryConfig,
+    validate_plan_contract,
 )
-from unitelabs.opentrons_flex.features.thermocycler import ThermocyclerProfileStep
 
 from ._helpers import feature, field, get_flex_service, invoke
 

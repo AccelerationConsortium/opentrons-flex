@@ -9,7 +9,6 @@ route in local, pre-provisioned configuration.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import grpc.aio
 import httpx
 import pytest
@@ -42,6 +41,12 @@ from unitelabs.opentrons_flex.features import (
 )
 from unitelabs.opentrons_flex.features.motion_control import MachineStatus
 from unitelabs.opentrons_flex.features.thermocycler import ThermocyclerProfileStep
+from unitelabs.opentrons_flex.hitl_evidence import (
+    HITL_HARDWARE_PASSED_STATUS,
+    HITL_READINESS_STATUS,
+    HitlReadinessEvidence,
+    settle_hitl_operations,
+)
 
 from ..absorbance_reader_client import AbsorbanceReaderClient
 from ..flex_stacker_client import FlexStackerClient
@@ -195,6 +200,8 @@ async def _preflight(
             f"{name} serial mismatch: expected {expected_serial!r}, found {info.serial_number!r}"
         )
         record_property(f"{name}_serial", info.serial_number)
+        record_property(f"{name}_model", info.model)
+        record_property(f"{name}_firmware", info.firmware_version)
 
     reader_status = await reader.get_status()
     unsupported = set(manifest.modules.plate_reader_wavelengths) - set(reader_status.supported_wavelengths)
@@ -215,8 +222,9 @@ async def _preflight(
 
 
 async def test_manifest_driven_full_flex_acceptance_workflow(
-    sila_channel,
     acceptance_manifest: AcceptanceManifest,
+    acceptance_readiness_evidence: HitlReadinessEvidence,
+    sila_channel,
     run_context,
     http_client: httpx.Client,
     record_property,
@@ -234,6 +242,7 @@ async def test_manifest_driven_full_flex_acceptance_workflow(
     reader = AbsorbanceReaderClient(channel, protobuf)
     stacker = FlexStackerClient(channel, protobuf)
     manifest = acceptance_manifest
+    readiness = acceptance_readiness_evidence
     p = manifest.pipetting
     m = manifest.modules
     plans = manifest.plans
@@ -253,6 +262,14 @@ async def test_manifest_driven_full_flex_acceptance_workflow(
         record_property,
     )
     record_property("acceptance_schema_version", manifest.schema_version)
+    record_property("readiness_evidence_status", HITL_READINESS_STATUS)
+    record_property("readiness_report_sha256", readiness.report_sha256)
+    record_property("runtime_contract_id", readiness.runtime_contract_id)
+    record_property("connector_version", readiness.connector_version)
+    record_property("opentrons_version", readiness.opentrons_version)
+    record_property("python_version", readiness.python_version)
+    record_property("release_id", readiness.release_id)
+    record_property("bundle_sha256", readiness.bundle_sha256)
 
     try:
         record_property("phase_01", "home_and_configuration")
@@ -421,9 +438,6 @@ async def test_manifest_driven_full_flex_acceptance_workflow(
 
         await _assert_machine_ok(motion, "at workflow completion")
         await _assert_deck_valid(labware, "at workflow completion")
-        record_property("acceptance_result", "completed")
-        # A failed run must never leave an approval-looking fingerprint in JUnit.
-        record_property("commissioned_manifest_sha256", manifest.commissioning_digest())
     finally:
         # Only de-energize mechanisms here. Never guess a recovery
         # gripper route after a failed physical move; the operator must reconcile
@@ -431,17 +445,24 @@ async def test_manifest_driven_full_flex_acceptance_workflow(
         # A failed pipetting move may leave the tip or liquid state uncertain.
         # Do not add another gantry move in cleanup; the operator must reconcile
         # and discard the tip after confirming that the robot is safe to home.
-        with contextlib.suppress(Exception):
-            await heater_shaker.stop_shaking()
-        with contextlib.suppress(Exception):
-            await heater_shaker.deactivate_heater()
-        with contextlib.suppress(Exception):
-            await thermocycler.deactivate_all()
-        with contextlib.suppress(Exception):
-            await temperature_module.deactivate()
-        with contextlib.suppress(Exception):
-            await reader.deactivate()
-        with contextlib.suppress(Exception):
-            await stacker.deactivate()
-        with contextlib.suppress(Exception):
-            await motion.observable("SetLights", {"button": False, "rails": False})
+        cleanup_errors = await settle_hitl_operations(
+            (
+                ("stop Heater-Shaker motion", heater_shaker.stop_shaking),
+                ("deactivate Heater-Shaker", heater_shaker.deactivate_heater),
+                ("deactivate Thermocycler", thermocycler.deactivate_all),
+                ("deactivate Temperature Module", temperature_module.deactivate),
+                ("deactivate Plate Reader", reader.deactivate),
+                ("deactivate Flex Stacker", stacker.deactivate),
+                ("switch off Flex lights", lambda: motion.observable("SetLights", {"button": False, "rails": False})),
+            )
+        )
+
+    if cleanup_errors:
+        pytest.fail(
+            "Physical workflow completed but safety settlement was incomplete; "
+            f"HARDWARE_PASSED was not issued: {'; '.join(cleanup_errors)}"
+        )
+    record_property("acceptance_result", "completed")
+    record_property("hardware_evidence_status", HITL_HARDWARE_PASSED_STATUS)
+    # A failed or unsettled run must never leave an approval-looking fingerprint in JUnit.
+    record_property("commissioned_manifest_sha256", manifest.commissioning_digest())

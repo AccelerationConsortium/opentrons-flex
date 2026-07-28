@@ -41,6 +41,9 @@ jobs:
       - name: Test (unit + gRPC simulator)
         run: uv run pytest --cov=src --cov-report=term --cov-report=xml --junit-xml=junit.xml
 
+      - name: Collect guarded HITL inventory (no hardware execution)
+        run: uv run pytest tests/integration/hardware --collect-only -q
+
       - name: Upload coverage
         uses: actions/upload-artifact@v7
         with:
@@ -169,3 +172,35 @@ jobs:
           if total == 0:
               print('  No open issues.')
           "
+
+  windows-operator-readiness:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          version: "0.9.6"
+          enable-cache: true
+
+      - name: Set up operator Python 3.10
+        run: uv python install 3.10
+
+      - name: Install connector and test dependencies
+        run: uv sync --all-extras
+
+      - name: Validate Windows readiness and evidence path
+        run: uv run pytest -p no:cacheprovider tests/scripts/test_preflight_flex.py tests/test_hitl_evidence.py tests/test_acceptance_manifest.py tests/test_runtime_contract_consistency.py -q
+
+      - name: Build a valid offline workflow manifest
+        run: uv run python -c "import json; from tests.test_acceptance_manifest import _manifest; open('flex-acceptance-ci.json', 'w', encoding='utf-8').write(json.dumps(_manifest()))"
+
+      - name: Set up Windows workflow Python 3.12
+        run: |
+          uv python install 3.12
+          uv venv --python 3.12 .venv-workflow
+          uv pip install --python .venv-workflow\Scripts\python.exe --no-deps -e packages\flex-acceptance-contract -e workflows\flex-system-acceptance
+
+      - name: Execute the native PowerShell workflow entrypoint
+        run: .\.venv-workflow\Scripts\python.exe -m flex_system_acceptance --validate-only --manifest .\flex-acceptance-ci.json

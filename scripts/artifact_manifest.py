@@ -28,6 +28,7 @@ PINNED_RUNTIME_WHEELS = {
     "python-dotenv": "1.0.1",
     "python-multipart": "0.0.18",
     "sqlalchemy": "1.4.51",
+    "unitelabs-flex-acceptance-contract": "0.1.0",
     "uvicorn": "0.27.0.post1",
     "wsproto": "1.2.0",
 }

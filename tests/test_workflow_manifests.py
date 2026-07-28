@@ -114,6 +114,19 @@ def test_flex_acceptance_workflow_is_hardware_tagged() -> None:
     assert {"flex", "liquid-handler", "hardware-acceptance"} <= tags
 
 
+def test_flex_workflow_uses_cross_runtime_contract_instead_of_connector_package() -> None:
+    """The Python 3.12 workflow must not depend on the Python 3.10 robot runtime."""
+    data = _pyproject("flex-system-acceptance")
+    dependencies = set(data["project"]["dependencies"])
+
+    assert data["project"]["requires-python"] == ">=3.12"
+    assert "unitelabs-flex-acceptance-contract==0.1.0" in dependencies
+    assert all(not dependency.startswith("unitelabs-opentrons-flex") for dependency in dependencies)
+    assert data["tool"]["uv"]["sources"]["unitelabs-flex-acceptance-contract"]["path"] == (
+        "../../packages/flex-acceptance-contract"
+    )
+
+
 def test_transfer_workflow_uses_shared_labware_helpers() -> None:
     """The plate-transfer E2E workflow should keep its shared labware helper dependency."""
     data = _pyproject("ot2-transfer")

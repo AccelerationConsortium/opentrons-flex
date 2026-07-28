@@ -54,6 +54,15 @@ def _reset_robot_server_stubs():
     sys.modules["robot_server.hardware"]._init_task_accessor.reset_mock()
     sys.modules["robot_server.app"].app.reset_mock()
     sys.modules["robot_server.app"].app.dependency_overrides.clear()
+    sys.modules["robot_server.app"].app.router.routes.clear()
+    with patch(
+        "unitelabs.opentrons_flex.process_runtime_identity",
+        return_value={
+            "runtimeContractId": "test",
+            "releaseIdentity": None,
+        },
+    ):
+        yield
 
 
 def _make_api() -> AsyncMock:

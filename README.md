@@ -46,7 +46,7 @@ Motion is exposed per **mount** (`LEFT`, `RIGHT`, `GRIPPER`) in deck coordinates
 ### Verified models and environments
 
 Automated verification and the ARM deployment artifact use the real Opentrons
-8.8.1 hardware simulators on Python 3.10. Controlled Protocol Engine
+9.0.0 hardware simulators on Python 3.10. Controlled Protocol Engine
 mutation is intentionally unavailable on unvalidated Opentrons/Python matrices.
 The connector recognizes these official model identifiers:
 
@@ -144,7 +144,15 @@ For commissioning the complete robot plus Heater-Shaker, Thermocycler, Temperatu
 Module, Absorbance Plate Reader, Flex Stacker, and passive Magnetic Block, use the
 [manifest-driven system acceptance workflow](docs/flex_system_acceptance.md). It
 provides both a publishable Unitelabs workflow and a guarded direct SiLA gRPC HITL
-runner with JUnit identity evidence.
+runner with JUnit identity evidence. The operator-side preflight and evidence
+validation are pure Python and use `pathlib`, so the readiness, commissioning,
+and routine workflow operator path runs natively on the lab Windows computer;
+macOS remains a compatible backup environment. The `deploy.sh` and service
+management scripts are POSIX tooling for the Flex's Linux environment: invoke
+them from CI, macOS, WSL, or Git Bash rather than native PowerShell.
+The connector/runtime remains pinned to Python 3.10, while the local Unitelabs
+workflow uses Python 3.12 and depends only on the shared cross-runtime acceptance
+contract; `uv run --directory` keeps those environments isolated.
 
 ### Module feature v2 migration
 
@@ -255,8 +263,8 @@ Activate the virtual environment:
 
 - On **Windows**:
 
-  ```sh
-  .\venv\Scripts\activate.bat
+  ```powershell
+  .\.venv\Scripts\Activate.ps1
   ```
 
 - On **macOS**/**Linux**:
@@ -267,8 +275,8 @@ Activate the virtual environment:
 
 If you are on a Windows machine, you may additionally wish to set the `UNITELABS_CDK_APP` environment variable to the connector's entry point:
 
-```sh
-set UNITELABS_CDK_APP=unitelabs.opentrons_flex:create_app
+```powershell
+$env:UNITELABS_CDK_APP = "unitelabs.opentrons_flex:create_app"
 ```
 
 Setting this environment variable will allow you to run various CLI commands without providing `--app unitelabs.opentrons_flex:create_app` every time.
@@ -411,8 +419,10 @@ controlled insertion is enabled only when `run_mutation_ledger_path` is configur
 and a bearer token of at least 32 random characters named by
 `run_mutation_token_env` is present at startup. The token is also bound to the
 operator identity named by `run_mutation_actor_env`; callers cannot self-attribute
-another actor in the audit. The current private-state adapter is startup-gated to
-its validated Opentrons 8.8.1 runtime.
+another actor in the audit. The private-state adapter is startup-gated to the
+validated Opentrons 9.0.0 runtime and reports a deterministic runtime contract
+identifier. Startup checks the required robot-server callables, mutable app/router
+surfaces, and package origins before OT3API or the CAN bus is initialized.
 
 Before a run starts, a small set of non-actuating setup commands remains available
 only when robot-server authoritatively identifies the run as protocol-less. This
@@ -650,7 +660,10 @@ Switch between the SiLA connector and the stock opentrons robot-server at any ti
 ./scripts/switch_mode.sh <robot-ip> opentrons
 ```
 
-Run all read-only readiness checks before uploading a protocol:
+Run all general read-only readiness checks before uploading a protocol. For the
+commissioning/HITL command on the Windows operator machine, including its exact
+artifact-binding arguments, follow
+[`docs/flex_system_acceptance.md`](docs/flex_system_acceptance.md):
 
 ```sh
 uv run python scripts/preflight_flex.py <robot-ip>
@@ -677,9 +690,14 @@ bindings that Opentrons does not distribute as portable wheels, notably
 closure plus all five co-versioned Opentrons Python packages from the immutable
 9.0.0 source commit. Deployment rejects incomplete releases and writes a
 completion marker only after no-hardware runtime validation. Startup rejects a
-wrong Python/Opentrons version, a missing private symbol, or any of those five
-Opentrons modules imported from outside the active release before initializing
-OT3API or the CAN bus.
+wrong Python/Opentrons version, a missing or incorrectly shaped private
+robot-server contract, or any of those five Opentrons modules imported from
+outside the active release before initializing OT3API or the CAN bus. The
+preflight report includes a deterministic `runtime_contract_id`; physical
+acceptance evidence must match that identifier and the selected manifest. The
+embedded `/unitelabs/runtime` route reports an identity captured by the running
+connector process, so preflight rejects an active symlink or artifact that does
+not match the process currently serving HTTP/gRPC.
 
 Then start the connector and run the live HTTP integration tests:
 

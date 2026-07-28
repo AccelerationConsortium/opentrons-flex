@@ -51,16 +51,29 @@ except ImportError:
     _rs_hw.get_deck_type = _stub_get_deck_type
     _rs_app = types.ModuleType("robot_server.app")
     _rs_app.app = MagicMock(name="robot_server_app")
+    _rs_app.app.state = types.SimpleNamespace()
     _rs_app.app.dependency_overrides = {}
+    _rs_app.app.router.routes = []
+    _rs_app.app.router.lifespan_context = MagicMock(name="robot_server_lifespan")
+
+    def _include_router(router):
+        _rs_app.app.router.routes.extend(router.routes)
+
+    _rs_app.app.include_router = MagicMock(name="include_router", side_effect=_include_router)
+    _rs_app.app.openapi_schema = None
     _rs_runs = types.ModuleType("robot_server.runs")
     _rs_dependencies = types.ModuleType("robot_server.runs.dependencies")
     _rs_dependencies.start_light_control_task = MagicMock(name="start_light_control_task")
     _rs_dependencies.mark_light_control_startup_finished = MagicMock(name="mark_light_control_startup_finished")
+    _opentrons_hardware = types.ModuleType("opentrons_hardware")
+    _server_utils = types.ModuleType("server_utils")
     sys.modules["robot_server"] = _rs
     sys.modules["robot_server.hardware"] = _rs_hw
     sys.modules["robot_server.app"] = _rs_app
     sys.modules["robot_server.runs"] = _rs_runs
     sys.modules["robot_server.runs.dependencies"] = _rs_dependencies
+    sys.modules["opentrons_hardware"] = _opentrons_hardware
+    sys.modules["server_utils"] = _server_utils
 
 try:
     import unitelabs.bus.testing.fixtures

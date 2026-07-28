@@ -4,7 +4,7 @@
 
 | Layer | Status | Evidence or remaining gate |
 | --- | --- | --- |
-| Python syntax and Protocol API 2.27 | Pass | Installed Opentrons 8.8.1 supports API 2.27 |
+| Python syntax and Protocol API 2.27 | Pass | Validated Opentrons 9.0.0 runtime supports API 2.27 |
 | Full command graph | Pass with exact labware | 344 run-log records; 82 aspirates, 66 dispenses, 9 gripper moves, and 634 programmed seconds |
 | Tip lifecycle | Pass | 26 pickups: 20 discarded full columns and 6 returned/reused pickups |
 | Temperature cleanup | Pass | Deactivation is in `finally` and appears once in the run log |

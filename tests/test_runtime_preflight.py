@@ -14,6 +14,8 @@ def _report(*, compatible: bool = True) -> RuntimeCompatibilityReport:
         robot_server_version="9.0.0",
         robot_server_source="/release/robot_server/__init__.py",
         runtime_package_versions={},
+        runtime_contract_id="flex-runtime-test",
+        private_api_checks=(),
         base_compatible=compatible,
         mutation_compatible=compatible,
         issues=() if compatible else ("base mismatch",),
@@ -96,3 +98,66 @@ def test_runtime_preflight_rejects_simulator_for_live_deployment(tmp_path, monke
 
     assert result == 1
     assert "use_simulator must be false" in capsys.readouterr().out
+
+
+def test_release_identity_binds_active_venv_to_verified_bundle(tmp_path, monkeypatch) -> None:
+    bundle_sha256 = "a" * 64
+    architecture = "aarch64"
+    python_version = f"{runtime_preflight.sys.version_info.major}.{runtime_preflight.sys.version_info.minor}"
+    release_id = f"flex-0.9.1-ot9.0.0-py{python_version}-{architecture}-{bundle_sha256[:12]}"
+    (tmp_path / "runtime-manifest.json").write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "connectorVersion": "0.9.1",
+                "opentronsVersion": "9.0.0",
+                "robotServerVersion": "9.0.0",
+                "opentronsSourceCommit": "44b37a2f91520bf2e7245c70bf799d46c8c2d9a5",
+                "pythonVersion": python_version,
+                "architecture": architecture,
+                "releaseId": release_id,
+                "bundleSha256": bundle_sha256,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(runtime_preflight.sys, "prefix", str(tmp_path))
+    monkeypatch.setattr(runtime_preflight, "_normalized_architecture", lambda: architecture)
+
+    identity, issues = runtime_preflight._release_identity(
+        connector_version="0.9.1",
+        opentrons_version="9.0.0",
+        required=True,
+    )
+
+    assert issues == ()
+    assert identity == {
+        "release_id": release_id,
+        "bundle_sha256": bundle_sha256,
+    }
+
+
+def test_release_identity_rejects_manifest_from_different_active_bundle(tmp_path, monkeypatch) -> None:
+    manifest = {
+        "schemaVersion": 1,
+        "connectorVersion": "0.9.1",
+        "opentronsVersion": "9.0.0",
+        "robotServerVersion": "9.0.0",
+        "opentronsSourceCommit": "44b37a2f91520bf2e7245c70bf799d46c8c2d9a5",
+        "pythonVersion": f"{runtime_preflight.sys.version_info.major}.{runtime_preflight.sys.version_info.minor}",
+        "architecture": "aarch64",
+        "releaseId": "flex-0.9.1-unrelated",
+        "bundleSha256": "a" * 64,
+    }
+    (tmp_path / "runtime-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(runtime_preflight.sys, "prefix", str(tmp_path))
+    monkeypatch.setattr(runtime_preflight, "_normalized_architecture", lambda: "aarch64")
+
+    identity, issues = runtime_preflight._release_identity(
+        connector_version="0.9.1",
+        opentrons_version="9.0.0",
+        required=True,
+    )
+
+    assert identity is None
+    assert any("releaseId" in issue for issue in issues)

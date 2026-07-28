@@ -36,8 +36,11 @@ import httpx
 import pytest
 import pytest_asyncio
 
+from scripts import preflight_flex
 from unitelabs.cdk import SiLAServerConfig
 from unitelabs.opentrons_flex import OpentronsFlexConfig, create_app
+from unitelabs.opentrons_flex.hitl_evidence import HitlReadinessEvidence, load_hitl_readiness_evidence
+from unitelabs.opentrons_flex.runtime_compat import RUNTIME_CONTRACT_ID
 
 log = logging.getLogger("opentrons_flex.tests")
 
@@ -200,6 +203,21 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "adapter, module, safe test liquid, tip, lid, and Stacker shuttle before opening this gate."
         ),
     )
+    parser.addoption(
+        "--acceptance-readiness-report",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Fresh READY_FOR_HITL JSON from scripts/preflight_flex.py. Required by the complete acceptance workflow "
+            "and bound to the selected robot, manifest, and runtime contract."
+        ),
+    )
+    parser.addoption(
+        "--acceptance-runtime-manifest",
+        metavar="PATH",
+        default=None,
+        help="runtime-manifest.json from the exact verified wheel artifact deployed to the target Flex.",
+    )
 
 
 def _is_hardware_run(config: pytest.Config) -> bool:
@@ -361,6 +379,64 @@ def acceptance_manifest(request: pytest.FixtureRequest):
     if path is None:
         pytest.skip("--acceptance-manifest is required for the full acceptance workflow")
     return AcceptanceManifest.load(path)
+
+
+@pytest.fixture(scope="session")
+def acceptance_readiness_evidence(
+    request: pytest.FixtureRequest,
+    acceptance_manifest,
+    run_context: RunContext,
+) -> HitlReadinessEvidence:
+    """Validate the no-motion evidence required before full workflow actuation."""
+    path = request.config.getoption("--acceptance-readiness-report")
+    if path is None:
+        pytest.fail(
+            "--acceptance-readiness-report is required for the full acceptance workflow. "
+            "Generate it on the operator computer with scripts/preflight_flex.py immediately before HITL.",
+            pytrace=False,
+        )
+    manifest_path = request.config.getoption("--acceptance-manifest")
+    runtime_manifest_path = request.config.getoption("--acceptance-runtime-manifest")
+    robot = request.config.getoption("--robot")
+    if runtime_manifest_path is None:
+        pytest.fail(
+            "--acceptance-runtime-manifest is required to bind HITL to the exact deployed wheel artifact.",
+            pytrace=False,
+        )
+    if robot is None:
+        pytest.fail("--robot HOST:PORT is required for the full acceptance workflow.", pytrace=False)
+    grpc_port = robot.rsplit(":", 1)[1]
+    robot_http = request.config.getoption("--robot-http")
+    http_port = robot_http.rsplit(":", 1)[1] if robot_http and ":" in robot_http else str(_HTTP_API_PORT)
+    result = preflight_flex.main(
+        [
+            run_context.device_id,
+            "--grpc-port",
+            grpc_port,
+            "--http-port",
+            http_port,
+            "--acceptance-manifest",
+            manifest_path,
+            "--runtime-manifest",
+            runtime_manifest_path,
+            "--output",
+            path,
+        ]
+    )
+    if result != 0:
+        pytest.fail(
+            "The live no-motion preflight failed; HITL actuation remains disabled.",
+            pytrace=False,
+        )
+    try:
+        return load_hitl_readiness_evidence(
+            path,
+            expected_host=run_context.device_id,
+            expected_manifest_sha256=acceptance_manifest.commissioning_digest(),
+            expected_runtime_contract_id=RUNTIME_CONTRACT_ID,
+        )
+    except ValueError as exc:
+        pytest.fail(str(exc), pytrace=False)
 
 
 @pytest.fixture(scope="session")

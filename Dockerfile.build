@@ -29,6 +29,7 @@ RUN apt-get -y update && \
 WORKDIR /build
 ADD pyproject.toml uv.lock README.md /build/
 ADD src /build/src
+ADD packages/flex-acceptance-contract /build/packages/flex-acceptance-contract
 ADD scripts/artifact_manifest.py /build/scripts/artifact_manifest.py
 
 # Download/build wheels for the project and all runtime deps into /wheels.

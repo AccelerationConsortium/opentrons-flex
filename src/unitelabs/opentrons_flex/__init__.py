@@ -49,6 +49,15 @@ from .io.run_authority import (
 )
 from .io.simulator_compat import OT3SimulatorCompatibilityAdapter
 from .run_mutation import MUTATION_CHECKPOINT_PREFIX, MutationLedger, MutationLedgerError, RunMutationCoordinator
+from .runtime_identity_api import create_runtime_identity_router, process_runtime_identity
+from .robot_server_compat import (
+    current_run_store,
+    include_robot_server_router,
+    install_robot_server_app,
+    load_robot_server_bindings,
+    protocol_run_state,
+    restore_robot_server_app,
+)
 from .runtime_compat import (
     RuntimeCompatibilityReport,
     mutation_configuration_issues,
@@ -333,9 +342,14 @@ def _shared_hardware_robot_server_lifespan(
 
     @contextlib.asynccontextmanager
     async def lifespan(app: _AppWithState) -> collections.abc.AsyncGenerator[None, None]:
-        from robot_server.runs.dependencies import (  # type: ignore[import]
-            mark_light_control_startup_finished,
-            start_light_control_task,
+        bindings = load_robot_server_bindings()
+        start_light_control_task = typing.cast(
+            collections.abc.Callable[..., collections.abc.Awaitable[object]],
+            bindings.start_light_control_task,
+        )
+        mark_light_control_startup_finished = typing.cast(
+            collections.abc.Callable[..., collections.abc.Awaitable[object]],
+            bindings.mark_light_control_startup_finished,
         )
 
         async with original_lifespan(app):
@@ -460,14 +474,7 @@ async def _create_app_with_robot_server(
     from opentrons.protocol_engine import DeckType
     from opentrons_shared_data.robot.types import RobotTypeEnum
 
-    from robot_server.hardware import (  # type: ignore[import]
-        _hw_api_accessor,
-        _init_task_accessor,
-        get_deck_type,
-        get_robot_type,
-        get_robot_type_enum,
-    )
-    from robot_server.app import app as robot_server_app  # type: ignore[import]
+    robot_server = load_robot_server_bindings()
 
     mutation_api_token: str | None = None
     mutation_authenticated_actor: str | None = None
@@ -525,54 +532,15 @@ async def _create_app_with_robot_server(
         # by its AppStateAccessor. Reading the state directly keeps the shared
         # hardware wiring testable without importing robot-server's private runs
         # package on development hosts.
-        return getattr(robot_server_app.state, "run_orchestrator_store", None)
+        return current_run_store(robot_server, robot_server_ready=robot_server_ready)
 
     robot_server_ready = False
 
     def _current_run_state() -> ProtocolRunState:
-        store = _current_run_store()
-        if store is None:
-            if not robot_server_ready:
-                return ProtocolRunState(
-                    run_id="robot-server-startup",
-                    status="initializing",
-                    started=False,
-                    terminal=False,
-                )
-            return ProtocolRunState(run_id=None, status="idle", started=False, terminal=True)
-        run_id = store.current_run_id
-        if run_id is None:
-            return ProtocolRunState(run_id=None, status="idle", started=False, terminal=True)
-        status = store.get_status()
-        status_value = str(getattr(status, "value", status))
-        missing_protocol_runner = object()
-        protocol_runner = getattr(store.run_orchestrator, "_protocol_runner", missing_protocol_runner)
-        checkpoint_id = None
-        current_pointer = store.get_current_command()
-        if current_pointer is not None:
-            current_command = store.get_command(current_pointer.command_id)
-            message = getattr(current_command.params, "message", None)
-            command_status = str(getattr(current_command.status, "value", current_command.status))
-            if (
-                current_command.commandType == "waitForResume"
-                and command_status == "running"
-                and isinstance(message, str)
-                and message.startswith(MUTATION_CHECKPOINT_PREFIX)
-            ):
-                checkpoint_id = current_command.id
-        return ProtocolRunState(
-            run_id=run_id,
-            status=status_value,
-            started=bool(store.run_was_started()),
-            # PE marks its logical run result before halt/reset/home cleanup.
-            # Retain exclusive ownership throughout the observable FINISHING or
-            # STOP_REQUESTED phase until hardware cleanup has completed.
-            terminal=status_value in {"succeeded", "failed", "stopped"},
-            mutation_checkpoint_id=checkpoint_id,
-            # In the version-pinned RunOrchestrator, only runs created without
-            # a protocol have no Python/JSON protocol runner. Unknown layouts
-            # fail closed as not protocol-less.
-            protocol_less=protocol_runner is None,
+        return protocol_run_state(
+            _current_run_store(),
+            robot_server_ready=robot_server_ready,
+            checkpoint_prefix=MUTATION_CHECKPOINT_PREFIX,
         )
 
     run_authority = ProtocolRunAuthority(_current_run_state)
@@ -604,8 +572,6 @@ async def _create_app_with_robot_server(
 
     init_task: asyncio.Task[None] = asyncio.create_task(_noop())
     await init_task
-    _init_task_accessor.set_on(robot_server_app.state, init_task)
-    _hw_api_accessor.set_on(robot_server_app.state, proxy)
 
     # robot-server normally derives these values from process-wide feature flags.
     # Those flags identify an off-robot development host as OT-2 even though this
@@ -620,25 +586,34 @@ async def _create_app_with_robot_server(
     async def _get_flex_deck_type() -> DeckType:
         return DeckType.OT3_STANDARD
 
-    dependency_overrides = robot_server_app.dependency_overrides
     flex_identity_overrides = {
-        get_robot_type: _get_flex_robot_type,
-        get_robot_type_enum: _get_flex_robot_type_enum,
-        get_deck_type: _get_flex_deck_type,
+        robot_server.get_robot_type: _get_flex_robot_type,
+        robot_server.get_robot_type_enum: _get_flex_robot_type_enum,
+        robot_server.get_deck_type: _get_flex_deck_type,
     }
-    missing_override = object()
-    original_identity_overrides = {
-        dependency: dependency_overrides.get(dependency, missing_override) for dependency in flex_identity_overrides
-    }
-    dependency_overrides.update(flex_identity_overrides)
-
-    original_robot_server_lifespan = robot_server_app.router.lifespan_context
-    robot_server_app.router.lifespan_context = _shared_hardware_robot_server_lifespan(
-        original_robot_server_lifespan,
-        proxy,
+    robot_server_installation = install_robot_server_app(
+        robot_server,
+        initialization_task=init_task,
+        hardware_proxy=proxy,
+        identity_overrides=flex_identity_overrides,
+        lifespan_factory=lambda original_lifespan: _shared_hardware_robot_server_lifespan(
+            typing.cast(typing.Callable[..., object], original_lifespan),
+            proxy,
+        ),
     )
+    robot_server_app = typing.cast(typing.Any, robot_server_installation.app)
 
-    added_mutation_routes: tuple[object, ...] = ()
+    runtime_identity = process_runtime_identity(
+        compatibility,
+        require_release=not config.use_simulator,
+    )
+    runtime_identity_router = create_runtime_identity_router(runtime_identity)
+    added_robot_server_routes = list(
+        include_robot_server_router(
+            robot_server_installation,
+            runtime_identity_router,
+        )
+    )
     mutation_coordinator: RunMutationCoordinator | None = None
     if mutation_ledger is not None:
         from .run_mutation_api import create_run_mutation_router
@@ -653,9 +628,12 @@ async def _create_app_with_robot_server(
             mutation_coordinator,
             api_token=typing.cast(str, mutation_api_token),
         )
-        added_mutation_routes = tuple(mutation_router.routes)
-        robot_server_app.include_router(mutation_router)
-        robot_server_app.openapi_schema = None
+        added_robot_server_routes.extend(
+            include_robot_server_router(
+                robot_server_installation,
+                mutation_router,
+            )
+        )
         log.info("Controlled run mutation enabled with durable ledger %s", mutation_ledger.path)
     else:
         log.info("Controlled run mutation routes were not registered.")
@@ -720,17 +698,10 @@ async def _create_app_with_robot_server(
     finally:
         uv_server.should_exit = True
         await asyncio.gather(robot_server_task, return_exceptions=True)
-        robot_server_app.router.lifespan_context = original_robot_server_lifespan
-        if added_mutation_routes:
-            robot_server_app.router.routes[:] = [
-                route for route in robot_server_app.router.routes if route not in added_mutation_routes
-            ]
-            robot_server_app.openapi_schema = None
-        for dependency, original_override in original_identity_overrides.items():
-            if original_override is missing_override:
-                dependency_overrides.pop(dependency, None)
-            else:
-                dependency_overrides[dependency] = original_override
+        restore_robot_server_app(
+            robot_server_installation,
+            added_routes=tuple(added_robot_server_routes),
+        )
         try:
             if labware_state is not None:
                 labware_state.close()

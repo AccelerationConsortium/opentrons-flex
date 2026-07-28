@@ -1,0 +1,10 @@
+[project]
+name = "unitelabs-flex-acceptance-contract"
+version = "0.1.0"
+description = "Python 3.10-3.12 manifest and wire-value contract for Flex acceptance workflows."
+requires-python = ">=3.10,<3.13"
+dependencies = []
+
+[build-system]
+requires = ["uv_build>=0.4,<0.10"]
+build-backend = "uv_build"

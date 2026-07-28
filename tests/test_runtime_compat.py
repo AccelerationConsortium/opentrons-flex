@@ -20,7 +20,7 @@ def _matching_report(*, require_robot_server: bool = True) -> runtime_compat.Run
             side_effect=package_versions.__getitem__,
         ),
         patch.object(runtime_compat.sys, "version_info", (3, 10, 20)),
-        patch.object(runtime_compat, "_inspect_robot_server", return_value=("9.0.0", "/robot_server", ())),
+        patch.object(runtime_compat, "_inspect_robot_server", return_value=("9.0.0", "/robot_server", (), ())),
         patch.object(runtime_compat, "_missing_symbol_issue", return_value=None),
         patch.object(runtime_compat, "_module_outside_release_issue", return_value=None),
     ):
@@ -33,6 +33,7 @@ def test_matching_runtime_enables_base_and_mutation() -> None:
     assert report.base_compatible is True
     assert report.mutation_compatible is True
     assert report.robot_server_version == "9.0.0"
+    assert report.runtime_contract_id.startswith("flex-runtime-")
     assert report.issues == ()
 
 
@@ -72,7 +73,7 @@ def test_http_dependency_drift_only_blocks_embedded_robot_server_profile() -> No
             side_effect=package_versions.__getitem__,
         ),
         patch.object(runtime_compat.sys, "version_info", (3, 10, 20)),
-        patch.object(runtime_compat, "_inspect_robot_server", return_value=("9.0.0", "/robot_server", ())),
+        patch.object(runtime_compat, "_inspect_robot_server", return_value=("9.0.0", "/robot_server", (), ())),
         patch.object(runtime_compat, "_missing_symbol_issue", return_value=None),
         patch.object(runtime_compat, "_module_outside_release_issue", return_value=None),
     ):
@@ -92,6 +93,8 @@ def test_require_compatible_runtime_raises_actionable_error() -> None:
         robot_server_version=None,
         robot_server_source=None,
         runtime_package_versions={},
+        runtime_contract_id=runtime_compat.RUNTIME_CONTRACT_ID,
+        private_api_checks=(),
         base_compatible=False,
         mutation_compatible=False,
         issues=("Python 3.11.0 is unsupported; expected Python 3.10.x.",),
@@ -144,3 +147,13 @@ def test_opentrons_module_outside_active_release_is_rejected() -> None:
 
     assert report.base_compatible is False
     assert "outside the active release" in report.issues[0]
+
+
+def test_shape_check_rejects_non_callable_private_binding(monkeypatch) -> None:
+    fake = type("FakeModule", (), {"accessor": type("Accessor", (), {"set_on": None})()})()
+    monkeypatch.setattr(runtime_compat.importlib, "import_module", lambda _: fake)
+
+    check = runtime_compat._shape_check("robot_server.hardware", "accessor.set_on", "callable")
+
+    assert check.ok is False
+    assert "callable contract" in check.detail
