@@ -23,6 +23,7 @@ from unitelabs.opentrons_flex.hitl_evidence import (
     HITL_READINESS_SCHEMA_VERSION,
     HITL_READINESS_STATUS,
 )
+from unitelabs.opentrons_flex.http_safety import open_no_redirect
 from unitelabs.opentrons_flex.runtime_compat import (
     RUNTIME_CONTRACT_ID,
     SUPPORTED_OPENTRONS_SOURCE_COMMIT,
@@ -135,7 +136,7 @@ def _http_json(host: str, port: int, path: str, timeout: float) -> tuple[Check, 
     url = f"http://{_url_host(host)}:{port}{path}"
     request = urllib.request.Request(url, headers={"User-Agent": "unitelabs-flex-preflight/0.9.1"})
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with open_no_redirect(request, timeout=timeout) as response:
             if response.geturl() != url:
                 return Check(f"http:{path}", False, f"unexpected redirect to {response.geturl()}"), None
             payload = json.loads(response.read().decode("utf-8"))

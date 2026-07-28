@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import yaml
+
 from scripts import artifact_manifest
 from unitelabs.opentrons_flex import runtime_compat
 
@@ -65,3 +67,24 @@ def test_runtime_dependency_manifest_matches_startup_contract() -> None:
 def test_flex_documentation_does_not_claim_the_retired_runtime() -> None:
     for path in ("README.md", "docs/asms_flex_workflow_test.md"):
         assert "8.8.1" not in _text(path), f"{path} still claims the retired Flex runtime"
+
+
+def test_arm_artifact_build_is_a_pr_gate_for_every_release_input() -> None:
+    workflow = yaml.load(
+        _text(".github/workflows/build-flex-arm-wheels.yml"),
+        Loader=yaml.BaseLoader,
+    )
+    triggers = workflow["on"]
+    required_paths = {
+        ".github/workflows/build-flex-arm-wheels.yml",
+        "Dockerfile.build",
+        "packages/flex-acceptance-contract/**",
+        "pyproject.toml",
+        "scripts/artifact_manifest.py",
+        "src/**",
+        "uv.lock",
+    }
+
+    assert triggers["pull_request"]["branches"] == ["main"]
+    assert required_paths <= set(triggers["pull_request"]["paths"])
+    assert required_paths <= set(triggers["push"]["paths"])

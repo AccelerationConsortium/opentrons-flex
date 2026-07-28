@@ -9,8 +9,8 @@
 
 A workflow is any top-level directory whose pyproject.toml declares
 `[tool.unitelabs.workflow]`. This script zips the workflow directory plus
-the sibling `shared/` library verbatim and POSTs/PATCHes the bundle to the
-platform.
+the sibling `shared/` library and any workflow-specific local packages, then
+POSTs/PATCHes the bundle to the platform.
 
 The PEP 723 header above declares this script's own runtime deps so
 `uv run scripts/deploy.py …` resolves them into an ephemeral env without
@@ -27,11 +27,13 @@ flat package so `import shared.steps.X` resolves at bundle root:
     │       ├── __init__.py
     │       ├── workflow.py      ← @flow lives here
     │       └── phase_*.py
-    └── shared/                  ← contents of dev `shared/src/shared/`, hoisted
+    ├── shared/                  ← contents of dev `shared/src/shared/`, hoisted
         ├── __init__.py
         ├── config/
         ├── steps/
         └── ...
+    └── unitelabs_flex_acceptance_contract/
+        └── ...                 ← vendored only for flex-system-acceptance
 
 Locally `shared` is a uv editable path dep with src-layout
 (`shared/src/shared/...`); the platform doesn't install it (no PyPI counterpart),
@@ -70,15 +72,31 @@ import re
 import subprocess
 import sys
 import tempfile
-import tomllib
 import zipfile
 from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
 
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SHARED_DIR = REPO_ROOT / "shared"
+FLEX_ACCEPTANCE_CONTRACT_DIR = REPO_ROOT.parent / "packages" / "flex-acceptance-contract"
+WORKFLOW_LOCAL_PACKAGES = {
+    "flex-system-acceptance": {
+        "unitelabs-flex-acceptance-contract": (
+            FLEX_ACCEPTANCE_CONTRACT_DIR / "src" / "unitelabs_flex_acceptance_contract",
+            Path("unitelabs_flex_acceptance_contract"),
+        )
+    }
+}
+LOCAL_PACKAGE_CHANGE_PREFIXES = {
+    "packages/flex-acceptance-contract/": frozenset({"flex-system-acceptance"}),
+}
 
 # Bundle exclusions. Everything dev-only or runtime-generated stays off the
 # worker — tests/, runtime artifacts (logs/, checkpoints/), build caches.
@@ -140,12 +158,19 @@ def affected_workflows(changed_paths: list[str], workflows: dict[str, Path]) -> 
     affected. Otherwise a workflow is affected iff a changed path is under
     its directory.
     """
-    if any(p.startswith("shared/") or p == "scripts/deploy.py" for p in changed_paths):
+    workflow_relative_paths = [path.removeprefix("workflows/") for path in changed_paths]
+    if any(
+        path.startswith("shared/") or path in {"scripts/deploy.py", "scripts/publish_workflows.py"}
+        for path in workflow_relative_paths
+    ):
         return sorted(workflows.keys())
     affected: set[str] = set()
-    for path in changed_paths:
+    for path, workflow_relative_path in zip(changed_paths, workflow_relative_paths, strict=True):
+        for prefix, dependent_workflows in LOCAL_PACKAGE_CHANGE_PREFIXES.items():
+            if path.startswith(prefix):
+                affected.update(dependent_workflows.intersection(workflows))
         for slug, wf_dir in workflows.items():
-            if path.startswith(f"{wf_dir.name}/"):
+            if workflow_relative_path.startswith(f"{wf_dir.name}/"):
                 affected.add(slug)
     return sorted(affected)
 
@@ -198,7 +223,7 @@ def _pkg_name(req: str) -> str:
 
 
 def resolve_dependencies(workflow_dir: Path) -> list[str]:
-    """Direct-dep list = workflow's deps ⨁ shared's deps, deduped, minus `shared`.
+    """Resolve direct dependencies, excluding source packages vendored in the bundle.
 
     The platform's `dependencies` API field drives the runtime venv install. We
     can't traverse the editable `shared = { path = "../shared" }` source on the
@@ -207,8 +232,9 @@ def resolve_dependencies(workflow_dir: Path) -> list[str]:
     platform from this list.
 
     Workflow deps win on duplicates (more specific to the workflow's actual
-    runtime). The local `shared` entry is dropped — it has no PyPI counterpart;
-    shared/'s source is vendored at the bundle root by `build_bundle`.
+    runtime). The local `shared` entry and workflow-specific local packages are
+    dropped from the platform install list because their source is vendored at
+    the bundle root by `build_bundle`.
 
     TODO: remove once the UniteLabs API resolves deps from the bundle's
     pyproject server-side (including [tool.uv.sources] path deps).
@@ -219,10 +245,14 @@ def resolve_dependencies(workflow_dir: Path) -> list[str]:
         sh = tomllib.load(f)
     wf_deps = list(wf.get("project", {}).get("dependencies", []))
     sh_deps = list(sh.get("project", {}).get("dependencies", []))
+    vendored_dependency_names = {
+        "shared",
+        *WORKFLOW_LOCAL_PACKAGES.get(workflow_dir.name, {}),
+    }
     seen: dict[str, str] = {}
     for req in [*wf_deps, *sh_deps]:
         name = _pkg_name(req)
-        if name == "shared":
+        if name in vendored_dependency_names:
             continue
         seen.setdefault(name, req)
     return list(seen.values())
@@ -277,7 +307,7 @@ def _add_tree(zf: zipfile.ZipFile, src_root: Path, dst_root: Path) -> None:
 
 
 def build_bundle(workflow_dir: Path, identity: dict) -> Path:
-    """Zip the workflow dir verbatim and vendor `shared/` as a flat package.
+    """Zip the workflow and vendor all repository-local runtime packages.
 
     - Workflow dir ships rooted at its own name (the platform sees the same
       paths the developer does).
@@ -295,6 +325,8 @@ def build_bundle(workflow_dir: Path, identity: dict) -> Path:
     with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_DEFLATED) as zf:
         _add_tree(zf, workflow_dir, Path(workflow_dir.name))
         _add_tree(zf, SHARED_DIR / "src" / "shared", Path("shared"))
+        for source_dir, bundle_dir in WORKFLOW_LOCAL_PACKAGES.get(workflow_dir.name, {}).values():
+            _add_tree(zf, source_dir, bundle_dir)
     return bundle_path
 
 
@@ -411,9 +443,9 @@ def deploy_one(
         # to provision the worker venv. We send the stitched set from the
         # workflow's + shared's [project].dependencies (deduped, workflow wins)
         # so the platform doesn't have to traverse [tool.uv.sources] or the
-        # editable `shared` path dep itself. `shared` is dropped because it has
-        # no PyPI counterpart; its source is vendored at the bundle root by
-        # `build_bundle`. `version` is omitted because the API rejects unknown
+        # editable local path deps. Local packages are dropped because they have
+        # no guaranteed package-index counterpart; their source is vendored at
+        # the bundle root by `build_bundle`. `version` is omitted because the API rejects unknown
         # fields. `enabled: True` is forced because the UI "delete" only flips
         # enabled=false; without this, redeploying a "deleted" workflow silently
         # updates a hidden record.

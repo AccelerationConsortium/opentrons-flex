@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter
 
 from .runtime_compat import RuntimeCompatibilityReport
-from .runtime_preflight import _release_identity
+from .runtime_identity import release_identity
 
 # Resolve these once when the connector process imports this module. If the
 # /var/sila2_flex symlink changes without a service restart, the running process
@@ -22,7 +22,7 @@ def process_runtime_identity(
     require_release: bool,
 ) -> dict[str, object]:
     """Build identity evidence bound to this running Python process."""
-    release_identity, issues = _release_identity(
+    active_release_identity, issues = release_identity(
         connector_version=compatibility.connector_version,
         opentrons_version=compatibility.opentrons_version,
         required=require_release,
@@ -36,7 +36,7 @@ def process_runtime_identity(
         "runtimeContractId": compatibility.runtime_contract_id,
         "connectorVersion": compatibility.connector_version,
         "opentronsVersion": compatibility.opentrons_version,
-        "releaseIdentity": release_identity,
+        "releaseIdentity": active_release_identity,
     }
 
 

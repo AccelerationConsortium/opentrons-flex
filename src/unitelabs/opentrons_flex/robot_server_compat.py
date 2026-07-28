@@ -28,6 +28,11 @@ class RobotServerAppInstallation:
     """Reversible mutation of the global robot-server FastAPI app."""
 
     app: object
+    app_state: object
+    hardware_accessor: object
+    initialization_task_accessor: object
+    original_hardware: object | None
+    original_initialization_task: object | None
     router: object
     dependency_overrides: MutableMapping[object, object]
     original_lifespan: object
@@ -113,6 +118,16 @@ def install_robot_server_app(
         "set_on",
         "robot-server hardware accessor",
     )
+    get_initialization_task = _required_method(
+        bindings.initialization_task_accessor,
+        "get_from",
+        "robot-server initialization task accessor",
+    )
+    get_hardware = _required_method(
+        bindings.hardware_accessor,
+        "get_from",
+        "robot-server hardware accessor",
+    )
 
     dependency_overrides = _required_attribute(
         app,
@@ -133,20 +148,36 @@ def install_robot_server_app(
         (dependency, dependency in dependency_overrides, dependency_overrides.get(dependency))
         for dependency in identity_overrides
     )
-
-    # All fallible shape validation happens above. Mutate the pinned global app
-    # only after the complete installation contract is known to be usable.
-    set_initialization_task(app_state, initialization_task)
-    set_hardware(app_state, hardware_proxy)
-    dependency_overrides.update(identity_overrides)
-    router.lifespan_context = replacement_lifespan
-    return RobotServerAppInstallation(
+    installation = RobotServerAppInstallation(
         app=app,
+        app_state=app_state,
+        hardware_accessor=bindings.hardware_accessor,
+        initialization_task_accessor=bindings.initialization_task_accessor,
+        original_hardware=get_hardware(app_state),
+        original_initialization_task=get_initialization_task(app_state),
         router=router,
         dependency_overrides=dependency_overrides,
         original_lifespan=original_lifespan,
         original_identity_overrides=original_overrides,
     )
+
+    # All fallible shape validation happens above. Mutate the pinned global app
+    # only after the complete installation contract is known to be usable.
+    # Roll back internally because the caller cannot register cleanup until
+    # this function returns an installation handle.
+    try:
+        set_initialization_task(app_state, initialization_task)
+        set_hardware(app_state, hardware_proxy)
+        dependency_overrides.update(identity_overrides)
+        router.lifespan_context = replacement_lifespan
+    except Exception as exc:
+        try:
+            restore_robot_server_app(installation, added_routes=())
+        except (AttributeError, RuntimeError, TypeError) as rollback_exc:
+            message = f"robot-server app installation failed and rollback was incomplete: {rollback_exc}"
+            raise RuntimeError(message) from exc
+        raise
+    return installation
 
 
 def include_robot_server_router(
@@ -184,20 +215,41 @@ def restore_robot_server_app(
     added_routes: tuple[object, ...],
 ) -> None:
     """Restore global robot-server app state after connector shutdown."""
-    installation.router.lifespan_context = installation.original_lifespan
-    if added_routes:
-        routes = _required_attribute(installation.router, "routes", "robot-server app router")
-        if not isinstance(routes, MutableSequence):
-            message = "robot-server app router routes must remain a mutable sequence."
-            raise RuntimeError(message)
-        added_route_ids = {id(route) for route in added_routes}
-        routes[:] = [route for route in routes if id(route) not in added_route_ids]
-        installation.app.openapi_schema = None
-    for dependency, existed, original in installation.original_identity_overrides:
-        if existed:
-            installation.dependency_overrides[dependency] = original
-        else:
-            installation.dependency_overrides.pop(dependency, None)
+    set_hardware = _required_method(
+        installation.hardware_accessor,
+        "set_on",
+        "robot-server hardware accessor",
+    )
+    set_initialization_task = _required_method(
+        installation.initialization_task_accessor,
+        "set_on",
+        "robot-server initialization task accessor",
+    )
+    try:
+        try:
+            installation.router.lifespan_context = installation.original_lifespan
+            if added_routes:
+                routes = _required_attribute(installation.router, "routes", "robot-server app router")
+                if not isinstance(routes, MutableSequence):
+                    message = "robot-server app router routes must remain a mutable sequence."
+                    raise RuntimeError(message)
+                added_route_ids = {id(route) for route in added_routes}
+                routes[:] = [route for route in routes if id(route) not in added_route_ids]
+                installation.app.openapi_schema = None
+        finally:
+            for dependency, existed, original in installation.original_identity_overrides:
+                if existed:
+                    installation.dependency_overrides[dependency] = original
+                else:
+                    installation.dependency_overrides.pop(dependency, None)
+    finally:
+        try:
+            set_hardware(installation.app_state, installation.original_hardware)
+        finally:
+            set_initialization_task(
+                installation.app_state,
+                installation.original_initialization_task,
+            )
 
 
 def protocol_run_state(

@@ -14,7 +14,7 @@ import asyncio
 import contextlib
 import dataclasses
 import sys
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -309,3 +309,40 @@ async def test_shutdown_disconnects_hardware():
     async with _run() as r:
         pass
     r.api.clean_up.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_startup_failure_after_app_install_unwinds_all_resources():
+    """A fail-closed identity error must restore globals and release CAN resources."""
+    mock_api = _make_api()
+    mock_uv_server = MagicMock()
+    mock_uv_server.serve = AsyncMock()
+    robot_server_app = sys.modules["robot_server.app"].app
+    robot_server_hardware = sys.modules["robot_server.hardware"]
+    original_lifespan = robot_server_app.router.lifespan_context
+    original_hardware = robot_server_hardware._hw_api_accessor.get_from.return_value
+    original_initialization_task = robot_server_hardware._init_task_accessor.get_from.return_value
+
+    with (
+        _patches(mock_api, MagicMock(), mock_uv_server),
+        patch(
+            "unitelabs.opentrons_flex.process_runtime_identity",
+            side_effect=RuntimeError("invalid release identity"),
+        ),
+    ):
+        gen = create_app(_CONFIG)
+        with pytest.raises(RuntimeError, match="invalid release identity"):
+            await gen.__anext__()
+
+    mock_api.clean_up.assert_awaited_once()
+    assert robot_server_app.dependency_overrides == {}
+    assert robot_server_app.router.routes == []
+    assert robot_server_app.router.lifespan_context is original_lifespan
+    assert robot_server_hardware._hw_api_accessor.set_on.call_args_list[-1] == call(
+        robot_server_app.state,
+        original_hardware,
+    )
+    assert robot_server_hardware._init_task_accessor.set_on.call_args_list[-1] == call(
+        robot_server_app.state,
+        original_initialization_task,
+    )

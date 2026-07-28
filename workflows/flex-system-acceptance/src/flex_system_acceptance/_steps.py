@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
-
 from prefect import task
 from prefect.cache_policies import NONE
 from unitelabs.sdk import get_logger
@@ -344,8 +342,8 @@ async def plate_reader_step(features: dict, manifest: AcceptanceManifest) -> Non
     await invoke(reader, "deactivate")
 
 
-async def safe_shutdown(features: dict) -> None:
-    """Best-effort de-energization that never invents a gripper recovery move."""
+async def safe_shutdown(features: dict) -> tuple[str, ...]:
+    """Attempt every de-energization action and report every failure."""
     actions = (
         ("heater_shaker", "stop_shaking"),
         ("heater_shaker", "deactivate_heater"),
@@ -353,10 +351,20 @@ async def safe_shutdown(features: dict) -> None:
         ("temperature_module", "deactivate"),
         ("reader", "deactivate"),
         ("stacker_maintenance", "deactivate"),
+        ("motion", "set_lights"),
     )
+    failures: list[str] = []
     for feature_name, method in actions:
-        with contextlib.suppress(Exception):
-            await invoke(features[feature_name], method)
-    with contextlib.suppress(Exception):
-        await invoke(features["motion"], "set_lights", button=False, rails=False)
-    get_logger().info("Flex acceptance shutdown actions completed; reconcile labware positions after any failure")
+        parameters = {"button": False, "rails": False} if method == "set_lights" else {}
+        try:
+            await invoke(features[feature_name], method, **parameters)
+        except Exception as exc:
+            failures.append(f"{feature_name}.{method}: {type(exc).__name__}: {exc}")
+    if failures:
+        get_logger().error(
+            "Flex acceptance shutdown was incomplete; reconcile the robot before another run | failures=%s",
+            failures,
+        )
+    else:
+        get_logger().info("Flex acceptance shutdown actions completed")
+    return tuple(failures)

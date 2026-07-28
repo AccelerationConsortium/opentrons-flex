@@ -401,6 +401,15 @@ SiLA feature-definition generation, and real gRPC calls through the full chain
 `gRPC → SiLA server → feature → hardware API`, including defined-execution errors
 propagating over the wire.
 
+CI also creates an isolated Windows Python 3.12 workflow environment that does
+not install the Python 3.10 connector. It validates the native PowerShell
+entrypoint and runs the `flex_workflow_offline` import, phase-wiring,
+commissioning-digest, and fail-closed shutdown tests with offline SDK/Prefect
+stubs. Deployment-script tests execute the actual remote shell bodies under a
+temporary filesystem root with fake services, covering preflight refusal,
+bounded health failure with stock-service recovery, and atomic rollback
+activation.
+
 `config/smoketest_config.json` is the local no-hardware config. It keeps
 `use_simulator=true`, `with_robot_server=true`, and cloud/discovery disabled. The
 deployment config in `config/flex_config.json` remains explicitly live-hardware
@@ -613,6 +622,11 @@ docker buildx build --platform linux/arm64 -f Dockerfile.build \
 Or trigger the **Build Flex aarch64 Wheels** GitHub Actions workflow
 (`.github/workflows/build-flex-arm-wheels.yml`) and download the `flex-arm-wheels`
 artifact into `dist_arm/`.
+
+Changes to the connector, shared acceptance contract, artifact-manifest tool,
+Docker build, lockfile, or ARM workflow itself run this build on the pull
+request as well as after a main-branch push. Repository branch protection
+determines whether GitHub blocks merging on that job.
 
 The artifact is accepted only when `runtime-manifest.json` and `SHA256SUMS`
 verify every wheel, the connector/Opentrons/robot-server versions are exact, and

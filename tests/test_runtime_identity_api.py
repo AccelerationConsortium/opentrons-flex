@@ -47,7 +47,7 @@ def test_process_identity_uses_prefix_captured_at_process_import(monkeypatch, tm
 
     monkeypatch.setattr(
         runtime_identity_api,
-        "_release_identity",
+        "release_identity",
         _release_identity_for_test,
     )
 

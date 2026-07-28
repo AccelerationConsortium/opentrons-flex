@@ -10,6 +10,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from unitelabs.opentrons_flex.http_safety import open_no_redirect
+
 _HTTP_PATHS = (
     "/health",
     "/deck_configuration",
@@ -92,7 +94,7 @@ def _loopback_json(port: int, path: str, timeout: float) -> object:
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with open_no_redirect(request, timeout=timeout) as response:
             if response.geturl() != url:
                 message = f"robot loopback {path} redirected to {response.geturl()}"
                 raise RuntimeError(message)

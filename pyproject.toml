@@ -79,6 +79,7 @@ markers = [
     "temperature_module_actuation: opt-in Temperature Module GEN2 heating/cooling; requires --temperature-module-actuation",
     "gripper_labware_actuation: opt-in prepared-labware gripper movement; requires --gripper-labware-actuation",
     "acceptance_workflow_actuation: opt-in manifest-driven multi-module hardware acceptance workflow",
+    "flex_workflow_offline: Python 3.12-safe Flex workflow import, phase wiring, and shutdown coverage",
 ]
 
 [tool.ruff]

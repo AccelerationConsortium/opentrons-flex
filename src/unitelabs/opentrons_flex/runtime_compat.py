@@ -45,7 +45,9 @@ _ROBOT_SERVER_SYMBOLS = (
 )
 
 _ROBOT_SERVER_SHAPE_REQUIREMENTS = (
+    ("robot_server.hardware", "_hw_api_accessor.get_from", "callable"),
     ("robot_server.hardware", "_hw_api_accessor.set_on", "callable"),
+    ("robot_server.hardware", "_init_task_accessor.get_from", "callable"),
     ("robot_server.hardware", "_init_task_accessor.set_on", "callable"),
     ("robot_server.hardware", "get_deck_type", "callable"),
     ("robot_server.hardware", "get_robot_type", "callable"),

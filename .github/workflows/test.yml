@@ -201,6 +201,12 @@ jobs:
           uv python install 3.12
           uv venv --python 3.12 .venv-workflow
           uv pip install --python .venv-workflow\Scripts\python.exe --no-deps -e packages\flex-acceptance-contract -e workflows\flex-system-acceptance
+          uv pip install --python .venv-workflow\Scripts\python.exe "pytest==9.1.1" "pytest-asyncio==1.4.0"
 
       - name: Execute the native PowerShell workflow entrypoint
         run: .\.venv-workflow\Scripts\python.exe -m flex_system_acceptance --validate-only --manifest .\flex-acceptance-ci.json
+
+      - name: Import and execute offline workflow phases on Windows Python 3.12
+        run: |
+          .\.venv-workflow\Scripts\python.exe -m pytest -p no:cacheprovider `
+            tests\test_workflow_manifests.py -m flex_workflow_offline -q

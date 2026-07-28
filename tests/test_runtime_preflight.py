@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from unitelabs.opentrons_flex import runtime_preflight
+from unitelabs.opentrons_flex import runtime_identity, runtime_preflight
 from unitelabs.opentrons_flex.runtime_compat import RuntimeCompatibilityReport
 
 
@@ -121,10 +121,10 @@ def test_release_identity_binds_active_venv_to_verified_bundle(tmp_path, monkeyp
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(runtime_preflight.sys, "prefix", str(tmp_path))
-    monkeypatch.setattr(runtime_preflight, "_normalized_architecture", lambda: architecture)
+    monkeypatch.setattr(runtime_identity.sys, "prefix", str(tmp_path))
+    monkeypatch.setattr(runtime_identity, "normalized_architecture", lambda: architecture)
 
-    identity, issues = runtime_preflight._release_identity(
+    identity, issues = runtime_identity.release_identity(
         connector_version="0.9.1",
         opentrons_version="9.0.0",
         required=True,
@@ -144,16 +144,16 @@ def test_release_identity_rejects_manifest_from_different_active_bundle(tmp_path
         "opentronsVersion": "9.0.0",
         "robotServerVersion": "9.0.0",
         "opentronsSourceCommit": "44b37a2f91520bf2e7245c70bf799d46c8c2d9a5",
-        "pythonVersion": f"{runtime_preflight.sys.version_info.major}.{runtime_preflight.sys.version_info.minor}",
+        "pythonVersion": f"{runtime_identity.sys.version_info.major}.{runtime_identity.sys.version_info.minor}",
         "architecture": "aarch64",
         "releaseId": "flex-0.9.1-unrelated",
         "bundleSha256": "a" * 64,
     }
     (tmp_path / "runtime-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    monkeypatch.setattr(runtime_preflight.sys, "prefix", str(tmp_path))
-    monkeypatch.setattr(runtime_preflight, "_normalized_architecture", lambda: "aarch64")
+    monkeypatch.setattr(runtime_identity.sys, "prefix", str(tmp_path))
+    monkeypatch.setattr(runtime_identity, "normalized_architecture", lambda: "aarch64")
 
-    identity, issues = runtime_preflight._release_identity(
+    identity, issues = runtime_identity.release_identity(
         connector_version="0.9.1",
         opentrons_version="9.0.0",
         required=True,

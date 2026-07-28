@@ -74,6 +74,9 @@ def _install_workflow_runtime_stubs(monkeypatch) -> None:
         def info(self, *_args, **_kwargs) -> None:
             pass
 
+        def error(self, *_args, **_kwargs) -> None:
+            pass
+
     class _Client:
         pass
 
@@ -108,12 +111,14 @@ def test_liquid_handler_workflows_are_tagged() -> None:
         assert "ot2" in tags
 
 
+@pytest.mark.flex_workflow_offline
 def test_flex_acceptance_workflow_is_hardware_tagged() -> None:
     """The Flex workflow must be unmistakably hardware-facing in the catalog."""
     tags = set(_pyproject("flex-system-acceptance")["tool"]["unitelabs"]["workflow"]["tags"])
     assert {"flex", "liquid-handler", "hardware-acceptance"} <= tags
 
 
+@pytest.mark.flex_workflow_offline
 def test_flex_workflow_uses_cross_runtime_contract_instead_of_connector_package() -> None:
     """The Python 3.12 workflow must not depend on the Python 3.10 robot runtime."""
     data = _pyproject("flex-system-acceptance")
@@ -157,6 +162,24 @@ def test_workflow_entrypoints_import_and_build_as_flows(monkeypatch) -> None:
         assert getattr(flow_fn, "__prefect_name__").startswith("Workflow:")
 
 
+@pytest.mark.flex_workflow_offline
+def test_flex_workflow_entrypoint_imports_as_a_python_312_safe_flow(monkeypatch) -> None:
+    """The Flex entrypoint imports without the Python 3.10 connector runtime."""
+    _install_workflow_runtime_stubs(monkeypatch)
+    monkeypatch.syspath_prepend(str(WORKFLOWS / "flex-system-acceptance" / "src"))
+    for loaded in list(sys.modules):
+        if loaded == "flex_system_acceptance" or loaded.startswith("flex_system_acceptance."):
+            monkeypatch.delitem(sys.modules, loaded, raising=False)
+
+    module = importlib.import_module("flex_system_acceptance.workflow")
+    flow_fn = module.flex_system_acceptance_flow
+
+    assert inspect.iscoroutinefunction(flow_fn)
+    assert getattr(flow_fn, "__prefect_kind__") == "flow"
+    assert getattr(flow_fn, "__prefect_name__") == "Workflow: Flex System Acceptance"
+
+
+@pytest.mark.flex_workflow_offline
 @pytest.mark.asyncio
 async def test_flex_workflow_phases_execute_the_declared_sdk_sequence(monkeypatch) -> None:
     """Run every hardware phase against a recorder so Python/SDK wiring errors fail offline."""
@@ -168,7 +191,7 @@ async def test_flex_workflow_phases_execute_the_declared_sdk_sequence(monkeypatc
 
     steps = importlib.import_module("flex_system_acceptance._steps")
     from tests.test_acceptance_manifest import _manifest
-    from unitelabs.opentrons_flex.acceptance import AcceptanceManifest
+    from unitelabs_flex_acceptance_contract import AcceptanceManifest
 
     manifest = AcceptanceManifest.parse(_manifest())
     features = {
@@ -220,6 +243,7 @@ async def test_flex_workflow_phases_execute_the_declared_sdk_sequence(monkeypatc
     assert methods.count("move_lid") == 4
 
 
+@pytest.mark.flex_workflow_offline
 def test_flex_cloud_workflow_requires_the_direct_hitl_manifest_digest(monkeypatch) -> None:
     """Runtime callers cannot substitute uncommissioned coordinates or module identities."""
     _install_workflow_runtime_stubs(monkeypatch)
@@ -230,7 +254,7 @@ def test_flex_cloud_workflow_requires_the_direct_hitl_manifest_digest(monkeypatc
 
     workflow = importlib.import_module("flex_system_acceptance.workflow")
     from tests.test_acceptance_manifest import _manifest
-    from unitelabs.opentrons_flex.acceptance import AcceptanceManifest
+    from unitelabs_flex_acceptance_contract import AcceptanceManifest
 
     manifest = AcceptanceManifest.parse(_manifest())
     monkeypatch.delenv("FLEX_ACCEPTANCE_MANIFEST_SHA256", raising=False)
@@ -243,3 +267,191 @@ def test_flex_cloud_workflow_requires_the_direct_hitl_manifest_digest(monkeypatc
 
     monkeypatch.setenv("FLEX_ACCEPTANCE_MANIFEST_SHA256", manifest.commissioning_digest())
     workflow._require_commissioned_manifest(manifest)
+
+
+@pytest.mark.flex_workflow_offline
+@pytest.mark.asyncio
+async def test_flex_workflow_shutdown_attempts_every_action_and_reports_all_failures(monkeypatch) -> None:
+    """Shutdown must settle every energy-producing feature without hiding failures."""
+    _install_workflow_runtime_stubs(monkeypatch)
+    monkeypatch.syspath_prepend(str(WORKFLOWS / "flex-system-acceptance" / "src"))
+    for loaded in list(sys.modules):
+        if loaded == "flex_system_acceptance" or loaded.startswith("flex_system_acceptance."):
+            monkeypatch.delitem(sys.modules, loaded, raising=False)
+
+    steps = importlib.import_module("flex_system_acceptance._steps")
+    feature_names = (
+        "heater_shaker",
+        "thermocycler",
+        "temperature_module",
+        "reader",
+        "stacker_maintenance",
+        "motion",
+    )
+    features = {name: object() for name in feature_names}
+    names_by_feature = {id(feature): name for name, feature in features.items()}
+    calls: list[tuple[str, str, dict]] = []
+
+    async def fake_invoke(target, method_names, **parameters):
+        feature_name = names_by_feature[id(target)]
+        method = method_names if isinstance(method_names, str) else next(iter(method_names))
+        calls.append((feature_name, method, parameters))
+        if (feature_name, method) in {
+            ("heater_shaker", "stop_shaking"),
+            ("temperature_module", "deactivate"),
+        }:
+            raise RuntimeError(f"{method} failed")
+
+    monkeypatch.setattr(steps, "invoke", fake_invoke)
+
+    failures = await steps.safe_shutdown(features)
+
+    assert [(feature, method) for feature, method, _ in calls] == [
+        ("heater_shaker", "stop_shaking"),
+        ("heater_shaker", "deactivate_heater"),
+        ("thermocycler", "deactivate_all"),
+        ("temperature_module", "deactivate"),
+        ("reader", "deactivate"),
+        ("stacker_maintenance", "deactivate"),
+        ("motion", "set_lights"),
+    ]
+    assert calls[-1][2] == {"button": False, "rails": False}
+    assert failures == (
+        "heater_shaker.stop_shaking: RuntimeError: stop_shaking failed",
+        "temperature_module.deactivate: RuntimeError: deactivate failed",
+    )
+
+
+@pytest.mark.flex_workflow_offline
+@pytest.mark.asyncio
+async def test_flex_workflow_refuses_success_when_shutdown_is_incomplete(monkeypatch) -> None:
+    """A successful hardware sequence is not accepted when de-energization fails."""
+    _install_workflow_runtime_stubs(monkeypatch)
+    monkeypatch.syspath_prepend(str(WORKFLOWS / "flex-system-acceptance" / "src"))
+    for loaded in list(sys.modules):
+        if loaded == "flex_system_acceptance" or loaded.startswith("flex_system_acceptance."):
+            monkeypatch.delitem(sys.modules, loaded, raising=False)
+
+    workflow = importlib.import_module("flex_system_acceptance.workflow")
+    from tests.test_acceptance_manifest import _manifest
+    from unitelabs_flex_acceptance_contract import AcceptanceManifest
+
+    manifest = AcceptanceManifest.parse(_manifest())
+    monkeypatch.setenv("FLEX_ACCEPTANCE_MANIFEST_SHA256", manifest.commissioning_digest())
+    phase_calls: list[str] = []
+
+    async def validate(value):
+        return AcceptanceManifest.parse(value)
+
+    async def connect(_device_name, _manifest):
+        return object(), object(), {}
+
+    async def phase(_features, _manifest):
+        phase_calls.append("phase")
+
+    async def shutdown(_features):
+        phase_calls.append("shutdown")
+        return ("heater_shaker.stop_shaking: RuntimeError: timeout",)
+
+    monkeypatch.setattr(workflow, "validate_manifest_step", validate)
+    monkeypatch.setattr(workflow, "connect_and_preflight_step", connect)
+    for name in (
+        "home_and_configure_step",
+        "stacker_step",
+        "thermocycler_step",
+        "liquid_handling_step",
+        "heater_shaker_step",
+        "temperature_module_step",
+        "plate_reader_step",
+    ):
+        monkeypatch.setattr(workflow, name, phase)
+    monkeypatch.setattr(workflow, "safe_shutdown", shutdown)
+
+    with pytest.raises(RuntimeError, match="workflow is not accepted"):
+        await workflow.flex_system_acceptance_flow(_manifest(), device_name=manifest.service_name)
+
+    assert phase_calls == ["phase"] * 7 + ["shutdown"]
+
+
+@pytest.mark.flex_workflow_offline
+@pytest.mark.asyncio
+async def test_flex_workflow_preserves_run_failure_when_shutdown_succeeds(monkeypatch) -> None:
+    """Cleanup must run after a phase failure without masking that original failure."""
+    _install_workflow_runtime_stubs(monkeypatch)
+    monkeypatch.syspath_prepend(str(WORKFLOWS / "flex-system-acceptance" / "src"))
+    for loaded in list(sys.modules):
+        if loaded == "flex_system_acceptance" or loaded.startswith("flex_system_acceptance."):
+            monkeypatch.delitem(sys.modules, loaded, raising=False)
+
+    workflow = importlib.import_module("flex_system_acceptance.workflow")
+    from tests.test_acceptance_manifest import _manifest
+    from unitelabs_flex_acceptance_contract import AcceptanceManifest
+
+    manifest = AcceptanceManifest.parse(_manifest())
+    monkeypatch.setenv("FLEX_ACCEPTANCE_MANIFEST_SHA256", manifest.commissioning_digest())
+    shutdown_called = False
+
+    async def validate(value):
+        return AcceptanceManifest.parse(value)
+
+    async def connect(_device_name, _manifest):
+        return object(), object(), {}
+
+    async def fail_phase(_features, _manifest):
+        raise ValueError("phase failed")
+
+    async def shutdown(_features):
+        nonlocal shutdown_called
+        shutdown_called = True
+        return ()
+
+    monkeypatch.setattr(workflow, "validate_manifest_step", validate)
+    monkeypatch.setattr(workflow, "connect_and_preflight_step", connect)
+    monkeypatch.setattr(workflow, "home_and_configure_step", fail_phase)
+    monkeypatch.setattr(workflow, "safe_shutdown", shutdown)
+
+    with pytest.raises(ValueError, match="phase failed"):
+        await workflow.flex_system_acceptance_flow(_manifest(), device_name=manifest.service_name)
+
+    assert shutdown_called is True
+
+
+@pytest.mark.flex_workflow_offline
+@pytest.mark.asyncio
+async def test_flex_workflow_reports_shutdown_failure_with_phase_failure_as_cause(monkeypatch) -> None:
+    """Dual failures must preserve the phase error while making unsafe shutdown visible."""
+    _install_workflow_runtime_stubs(monkeypatch)
+    monkeypatch.syspath_prepend(str(WORKFLOWS / "flex-system-acceptance" / "src"))
+    for loaded in list(sys.modules):
+        if loaded == "flex_system_acceptance" or loaded.startswith("flex_system_acceptance."):
+            monkeypatch.delitem(sys.modules, loaded, raising=False)
+
+    workflow = importlib.import_module("flex_system_acceptance.workflow")
+    from tests.test_acceptance_manifest import _manifest
+    from unitelabs_flex_acceptance_contract import AcceptanceManifest
+
+    manifest = AcceptanceManifest.parse(_manifest())
+    monkeypatch.setenv("FLEX_ACCEPTANCE_MANIFEST_SHA256", manifest.commissioning_digest())
+
+    async def validate(value):
+        return AcceptanceManifest.parse(value)
+
+    async def connect(_device_name, _manifest):
+        return object(), object(), {}
+
+    async def fail_phase(_features, _manifest):
+        raise ValueError("phase failed")
+
+    async def fail_shutdown(_features):
+        return ("thermocycler.deactivate_all: RuntimeError: timeout",)
+
+    monkeypatch.setattr(workflow, "validate_manifest_step", validate)
+    monkeypatch.setattr(workflow, "connect_and_preflight_step", connect)
+    monkeypatch.setattr(workflow, "home_and_configure_step", fail_phase)
+    monkeypatch.setattr(workflow, "safe_shutdown", fail_shutdown)
+
+    with pytest.raises(RuntimeError, match="safety shutdown was incomplete") as failure:
+        await workflow.flex_system_acceptance_flow(_manifest(), device_name=manifest.service_name)
+
+    assert isinstance(failure.value.__cause__, ValueError)
+    assert str(failure.value.__cause__) == "phase failed"

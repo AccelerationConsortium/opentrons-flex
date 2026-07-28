@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -115,10 +115,22 @@ def test_app_installation_and_router_registration_are_reversible() -> None:
         app_routes.extend(object() for _ in router.routes)
 
     app.include_router = include_router
+    original_hardware = object()
+    original_initialization_task = object()
+    hardware_accessor = SimpleNamespace(
+        get_from=MagicMock(return_value=original_hardware),
+        set_on=MagicMock(),
+    )
+    initialization_task_accessor = SimpleNamespace(
+        get_from=MagicMock(return_value=original_initialization_task),
+        set_on=MagicMock(),
+    )
+    installed_hardware = object()
+    installed_initialization_task = object()
     bindings = RobotServerBindings(
         app=app,
-        hardware_accessor=SimpleNamespace(set_on=MagicMock()),
-        initialization_task_accessor=SimpleNamespace(set_on=MagicMock()),
+        hardware_accessor=hardware_accessor,
+        initialization_task_accessor=initialization_task_accessor,
         get_deck_type=MagicMock(),
         get_robot_type=MagicMock(),
         get_robot_type_enum=MagicMock(),
@@ -131,8 +143,8 @@ def test_app_installation_and_router_registration_are_reversible() -> None:
 
     installation = install_robot_server_app(
         bindings,
-        initialization_task=object(),
-        hardware_proxy=object(),
+        initialization_task=installed_initialization_task,
+        hardware_proxy=installed_hardware,
         identity_overrides={
             original_dependency: object(),
             added_dependency: added_override,
@@ -154,6 +166,14 @@ def test_app_installation_and_router_registration_are_reversible() -> None:
     assert app.router.routes == [baseline_route]
     assert app.router.lifespan_context is original_lifespan
     assert app.dependency_overrides == {original_dependency: original_override}
+    assert hardware_accessor.set_on.call_args_list == [
+        call(app.state, installed_hardware),
+        call(app.state, original_hardware),
+    ]
+    assert initialization_task_accessor.set_on.call_args_list == [
+        call(app.state, installed_initialization_task),
+        call(app.state, original_initialization_task),
+    ]
 
 
 def test_router_registration_that_adds_no_routes_fails_closed() -> None:
@@ -166,8 +186,14 @@ def test_router_registration_that_adds_no_routes_fails_closed() -> None:
     )
     bindings = RobotServerBindings(
         app=app,
-        hardware_accessor=SimpleNamespace(set_on=MagicMock()),
-        initialization_task_accessor=SimpleNamespace(set_on=MagicMock()),
+        hardware_accessor=SimpleNamespace(
+            get_from=MagicMock(return_value=None),
+            set_on=MagicMock(),
+        ),
+        initialization_task_accessor=SimpleNamespace(
+            get_from=MagicMock(return_value=None),
+            set_on=MagicMock(),
+        ),
         get_deck_type=MagicMock(),
         get_robot_type=MagicMock(),
         get_robot_type_enum=MagicMock(),
@@ -187,3 +213,57 @@ def test_router_registration_that_adds_no_routes_fails_closed() -> None:
             installation,
             SimpleNamespace(routes=[object()]),
         )
+
+
+def test_partial_app_installation_is_rolled_back_transactionally() -> None:
+    original_hardware = object()
+    original_initialization_task = object()
+    installed_hardware = object()
+    installed_initialization_task = object()
+    state = SimpleNamespace(
+        hardware=original_hardware,
+        initialization_task=original_initialization_task,
+    )
+
+    class _Accessor:
+        def __init__(self, attribute: str, fail_value: object | None = None) -> None:
+            self._attribute = attribute
+            self._fail_value = fail_value
+
+        def get_from(self, app_state) -> object:
+            return getattr(app_state, self._attribute)
+
+        def set_on(self, app_state, value: object) -> None:
+            setattr(app_state, self._attribute, value)
+            if value is self._fail_value:
+                raise RuntimeError("setter failed")
+
+    app = SimpleNamespace(
+        state=state,
+        dependency_overrides={},
+        router=SimpleNamespace(routes=[], lifespan_context=MagicMock()),
+        openapi_schema=None,
+    )
+    app.include_router = MagicMock()
+    bindings = RobotServerBindings(
+        app=app,
+        hardware_accessor=_Accessor("hardware", fail_value=installed_hardware),
+        initialization_task_accessor=_Accessor("initialization_task"),
+        get_deck_type=MagicMock(),
+        get_robot_type=MagicMock(),
+        get_robot_type_enum=MagicMock(),
+        mark_light_control_startup_finished=MagicMock(),
+        start_light_control_task=MagicMock(),
+    )
+
+    with pytest.raises(RuntimeError, match="setter failed"):
+        install_robot_server_app(
+            bindings,
+            initialization_task=installed_initialization_task,
+            hardware_proxy=installed_hardware,
+            identity_overrides={},
+            lifespan_factory=lambda original: original,
+        )
+
+    assert state.hardware is original_hardware
+    assert state.initialization_task is original_initialization_task

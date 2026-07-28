@@ -48,6 +48,7 @@ async def flex_system_acceptance_flow(manifest: dict, device_name: str = INSTRUM
         )
         raise ValueError(msg)
     _service, _client, features = await connect_and_preflight_step(device_name, validated)
+    workflow_failure: BaseException | None = None
     try:
         await home_and_configure_step(features, validated)
         await stacker_step(features, validated)
@@ -56,6 +57,19 @@ async def flex_system_acceptance_flow(manifest: dict, device_name: str = INSTRUM
         await heater_shaker_step(features, validated)
         await temperature_module_step(features, validated)
         await plate_reader_step(features, validated)
-    finally:
-        await safe_shutdown(features)
+    except BaseException as exc:
+        workflow_failure = exc
+
+    shutdown_failures = await safe_shutdown(features)
+    if shutdown_failures:
+        detail = "; ".join(shutdown_failures)
+        msg = (
+            "Flex acceptance safety shutdown was incomplete. The workflow is not accepted; "
+            f"reconcile the robot before another run. Failures: {detail}"
+        )
+        if workflow_failure is not None:
+            raise RuntimeError(msg) from workflow_failure
+        raise RuntimeError(msg)
+    if workflow_failure is not None:
+        raise workflow_failure
     logger.info("Flex system acceptance completed")

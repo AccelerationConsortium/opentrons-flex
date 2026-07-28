@@ -4,7 +4,7 @@ from copy import deepcopy
 
 import pytest
 
-from unitelabs.opentrons_flex.acceptance import AcceptanceManifest, PlanContract, validate_plan_contract
+from unitelabs_flex_acceptance_contract import AcceptanceManifest, PlanContract, validate_plan_contract
 
 
 def _coordinate(x: float, y: float, z: float) -> dict[str, float]:

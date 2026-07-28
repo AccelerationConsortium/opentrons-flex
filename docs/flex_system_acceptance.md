@@ -120,6 +120,14 @@ uv run --directory workflows/flex-system-acceptance workflow --manifest C:\path\
 Python 3.10 hardware connector into Windows: both sides share the dependency-free
 `unitelabs-flex-acceptance-contract` package instead.
 
+The routine workflow always attempts every de-energization action: Heater-Shaker
+stop and heater deactivation, Thermocycler deactivation, Temperature Module
+deactivation, Plate Reader deactivation, Stacker deactivation, and lights off.
+Failures are accumulated instead of stopping cleanup early, but any failure
+marks the workflow unsuccessful and requires operator reconciliation. A
+completed hardware sequence with incomplete shutdown is never logged as an
+accepted run.
+
 To publish it with the repository's existing workflow tooling:
 
 ```powershell

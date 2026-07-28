@@ -447,40 +447,14 @@ async def create_app(config: OpentronsFlexConfig) -> collections.abc.AsyncGenera
             await api.clean_up()
 
 
-async def _create_app_with_robot_server(
+def _prepare_mutation_runtime(
     config: OpentronsFlexConfig,
-    labware_config: LoadedLabwareMovementConfig,
     compatibility: RuntimeCompatibilityReport,
-) -> collections.abc.AsyncGenerator[Connector, None]:
-    """
-    Start both the SiLA2 gRPC server and the opentrons HTTP robot-server in one process.
-
-    Mirrors the OT-2 connector's in-process design, but builds an ``OT3API`` (CAN) instead
-    of an OT-2 ``API`` (Smoothie serial):
-
-    1. ``OT3API.build_hardware_controller`` brings up the CAN bus once.
-    2. ``HardwareProxy`` wraps it with an ``asyncio.Lock`` — every command from either
-       server acquires this lock.
-    3. App-state pre-population sets a completed init task + our proxy on
-       ``robot_server_app.state`` so robot-server skips its own hardware init.
-    4. uvicorn serves ``robot_server_app`` on a Unix domain socket (nginx proxies TCP 31950)
-       or a TCP port for testing.
-
-    ``robot_server`` is a system package on the Flex (not on PyPI); its imports are deferred.
-    """
-    import uvicorn
-    from opentrons.hardware_control.ot3api import OT3API
-
-    from opentrons.protocol_engine import DeckType
-    from opentrons_shared_data.robot.types import RobotTypeEnum
-
-    robot_server = load_robot_server_bindings()
-
-    mutation_api_token: str | None = None
-    mutation_authenticated_actor: str | None = None
-    mutation_ledger: MutationLedger | None = None
+) -> tuple[str | None, str | None, MutationLedger | None]:
+    """Validate controlled-mutation state before hardware acquisition."""
     mutation_api_token = os.environ.get(config.run_mutation_token_env)
     mutation_authenticated_actor = os.environ.get(config.run_mutation_actor_env)
+    mutation_ledger: MutationLedger | None = None
     mutation_issues = mutation_configuration_issues(
         compatibility,
         ledger_path=config.run_mutation_ledger_path,
@@ -516,7 +490,27 @@ async def _create_app_with_robot_server(
             )
             mutation_api_token = None
             mutation_authenticated_actor = None
+    return mutation_api_token, mutation_authenticated_actor, mutation_ledger
 
+
+async def _create_app_with_robot_server(
+    config: OpentronsFlexConfig,
+    labware_config: LoadedLabwareMovementConfig,
+    compatibility: RuntimeCompatibilityReport,
+) -> collections.abc.AsyncGenerator[Connector, None]:
+    """
+    Start both the SiLA2 gRPC server and the opentrons HTTP robot-server in one process.
+
+    Hardware cleanup is registered immediately after acquisition. Synchronous
+    robot-server and labware cleanup is registered before any subsequent
+    fallible startup step.
+    """
+    from opentrons.hardware_control.ot3api import OT3API
+
+    mutation_api_token, mutation_authenticated_actor, mutation_ledger = _prepare_mutation_runtime(
+        config,
+        compatibility,
+    )
     if config.use_simulator:
         log.info("Building shared OT3API (simulator)")
         shared_hardware = await OT3API.build_hardware_simulator(
@@ -526,6 +520,41 @@ async def _create_app_with_robot_server(
     else:
         log.info("Building shared OT3API on CAN bus")
         shared_hardware = await OT3API.build_hardware_controller()
+
+    try:
+        with contextlib.ExitStack() as setup_cleanup:
+            async for connector in _serve_with_robot_server(
+                config,
+                labware_config,
+                compatibility,
+                shared_hardware=shared_hardware,
+                mutation_api_token=mutation_api_token,
+                mutation_authenticated_actor=mutation_authenticated_actor,
+                mutation_ledger=mutation_ledger,
+                setup_cleanup=setup_cleanup,
+            ):
+                yield connector
+    finally:
+        await shared_hardware.clean_up()
+
+
+async def _serve_with_robot_server(
+    config: OpentronsFlexConfig,
+    labware_config: LoadedLabwareMovementConfig,
+    compatibility: RuntimeCompatibilityReport,
+    *,
+    shared_hardware: object,
+    mutation_api_token: str | None,
+    mutation_authenticated_actor: str | None,
+    mutation_ledger: MutationLedger | None,
+    setup_cleanup: contextlib.ExitStack,
+) -> collections.abc.AsyncGenerator[Connector, None]:
+    """Wire and serve robot-server using already-acquired shared hardware."""
+    import uvicorn
+    from opentrons.protocol_engine import DeckType
+    from opentrons_shared_data.robot.types import RobotTypeEnum
+
+    robot_server = load_robot_server_bindings()
 
     def _current_run_store() -> object | None:
         # robot-server stores this singleton under the stable app-state key used
@@ -551,6 +580,8 @@ async def _create_app_with_robot_server(
         if labware_config.state_file is not None
         else None
     )
+    if labware_state is not None:
+        setup_cleanup.callback(labware_state.close)
     robot_server_hardware = (
         OT3SimulatorCompatibilityAdapter(shared_hardware) if config.use_simulator else shared_hardware
     )
@@ -591,6 +622,7 @@ async def _create_app_with_robot_server(
         robot_server.get_robot_type_enum: _get_flex_robot_type_enum,
         robot_server.get_deck_type: _get_flex_deck_type,
     }
+    added_robot_server_routes: list[object] = []
     robot_server_installation = install_robot_server_app(
         robot_server,
         initialization_task=init_task,
@@ -601,6 +633,14 @@ async def _create_app_with_robot_server(
             proxy,
         ),
     )
+
+    def _restore_installed_robot_server() -> None:
+        restore_robot_server_app(
+            robot_server_installation,
+            added_routes=tuple(added_robot_server_routes),
+        )
+
+    setup_cleanup.callback(_restore_installed_robot_server)
     robot_server_app = typing.cast(typing.Any, robot_server_installation.app)
 
     runtime_identity = process_runtime_identity(
@@ -608,7 +648,7 @@ async def _create_app_with_robot_server(
         require_release=not config.use_simulator,
     )
     runtime_identity_router = create_runtime_identity_router(runtime_identity)
-    added_robot_server_routes = list(
+    added_robot_server_routes.extend(
         include_robot_server_router(
             robot_server_installation,
             runtime_identity_router,
@@ -698,12 +738,3 @@ async def _create_app_with_robot_server(
     finally:
         uv_server.should_exit = True
         await asyncio.gather(robot_server_task, return_exceptions=True)
-        restore_robot_server_app(
-            robot_server_installation,
-            added_routes=tuple(added_robot_server_routes),
-        )
-        try:
-            if labware_state is not None:
-                labware_state.close()
-        finally:
-            await shared_hardware.clean_up()

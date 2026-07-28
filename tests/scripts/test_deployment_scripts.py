@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
 
@@ -8,6 +10,224 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def _text(path: str) -> str:
     return (ROOT / path).read_text()
+
+
+def _remote_body(path: str, runtime_root: Path) -> str:
+    script = _text(path)
+    marker = "<<'REMOTE'\n"
+    start = script.index(marker) + len(marker)
+    end = script.rindex("\nREMOTE")
+    body = script[start:end] + "\n"
+    replacements = {
+        'STATE_DIR="/var/lib/unitelabs-opentrons-flex"': (
+            f'STATE_DIR="{runtime_root}/var/lib/unitelabs-opentrons-flex"'
+        ),
+        'ACTIVE_PATH="/var/sila2_flex"': f'ACTIVE_PATH="{runtime_root}/var/sila2_flex"',
+    }
+    for original, isolated in replacements.items():
+        assert original in body, f"{path} no longer exposes the expected isolated path seam"
+        body = body.replace(original, isolated)
+    systemd_unit = "cat > /etc/systemd/system/sila2-connector.service"
+    if path == "scripts/install_connector_service.sh":
+        assert systemd_unit in body, f"{path} no longer exposes the expected isolated systemd seam"
+    if systemd_unit in body:
+        body = body.replace(
+            systemd_unit,
+            f'cat > "{runtime_root}/etc/systemd/system/sila2-connector.service"',
+        )
+    assert 'STATE_DIR="/var/lib/unitelabs-opentrons-flex"' not in body
+    assert 'ACTIVE_PATH="/var/sila2_flex"' not in body
+    assert systemd_unit not in body
+    return body
+
+
+def _write_executable(path: Path, contents: str) -> None:
+    path.write_text(contents)
+    path.chmod(0o755)
+
+
+def _offline_remote_environment(tmp_path: Path) -> tuple[dict[str, str], dict[str, Path]]:
+    runtime_root = tmp_path / "runtime-root"
+    state_dir = runtime_root / "var/lib/unitelabs-opentrons-flex"
+    releases_dir = state_dir / "releases"
+    current_release = releases_dir / "current"
+    previous_release = releases_dir / "previous"
+    active_path = runtime_root / "var/sila2_flex"
+    systemd_dir = runtime_root / "etc/systemd/system"
+    fake_bin = tmp_path / "fake-bin"
+    command_log = tmp_path / "commands.log"
+    connector_active = tmp_path / "connector-active"
+    stock_active = tmp_path / "stock-active"
+
+    for directory in (
+        current_release / "bin",
+        previous_release / "bin",
+        active_path.parent,
+        systemd_dir,
+        fake_bin,
+    ):
+        directory.mkdir(parents=True, exist_ok=True)
+    active_path.symlink_to(current_release, target_is_directory=True)
+    stock_active.touch()
+    (state_dir / "run-mutation.env").write_text(
+        "UNITELABS_RUN_MUTATION_TOKEN=" + ("t" * 32) + "\nUNITELABS_RUN_MUTATION_ACTOR=offline-harness\n"
+    )
+    (state_dir / "stock-service-state").write_text("opentrons-robot-server|yes|yes\n")
+    for release in (current_release, previous_release):
+        (release / "config.json").write_text("{}\n")
+        _write_executable(
+            release / "bin/python",
+            """#!/bin/sh
+printf '%s\n' "release-python $*" >> "$FAKE_COMMAND_LOG"
+exit "${FAKE_PREFLIGHT_EXIT:-0}"
+""",
+        )
+
+    _write_executable(
+        fake_bin / "systemctl",
+        """#!/bin/sh
+set -eu
+printf '%s\n' "systemctl $*" >> "$FAKE_COMMAND_LOG"
+command="${1:-}"
+service="${2:-}"
+if [ "$command" = "is-active" ] || [ "$command" = "is-enabled" ]; then
+    for argument in "$@"; do
+        service="$argument"
+    done
+fi
+case "$command" in
+    cat)
+        exit 0
+        ;;
+    is-enabled)
+        [ "$service" != "sila2-connector" ]
+        exit $?
+        ;;
+    is-active)
+        case "$service" in
+            sila2-connector) [ -f "$FAKE_CONNECTOR_ACTIVE" ] ;;
+            opentrons-robot-server) [ -f "$FAKE_STOCK_ACTIVE" ] ;;
+            *) [ -f "$FAKE_STOCK_ACTIVE" ] ;;
+        esac
+        exit $?
+        ;;
+    start)
+        if [ "$service" = "sila2-connector" ]; then
+            [ "${FAKE_CONNECTOR_START_FAIL:-0}" != 1 ] || exit 1
+            : > "$FAKE_CONNECTOR_ACTIVE"
+        elif [ "$service" = "opentrons-robot-server" ]; then
+            : > "$FAKE_STOCK_ACTIVE"
+        fi
+        ;;
+    stop)
+        if [ "$service" = "sila2-connector" ]; then
+            rm -f "$FAKE_CONNECTOR_ACTIVE"
+        elif [ "$service" = "opentrons-robot-server" ]; then
+            rm -f "$FAKE_STOCK_ACTIVE"
+        fi
+        ;;
+esac
+exit 0
+""",
+    )
+    _write_executable(
+        fake_bin / "curl",
+        """#!/bin/sh
+set -eu
+url=""
+for argument in "$@"; do
+    url="$argument"
+done
+printf '%s\n' "curl $url" >> "$FAKE_COMMAND_LOG"
+case "$url" in
+    */openapi.json)
+        [ -f "$FAKE_CONNECTOR_ACTIVE" ] && [ "${FAKE_CONNECTOR_HEALTH:-0}" = 1 ] || exit 1
+        printf '%s\n' '{"paths":{"/unitelabs/runs/{run_id}/mutations":{}}}'
+        ;;
+    */deck_configuration)
+        [ -f "$FAKE_CONNECTOR_ACTIVE" ] && [ "${FAKE_CONNECTOR_HEALTH:-0}" = 1 ]
+        ;;
+    */health)
+        if [ -f "$FAKE_CONNECTOR_ACTIVE" ]; then
+            [ "${FAKE_CONNECTOR_HEALTH:-0}" = 1 ]
+        else
+            [ -f "$FAKE_STOCK_ACTIVE" ] && [ "${FAKE_STOCK_HEALTH:-1}" = 1 ]
+        fi
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+""",
+    )
+    _write_executable(
+        fake_bin / "python3",
+        """#!/bin/sh
+set -eu
+printf '%s\n' "python3 $*" >> "$FAKE_COMMAND_LOG"
+code="${2:-}"
+case "$code" in
+    *socket.create_connection*)
+        [ -f "$FAKE_CONNECTOR_ACTIVE" ] && [ "${FAKE_CONNECTOR_HEALTH:-0}" = 1 ]
+        ;;
+    *json.load*)
+        cat >/dev/null
+        ;;
+    *os.replace*)
+        [ "${FAKE_ACTIVATION_FAIL:-0}" != 1 ] || exit 1
+        rm -f "$4"
+        mv "$3" "$4"
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+""",
+    )
+    for command in ("mount", "sleep", "journalctl"):
+        _write_executable(
+            fake_bin / command,
+            f"""#!/bin/sh
+printf '%s\\n' "{command} $*" >> "$FAKE_COMMAND_LOG"
+exit 0
+""",
+        )
+
+    environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "FAKE_RUNTIME_ROOT": str(runtime_root),
+        "FAKE_COMMAND_LOG": str(command_log),
+        "FAKE_CONNECTOR_ACTIVE": str(connector_active),
+        "FAKE_STOCK_ACTIVE": str(stock_active),
+        "FAKE_CONNECTOR_HEALTH": "1",
+        "FAKE_STOCK_HEALTH": "1",
+        "FAKE_PREFLIGHT_EXIT": "0",
+        "FAKE_ACTIVATION_FAIL": "0",
+    }
+    paths = {
+        "active": active_path,
+        "command_log": command_log,
+        "connector_active": connector_active,
+        "current_release": current_release,
+        "previous_release": previous_release,
+        "previous_record": state_dir / "previous-release",
+        "stock_active": stock_active,
+    }
+    return environment, paths
+
+
+def _run_remote_body(path: str, environment: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    runtime_root = Path(environment["FAKE_RUNTIME_ROOT"])
+    return subprocess.run(
+        ["sh"],
+        input=_remote_body(path, runtime_root),
+        text=True,
+        capture_output=True,
+        check=False,
+        env=environment,
+        timeout=10,
+    )
 
 
 def test_deploy_verifies_artifact_and_runtime_before_activation() -> None:
@@ -84,3 +304,56 @@ def test_rollback_leaves_stock_robot_server_active() -> None:
     assert "stock robot-server did not recover within 120 seconds" in script
     assert "os.replace" in script
     assert "printf 'legacy:%s\\n' \"$CURRENT_TARGET\"" in script
+
+
+def test_service_install_preflight_failure_never_touches_service_state(tmp_path: Path) -> None:
+    environment, paths = _offline_remote_environment(tmp_path)
+    environment["FAKE_PREFLIGHT_EXIT"] = "1"
+
+    result = _run_remote_body("scripts/install_connector_service.sh", environment)
+
+    assert result.returncode != 0
+    assert "systemctl " not in paths["command_log"].read_text()
+    assert paths["stock_active"].is_file()
+    assert not paths["connector_active"].exists()
+
+
+def test_service_health_timeout_restores_stock_mode(tmp_path: Path) -> None:
+    environment, paths = _offline_remote_environment(tmp_path)
+    environment["FAKE_CONNECTOR_HEALTH"] = "0"
+
+    result = _run_remote_body("scripts/install_connector_service.sh", environment)
+    command_log = paths["command_log"].read_text()
+
+    assert result.returncode != 0
+    assert "connector failed the bounded startup health check" in result.stderr
+    assert "systemctl start sila2-connector" in command_log
+    assert "systemctl stop sila2-connector" in command_log
+    assert "systemctl start opentrons-robot-server" in command_log
+    assert paths["stock_active"].is_file()
+    assert not paths["connector_active"].exists()
+
+
+def test_rollback_activation_failure_keeps_current_release_active(tmp_path: Path) -> None:
+    environment, paths = _offline_remote_environment(tmp_path)
+    paths["previous_record"].write_text(f"release:{paths['previous_release']}\n")
+    environment["FAKE_ACTIVATION_FAIL"] = "1"
+
+    result = _run_remote_body("scripts/rollback_connector.sh", environment)
+
+    assert result.returncode != 0
+    assert paths["active"].resolve() == paths["current_release"]
+    assert paths["previous_record"].read_text() == f"release:{paths['previous_release']}\n"
+    assert paths["stock_active"].is_file()
+
+
+def test_rollback_atomically_swaps_release_and_records_prior_target(tmp_path: Path) -> None:
+    environment, paths = _offline_remote_environment(tmp_path)
+    paths["previous_record"].write_text(f"release:{paths['previous_release']}\n")
+
+    result = _run_remote_body("scripts/rollback_connector.sh", environment)
+
+    assert result.returncode == 0, result.stderr
+    assert paths["active"].resolve() == paths["previous_release"]
+    assert paths["previous_record"].read_text() == f"release:{paths['current_release']}\n"
+    assert paths["stock_active"].is_file()
