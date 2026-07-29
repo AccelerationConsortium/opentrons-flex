@@ -92,7 +92,7 @@ class _CheckpointClient:
                         "id": "checkpoint-1",
                         "params": {"message": "UNITELABS_MUTATION_CHECKPOINT:ready-before-initial-separation"},
                     },
-                    "pipettes": [{"id": "pipette-1", "mount": "right"}],
+                    "pipettes": [{"id": "pipette-1", "mount": "right", "name": "p1000_multi_flex"}],
                     "tipRacks": {"tips-1": {}},
                     "labware": [
                         {"id": "reservoir-1", "loadName": "nest_12_reservoir_22ml"},
@@ -224,20 +224,79 @@ def test_deck_validation_reports_wrong_fixture_and_missing_module_serial() -> No
 
 
 def test_hardware_inventory_requires_right_flex_pipette_and_temperature_module() -> None:
-    assert (
-        run_asms_hardware._hardware_inventory_errors(
-            {"right": {"name": "flex_8channel_1000"}},
-            {"data": [{"moduleModel": "temperatureModuleV2"}]},
+    for pipette_name in ("flex_8channel_1000", "p1000_multi_flex"):
+        assert (
+            run_asms_hardware._hardware_inventory_errors(
+                {"right": {"name": pipette_name}},
+                {"data": [{"moduleModel": "temperatureModuleV2"}]},
+            )
+            == []
         )
-        == []
-    )
     assert run_asms_hardware._hardware_inventory_errors(
         {"right": {"name": "flex_1channel_1000"}},
         {"data": []},
     ) == [
-        "right pipette: expected flex_8channel_1000, found flex_1channel_1000",
+        (
+            "right pipette: expected Flex 8-Channel 1000 µL "
+            "(flex_8channel_1000 or p1000_multi_flex), found flex_1channel_1000"
+        ),
         "Temperature Module GEN2 is not connected",
     ]
+
+
+def test_checkpoint_transfer_accepts_internal_flex_pipette_name() -> None:
+    snapshot = {
+        "pipettes": [{"id": "pipette-1", "mount": "right", "name": "p1000_multi_flex"}],
+        "tipRacks": {"tips-1": {"wells": {}}},
+        "labware": [
+            {"id": "reservoir-1", "loadName": "nest_12_reservoir_22ml"},
+            {
+                "id": "waste-1",
+                "loadName": "thermokingfisherdeepwell_96_wellplate_2000ul",
+            },
+        ],
+        "disposalAreas": [
+            {
+                "areaType": "movableTrash",
+                "addressableAreaName": "movableTrashA3",
+            }
+        ],
+    }
+
+    body = run_asms_hardware._checkpoint_transfer_body(
+        snapshot,
+        actor="operator-1",
+        mutation_id="mutation-1",
+    )
+
+    assert body["steps"][0]["pipetteId"] == "pipette-1"
+
+    snapshot["pipettes"][0].pop("name")
+    with pytest.raises(RuntimeError, match="must contain exactly one"):
+        run_asms_hardware._checkpoint_transfer_body(
+            snapshot,
+            actor="operator-1",
+            mutation_id="mutation-2",
+        )
+
+    snapshot["pipettes"][0]["name"] = "flex_1channel_1000"
+    with pytest.raises(RuntimeError, match="must contain exactly one"):
+        run_asms_hardware._checkpoint_transfer_body(
+            snapshot,
+            actor="operator-1",
+            mutation_id="mutation-3",
+        )
+
+    snapshot["pipettes"] = [
+        {"id": "pipette-1", "mount": "right", "name": "p1000_multi_flex"},
+        {"id": "pipette-2", "mount": "right", "name": "flex_8channel_1000"},
+    ]
+    with pytest.raises(RuntimeError, match="found 2"):
+        run_asms_hardware._checkpoint_transfer_body(
+            snapshot,
+            actor="operator-1",
+            mutation_id="mutation-4",
+        )
 
 
 def test_checkpoint_preflight_requires_both_controlled_mutation_routes() -> None:

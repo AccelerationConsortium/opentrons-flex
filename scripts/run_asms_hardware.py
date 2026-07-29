@@ -27,6 +27,12 @@ _HTTP_API_VERSION_HEADER = "Opentrons-Version"
 _EXECUTION_CONFIRMATION = "ASMS-DECK-READY"
 _TERMINAL_RUN_STATES = {"succeeded", "failed", "stopped"}
 _TERMINAL_ANALYSIS_STATES = {"completed", "failed"}
+_EXPECTED_RIGHT_PIPETTE_NAMES = frozenset(
+    {
+        "flex_8channel_1000",  # Public Python Protocol API load name.
+        "p1000_multi_flex",  # Internal name returned by the Opentrons /pipettes API.
+    }
+)
 _EXPECTED_LABWARE_HASHES = {
     "azenta_96_wellplate_200ul_pcr": "43506d5482e3dfebff377e56b709150c81415473efc9cf2c6362dc4b68a1e20f",
     "thermokingfisherdeepwell_96_wellplate_2000ul": (
@@ -154,13 +160,23 @@ def _deck_configuration_errors(deck_response: dict) -> list[str]:
     return errors
 
 
+def _pipette_name(pipette: dict) -> str | None:
+    value = pipette.get("pipetteName") or pipette.get("name")
+    return value if isinstance(value, str) else None
+
+
 def _hardware_inventory_errors(pipettes: dict, modules: dict) -> list[str]:
     errors = []
     right = pipettes.get("right")
     if not isinstance(right, dict):
         errors.append("right pipette mount is empty")
-    elif right.get("name") != "flex_8channel_1000":
-        errors.append(f"right pipette: expected flex_8channel_1000, found {right.get('name') or 'unknown'}")
+    else:
+        observed_name = _pipette_name(right)
+        if observed_name not in _EXPECTED_RIGHT_PIPETTE_NAMES:
+            errors.append(
+                "right pipette: expected Flex 8-Channel 1000 µL "
+                f"(flex_8channel_1000 or p1000_multi_flex), found {observed_name or 'unknown'}"
+            )
 
     module_items = modules.get("data")
     if not isinstance(module_items, list):
@@ -257,16 +273,17 @@ def _checkpoint_transfer_body(snapshot: dict, *, actor: str, mutation_id: str) -
     pipettes = snapshot.get("pipettes")
     if not isinstance(pipettes, list) or not pipettes:
         raise RuntimeError("Checkpoint snapshot has no attached pipette")
-    pipette = next(
-        (
-            item
-            for item in pipettes
-            if str(item.get("mount", "")).lower() == "right"
-            or item.get("pipetteName") == "flex_8channel_1000"
-            or item.get("name") == "flex_8channel_1000"
-        ),
-        pipettes[0],
-    )
+    matching_pipettes = [
+        item
+        for item in pipettes
+        if str(item.get("mount", "")).lower() == "right" and _pipette_name(item) in _EXPECTED_RIGHT_PIPETTE_NAMES
+    ]
+    if len(matching_pipettes) != 1:
+        raise RuntimeError(
+            "Checkpoint snapshot must contain exactly one right Flex 8-Channel 1000 µL pipette; "
+            f"found {len(matching_pipettes)}"
+        )
+    pipette = matching_pipettes[0]
 
     tip_racks = snapshot.get("tipRacks")
     if not isinstance(tip_racks, dict) or not tip_racks:
