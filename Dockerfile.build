@@ -11,7 +11,7 @@
 #       --target export --output type=local,dest=dist_arm .
 #
 # The resulting dist_arm/ feeds deploy.sh.
-FROM ghcr.io/astral-sh/uv:python3.10-bookworm AS wheels
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm AS wheels
 
 ARG OPENTRONS_VERSION=9.0.0
 ARG OPENTRONS_COMMIT=44b37a2f91520bf2e7245c70bf799d46c8c2d9a5
@@ -60,7 +60,7 @@ RUN git clone --depth 1 --branch "v${OPENTRONS_VERSION}" \
         --opentrons-version "$OPENTRONS_VERSION" \
         --robot-server-version "$OPENTRONS_VERSION" \
         --opentrons-source-commit "$OPENTRONS_COMMIT" \
-        --python-version "3.10" \
+        --python-version "3.12" \
         --architecture "aarch64"
 
 FROM scratch AS export

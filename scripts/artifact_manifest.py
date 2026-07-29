@@ -86,6 +86,46 @@ def _wheel_identity(path: Path) -> tuple[str, str]:
     return _normalize_distribution(match.group("name")), match.group("version")
 
 
+def _require_wheel_target(path: Path, *, python_version: str, architecture: str) -> None:
+    """Reject wheels that cannot load on the declared Python/architecture."""
+    version_match = re.fullmatch(r"(?P<major>[0-9]+)\.(?P<minor>[0-9]+)", python_version)
+    if version_match is None:
+        raise RuntimeError(f"Python version must be major.minor, received {python_version!r}.")
+    major = int(version_match.group("major"))
+    minor = int(version_match.group("minor"))
+    match = _WHEEL_PATTERN.match(path.name)
+    if match is None:
+        raise RuntimeError(f"Unrecognized wheel filename: {path.name}")
+
+    python_tags = match.group("python").split(".")
+    abi_tags = match.group("abi").split(".")
+    exact_cpython_tag = f"cp{major}{minor}"
+    compatible_python = exact_cpython_tag in python_tags or f"py{major}" in python_tags
+    if not compatible_python and "abi3" in abi_tags:
+        for tag in python_tags:
+            abi3_match = re.fullmatch(r"cp(?P<major>[0-9])(?P<minor>[0-9]+)", tag)
+            if (
+                abi3_match is not None
+                and int(abi3_match.group("major")) == major
+                and int(abi3_match.group("minor")) <= minor
+            ):
+                compatible_python = True
+                break
+    if not compatible_python:
+        raise RuntimeError(
+            f"Wheel {path.name} is not compatible with declared Python {python_version}; "
+            f"expected {exact_cpython_tag}, py{major}, or a compatible abi3 tag."
+        )
+
+    normalized_architecture = {"arm64": "aarch64", "amd64": "x86_64"}.get(
+        architecture.lower(),
+        architecture.lower(),
+    )
+    platform_tags = match.group("platform").split(".")
+    if "any" not in platform_tags and not any(tag.endswith(f"_{normalized_architecture}") for tag in platform_tags):
+        raise RuntimeError(f"Wheel {path.name} is not compatible with declared architecture {normalized_architecture}.")
+
+
 def _require_wheel_version(wheels: list[dict[str, Any]], distribution: str, expected: str) -> None:
     normalized = _normalize_distribution(distribution)
     versions = sorted({item["version"] for item in wheels if item["distribution"] == normalized})
@@ -112,6 +152,7 @@ def build_manifest(
 
     wheels: list[dict[str, Any]] = []
     for path in wheel_paths:
+        _require_wheel_target(path, python_version=python_version, architecture=architecture)
         distribution, wheel_version = _wheel_identity(path)
         wheels.append(
             {
@@ -250,6 +291,12 @@ def verify_manifest(
     }
     if not all(isinstance(value, str) and value for value in runtime_fields.values()):
         raise RuntimeError("Manifest runtime identity fields must be non-empty strings.")
+    for record in wheel_records:
+        _require_wheel_target(
+            directory / record["filename"],
+            python_version=runtime_fields["pythonVersion"],
+            architecture=runtime_fields["architecture"],
+        )
     _require_wheel_version(wheel_records, "unitelabs-opentrons-flex", runtime_fields["connectorVersion"])
     _require_wheel_version(wheel_records, "opentrons", runtime_fields["opentronsVersion"])
     _require_wheel_version(wheel_records, "opentrons-shared-data", runtime_fields["opentronsVersion"])

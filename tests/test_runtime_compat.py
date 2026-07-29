@@ -19,7 +19,7 @@ def _matching_report(*, require_robot_server: bool = True) -> runtime_compat.Run
             "_package_version",
             side_effect=package_versions.__getitem__,
         ),
-        patch.object(runtime_compat.sys, "version_info", (3, 10, 20)),
+        patch.object(runtime_compat.sys, "version_info", (3, 12, 11)),
         patch.object(runtime_compat, "_inspect_robot_server", return_value=("9.0.0", "/robot_server", (), ())),
         patch.object(runtime_compat, "_missing_symbol_issue", return_value=None),
         patch.object(runtime_compat, "_module_outside_release_issue", return_value=None),
@@ -49,7 +49,7 @@ def test_opentrons_version_mismatch_fails_before_hardware() -> None:
             "_package_version",
             side_effect=package_versions.__getitem__,
         ),
-        patch.object(runtime_compat.sys, "version_info", (3, 10, 20)),
+        patch.object(runtime_compat.sys, "version_info", (3, 12, 11)),
         patch.object(runtime_compat, "_missing_symbol_issue", return_value=None),
         patch.object(runtime_compat, "_module_outside_release_issue", return_value=None),
     ):
@@ -72,7 +72,7 @@ def test_http_dependency_drift_only_blocks_embedded_robot_server_profile() -> No
             "_package_version",
             side_effect=package_versions.__getitem__,
         ),
-        patch.object(runtime_compat.sys, "version_info", (3, 10, 20)),
+        patch.object(runtime_compat.sys, "version_info", (3, 12, 11)),
         patch.object(runtime_compat, "_inspect_robot_server", return_value=("9.0.0", "/robot_server", (), ())),
         patch.object(runtime_compat, "_missing_symbol_issue", return_value=None),
         patch.object(runtime_compat, "_module_outside_release_issue", return_value=None),
@@ -88,7 +88,7 @@ def test_http_dependency_drift_only_blocks_embedded_robot_server_profile() -> No
 def test_require_compatible_runtime_raises_actionable_error() -> None:
     incompatible = runtime_compat.RuntimeCompatibilityReport(
         connector_version="0.9.1",
-        python_version="3.11.0",
+        python_version="3.10.20",
         opentrons_version="9.0.0",
         robot_server_version=None,
         robot_server_source=None,
@@ -97,7 +97,7 @@ def test_require_compatible_runtime_raises_actionable_error() -> None:
         private_api_checks=(),
         base_compatible=False,
         mutation_compatible=False,
-        issues=("Python 3.11.0 is unsupported; expected Python 3.10.x.",),
+        issues=("Python 3.10.20 is unsupported; expected Python 3.12.x.",),
         mutation_issues=("The base connector runtime is incompatible.",),
     )
     with (
@@ -135,7 +135,7 @@ def test_opentrons_module_outside_active_release_is_rejected() -> None:
             "_package_version",
             side_effect=package_versions.__getitem__,
         ),
-        patch.object(runtime_compat.sys, "version_info", (3, 10, 20)),
+        patch.object(runtime_compat.sys, "version_info", (3, 12, 11)),
         patch.object(runtime_compat, "_missing_symbol_issue", return_value=None),
         patch.object(
             runtime_compat,

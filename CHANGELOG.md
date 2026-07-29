@@ -16,7 +16,7 @@
   properties while retaining read commands for existing clients. CI now runs
   the vendored official SiLA v1.2 semantic XSLT in addition to XSD validation.
 - Version 0.9.1 aligns the deployable runtime with Flex Opentrons 9.0.0 on
-  Python 3.10, packages the co-versioned private robot-server stack, verifies a
+  Python 3.12, packages the co-versioned private robot-server stack, verifies a
   checksummed ARM artifact manifest built from an immutable upstream commit, and
   rejects cross-release imports before any hardware initialization. Deployments
   now use versioned immutable releases with completion markers, bounded
@@ -41,9 +41,9 @@
   restricted to token-authenticated, audited, non-actuating built-in-resource commands
   and serialized with play; protocol-backed runs and custom definitions fail closed.
   Stop remains available during state-provider failure, command audit is written in
-  bounded batches, and the ARM artifact is pinned to the validated Python
-  3.10/Opentrons 9.0.0 runtime. Python 3.11+ remains intentionally outside the
-  supported Flex deployment matrix.
+  bounded batches, and the ARM artifact is pinned to the Python
+  3.12/Opentrons 9.0.0 runtime observed on the target Flex. Incompatible wheel
+  ABI and architecture tags are rejected before upload.
 
 All notable changes to this project will be documented in this file.
 

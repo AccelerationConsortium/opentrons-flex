@@ -121,7 +121,7 @@ process arguments. It must contain at least 32 characters. Replace
 `operator-name` before running the command; every mutation or hold-release
 request must use that exact `actor`. The connector records the environment-bound
 identity, not an untrusted self-declared value. The service also fails closed
-unless the installed Python 3.10, Opentrons, and embedded robot-server runtime is
+unless the installed Python 3.12, Opentrons, and embedded robot-server runtime is
 the validated 9.0.0 target.
 Its durable ledger is
 `/var/lib/unitelabs-opentrons-flex/run-mutations.jsonl`.
@@ -245,7 +245,7 @@ test branch:
 git fetch --prune origin
 git switch --detach <approved-scheme-b-commit>
 git status --short
-uv sync --extra test
+uv sync --python 3.12 --extra test
 ```
 
 Deploying and installing the Linux service still requires Git Bash or WSL. The

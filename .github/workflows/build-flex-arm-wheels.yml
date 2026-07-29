@@ -57,7 +57,7 @@ jobs:
             --opentrons-version 9.0.0 \
             --robot-server-version 9.0.0 \
             --opentrons-source-commit 44b37a2f91520bf2e7245c70bf799d46c8c2d9a5 \
-            --python-version 3.10 \
+            --python-version 3.12 \
             --architecture aarch64
 
       - name: Upload flex-arm-wheels artifact

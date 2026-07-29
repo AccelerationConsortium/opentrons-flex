@@ -31,7 +31,7 @@ python3 "$MANIFEST_TOOL" verify "$ARTIFACT_DIR" \
     --opentrons-version 9.0.0 \
     --robot-server-version 9.0.0 \
     --opentrons-source-commit 44b37a2f91520bf2e7245c70bf799d46c8c2d9a5 \
-    --python-version 3.10 \
+    --python-version 3.12 \
     --architecture aarch64
 RELEASE_ID="$(python3 "$MANIFEST_TOOL" field "$ARTIFACT_DIR" releaseId)"
 CONFIG_SHA="$(python3 -c 'import hashlib,sys; h=hashlib.sha256(); [h.update(open(p,"rb").read()) for p in sys.argv[1:]]; print(h.hexdigest())' \
@@ -84,7 +84,7 @@ python3 "$UPLOAD_DIR/artifact_manifest.py" verify "$UPLOAD_DIR" \
     --opentrons-version 9.0.0 \
     --robot-server-version 9.0.0 \
     --opentrons-source-commit 44b37a2f91520bf2e7245c70bf799d46c8c2d9a5 \
-    --python-version 3.10 \
+    --python-version 3.12 \
     --architecture aarch64 \
     --check-host-python \
     --check-host-architecture

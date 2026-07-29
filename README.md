@@ -55,7 +55,7 @@ Motion is exposed per **mount** (`LEFT`, `RIGHT`, `GRIPPER`) in deck coordinates
 ### Verified models and environments
 
 Automated verification and the ARM deployment artifact use the real Opentrons
-9.0.0 hardware simulators on Python 3.10. Controlled Protocol Engine
+9.0.0 hardware simulators on Python 3.12. Controlled Protocol Engine
 mutation is intentionally unavailable on unvalidated Opentrons/Python matrices.
 The connector recognizes these official model identifiers:
 
@@ -159,9 +159,9 @@ and routine workflow operator path runs natively on the lab Windows computer;
 macOS remains a compatible backup environment. The `deploy.sh` and service
 management scripts are POSIX tooling for the Flex's Linux environment: invoke
 them from CI, macOS, WSL, or Git Bash rather than native PowerShell.
-The connector/runtime remains pinned to Python 3.10, while the local Unitelabs
-workflow uses Python 3.12 and depends only on the shared cross-runtime acceptance
-contract; `uv run --directory` keeps those environments isolated.
+The connector/runtime and local Unitelabs workflow both target Python 3.12. The
+workflow remains isolated and depends only on the shared acceptance contract;
+`uv run --directory` keeps its environment separate from robot-only packages.
 
 ### Module feature v2 migration
 
@@ -295,7 +295,7 @@ Setting this environment variable will allow you to run various CLI commands wit
 Install the connector and its dependencies into your active virtual environment:
 
 ```sh
-uv sync --all-extras
+uv sync --python 3.12 --all-extras
 ```
 
 #### Configure the Connector
@@ -411,7 +411,7 @@ SiLA feature-definition generation, and real gRPC calls through the full chain
 propagating over the wire.
 
 CI also creates an isolated Windows Python 3.12 workflow environment that does
-not install the Python 3.10 connector. It validates the native PowerShell
+not install the connector runtime. It validates the native PowerShell
 entrypoint and runs the `flex_workflow_offline` import, phase-wiring,
 commissioning-digest, and fail-closed shutdown tests with offline SDK/Prefect
 stubs. Deployment-script tests execute the actual remote shell bodies under a
@@ -639,7 +639,8 @@ determines whether GitHub blocks merging on that job.
 
 The artifact is accepted only when `runtime-manifest.json` and `SHA256SUMS`
 verify every wheel, the connector/Opentrons/robot-server versions are exact, and
-the declared target is Python 3.10 on aarch64.
+the declared target is Python 3.12 on aarch64. Every platform-specific wheel
+must also carry a compatible `cp312`/`abi3` tag and an aarch64 platform tag.
 
 ### Installing on the Flex
 
@@ -774,7 +775,7 @@ Clone the repository and set up the development environment:
 ```sh
 git clone https://github.com/AccelerationConsortium/opentrons-flex.git
 cd opentrons-flex
-uv sync --all-extras
+uv sync --python 3.12 --all-extras
 uv run connector start -vvv
 ```
 

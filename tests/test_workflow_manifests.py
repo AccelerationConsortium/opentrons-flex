@@ -10,7 +10,7 @@ import pytest
 
 try:
     import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10 CI
+except ModuleNotFoundError:  # pragma: no cover - isolated workflow environment
     import tomli as tomllib
 from pathlib import Path
 
@@ -120,7 +120,7 @@ def test_flex_acceptance_workflow_is_hardware_tagged() -> None:
 
 @pytest.mark.flex_workflow_offline
 def test_flex_workflow_uses_cross_runtime_contract_instead_of_connector_package() -> None:
-    """The Python 3.12 workflow must not depend on the Python 3.10 robot runtime."""
+    """The workflow must not depend on connector-only robot runtime packages."""
     data = _pyproject("flex-system-acceptance")
     dependencies = set(data["project"]["dependencies"])
 
@@ -164,7 +164,7 @@ def test_workflow_entrypoints_import_and_build_as_flows(monkeypatch) -> None:
 
 @pytest.mark.flex_workflow_offline
 def test_flex_workflow_entrypoint_imports_as_a_python_312_safe_flow(monkeypatch) -> None:
-    """The Flex entrypoint imports without the Python 3.10 connector runtime."""
+    """The Flex entrypoint imports without the connector runtime."""
     _install_workflow_runtime_stubs(monkeypatch)
     monkeypatch.syspath_prepend(str(WORKFLOWS / "flex-system-acceptance" / "src"))
     for loaded in list(sys.modules):

@@ -13,7 +13,7 @@ jobs:
       matrix:
         include:
           # This is the exact runtime matrix deployed to Flex.
-          - python-version: "3.10"
+          - python-version: "3.12"
             opentrons-version: "9.0.0"
             opentrons-commit: "44b37a2f91520bf2e7245c70bf799d46c8c2d9a5"
 
@@ -113,10 +113,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download coverage (Python 3.10)
+      - name: Download coverage (Python 3.12)
         uses: actions/download-artifact@v4
         with:
-          name: coverage-3.10
+          name: coverage-3.12
           path: .
 
       - name: Skip SonarCloud when token is unavailable
@@ -184,8 +184,8 @@ jobs:
           version: "0.9.6"
           enable-cache: true
 
-      - name: Set up operator Python 3.10
-        run: uv python install 3.10
+      - name: Set up operator Python 3.12
+        run: uv python install 3.12
 
       - name: Install connector and test dependencies
         run: uv sync --all-extras

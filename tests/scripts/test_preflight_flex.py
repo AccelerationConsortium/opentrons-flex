@@ -14,7 +14,7 @@ from unitelabs.opentrons_flex.hitl_evidence import (
 from unitelabs.opentrons_flex.runtime_compat import RUNTIME_CONTRACT_ID
 
 _RELEASE_IDENTITY = {
-    "release_id": "flex-0.9.1-ot9.0.0-py3.10-aarch64-bbbbbbbbbbbb",
+    "release_id": "flex-0.9.1-ot9.0.0-py3.12-aarch64-bbbbbbbbbbbb",
     "bundle_sha256": "b" * 64,
 }
 
@@ -23,7 +23,7 @@ def _runtime() -> dict:
     return {
         "connector_version": "0.9.1",
         "opentrons_version": "9.0.0",
-        "python_version": "3.10.20",
+        "python_version": "3.12.11",
         "runtime_contract_id": RUNTIME_CONTRACT_ID,
         "mutation_ready": True,
         "release_identity": _RELEASE_IDENTITY,
@@ -59,7 +59,7 @@ def _runtime_manifest() -> dict:
         "opentronsVersion": "9.0.0",
         "robotServerVersion": "9.0.0",
         "opentronsSourceCommit": "44b37a2f91520bf2e7245c70bf799d46c8c2d9a5",
-        "pythonVersion": "3.10",
+        "pythonVersion": "3.12",
         "architecture": "aarch64",
         "bundleSha256": _RELEASE_IDENTITY["bundle_sha256"],
     }

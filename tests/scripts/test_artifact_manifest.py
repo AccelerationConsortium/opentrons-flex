@@ -33,13 +33,18 @@ def _build(directory):
         opentrons_version="9.0.0",
         robot_server_version="9.0.0",
         opentrons_source_commit="44b37a2f91520bf2e7245c70bf799d46c8c2d9a5",
-        python_version="3.10",
+        python_version="3.12",
         architecture="aarch64",
     )
 
 
-def test_build_and_verify_exact_runtime_artifact(tmp_path) -> None:
+def test_build_and_verify_exact_runtime_artifact(tmp_path, monkeypatch) -> None:
     _write_required_wheels(tmp_path)
+    monkeypatch.setattr(
+        artifact_manifest.sys,
+        "version_info",
+        type("VersionInfo", (), {"major": 3, "minor": 12})(),
+    )
 
     manifest = _build(tmp_path)
     verified = artifact_manifest.verify_manifest(
@@ -49,7 +54,7 @@ def test_build_and_verify_exact_runtime_artifact(tmp_path) -> None:
             "opentronsVersion": "9.0.0",
             "robotServerVersion": "9.0.0",
             "opentronsSourceCommit": "44b37a2f91520bf2e7245c70bf799d46c8c2d9a5",
-            "pythonVersion": "3.10",
+            "pythonVersion": "3.12",
             "architecture": "aarch64",
         },
         check_host_python=True,
@@ -57,7 +62,7 @@ def test_build_and_verify_exact_runtime_artifact(tmp_path) -> None:
     )
 
     assert verified == manifest
-    assert manifest["releaseId"].startswith("flex-0.9.1-ot9.0.0-py3.10-aarch64-")
+    assert manifest["releaseId"].startswith("flex-0.9.1-ot9.0.0-py3.12-aarch64-")
     assert json.loads((tmp_path / artifact_manifest.MANIFEST_NAME).read_text())["bundleSha256"]
     assert (tmp_path / artifact_manifest.CHECKSUMS_NAME).is_file()
 
@@ -87,6 +92,22 @@ def test_build_rejects_mixed_opentrons_runtime(tmp_path) -> None:
     old_wheel.rename(tmp_path / "opentrons-8.8.1-py3-none-any.whl")
 
     with pytest.raises(RuntimeError, match=r"expected exactly 9\.0\.0"):
+        _build(tmp_path)
+
+
+def test_build_rejects_cp310_wheel_for_python_312_artifact(tmp_path) -> None:
+    _write_required_wheels(tmp_path)
+    (tmp_path / "native_dependency-1.0.0-cp310-cp310-manylinux_2_17_aarch64.whl").write_bytes(b"wrong-python-abi")
+
+    with pytest.raises(RuntimeError, match=r"not compatible with declared Python 3\.12"):
+        _build(tmp_path)
+
+
+def test_build_rejects_x86_wheel_for_aarch64_artifact(tmp_path) -> None:
+    _write_required_wheels(tmp_path)
+    (tmp_path / "native_dependency-1.0.0-cp312-cp312-manylinux_2_17_x86_64.whl").write_bytes(b"wrong-architecture")
+
+    with pytest.raises(RuntimeError, match=r"not compatible with declared architecture aarch64"):
         _build(tmp_path)
 
 

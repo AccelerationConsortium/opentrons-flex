@@ -9,7 +9,7 @@ from unitelabs.opentrons_flex.runtime_compat import RuntimeCompatibilityReport
 def _report(*, compatible: bool = True) -> RuntimeCompatibilityReport:
     return RuntimeCompatibilityReport(
         connector_version="0.9.1",
-        python_version="3.10.20",
+        python_version="3.12.11",
         opentrons_version="9.0.0",
         robot_server_version="9.0.0",
         robot_server_source="/release/robot_server/__init__.py",

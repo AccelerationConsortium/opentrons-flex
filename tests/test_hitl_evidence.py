@@ -26,7 +26,7 @@ def _report() -> dict:
         "runtime": {
             "connector_version": "0.9.1",
             "opentrons_version": "9.0.0",
-            "python_version": "3.10.20",
+            "python_version": "3.12.11",
             "runtime_contract_id": "flex-runtime-test",
             "release_identity": {
                 "release_id": "flex-0.9.1-test",

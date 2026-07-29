@@ -29,7 +29,8 @@ def test_runtime_version_and_source_pin_are_consistent_across_release_surfaces()
     pyproject = _text("pyproject.toml")
 
     assert f'"opentrons=={opentrons_version}"' in pyproject
-    assert f'requires-python=">={python_version},<3.11"' in pyproject
+    next_minor = runtime_compat.SUPPORTED_PYTHON_VERSION[1] + 1
+    assert f'requires-python=">={python_version},<3.{next_minor}"' in pyproject
 
     required_fragments = {
         "Dockerfile.build": (
