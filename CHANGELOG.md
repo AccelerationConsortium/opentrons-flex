@@ -18,7 +18,9 @@
 - Version 0.9.1 aligns the deployable runtime with Flex Opentrons 9.0.0 on
   Python 3.12, packages the co-versioned private robot-server stack, verifies a
   checksummed ARM artifact manifest built from an immutable upstream commit, and
-  rejects cross-release imports before any hardware initialization. Deployments
+  rejects cross-release imports before any hardware initialization. Runtime
+  wheels are resolved strictly from `uv.lock`, without a second unpinned
+  dependency solve. Deployments
   now use versioned immutable releases with completion markers, bounded
   no-motion/live health checks, automatic stock robot-server recovery, and
   explicit release rollback. The multipart upload parser is upgraded to the

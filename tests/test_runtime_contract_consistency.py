@@ -65,6 +65,13 @@ def test_runtime_dependency_manifest_matches_startup_contract() -> None:
     assert _normalized_runtime_packages() == artifact_manifest.PINNED_RUNTIME_WHEELS
 
 
+def test_arm_artifact_build_uses_the_validated_lockfile() -> None:
+    dockerfile = _text("Dockerfile.build")
+
+    assert "uv export --locked --no-dev --no-hashes --no-emit-project" in dockerfile
+    assert "uv pip compile" not in dockerfile
+
+
 def test_flex_documentation_does_not_claim_the_retired_runtime() -> None:
     for path in ("README.md", "docs/asms_flex_workflow_test.md"):
         assert "8.8.1" not in _text(path), f"{path} still claims the retired Flex runtime"

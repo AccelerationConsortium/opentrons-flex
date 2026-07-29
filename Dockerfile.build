@@ -38,7 +38,7 @@ ADD scripts/artifact_manifest.py /build/scripts/artifact_manifest.py
 # the embedded robot-server imports, so deployment must not mix a PyPI API wheel
 # with whatever robot-server happens to be present in the system image.
 RUN uv build --wheel --out-dir /wheels . && \
-    uv pip compile pyproject.toml --output-file /tmp/req.txt && \
+    uv export --locked --no-dev --no-hashes --no-emit-project --output-file /tmp/req.txt && \
     python -m pip wheel --no-deps -r /tmp/req.txt --wheel-dir /wheels
 
 RUN git clone --depth 1 --branch "v${OPENTRONS_VERSION}" \
