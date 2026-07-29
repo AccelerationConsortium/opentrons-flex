@@ -259,6 +259,13 @@ uv run --extra test python scripts/run_asms_hardware.py \
   --confirm-deck-ready ASMS-DECK-READY
 ```
 
+When A3 uses a physically installed staging-area fixture, inspect the fixture,
+keep deck slot A4 empty, and add
+`--confirm-staging-area-deck-slot-a4-empty ASMS-DECK-SLOT-A4-EMPTY` to every
+command that also uses `--execute`. Analysis-only commands do not require this
+additional confirmation. This requirement applies to deck slot A4, not reservoir
+well A4, which contains the prepared methanol.
+
 This inserts one 10 µL eight-channel reservoir-to-waste transfer at the first
 named checkpoint, verifies allocation of eight clean tips and a terminal
 `mutation_enqueued` audit record, then authenticates the remaining six checkpoint
@@ -278,12 +285,15 @@ already consumes every available fresh tip.
 3. **Start read-only.** Verify connector logs, `GET /health`, `GET /pipettes`,
    `GET /modules`, and SiLA `MachineStatus`. Confirm the right pipette model and
    Temperature Module identity; release E-stop, close the door, and clear errors.
-4. **Match the Flex deck configuration.** In the Opentrons App, set A3 to a
-   right-slot fixture for the tip rack, D1 to the trash-bin adapter, C1 to the
-   connected Temperature Module GEN2, and B2 to Magnetic Block GEN1. Confirm
-   every other cutout matches the table above; the Flex default deck reserves
-   A3 for trash and treats C1/B2 as ordinary slots, so physical placement alone
-   is not sufficient.
+4. **Match the Flex deck configuration.** In the Opentrons App, set A3 to either
+   the standard right-slot fixture or a physically installed staging-area
+   fixture for the tip rack, D1 to the trash-bin adapter, C1 to the connected
+   Temperature Module GEN2, and B2 to Magnetic Block GEN1. A staging-area
+   fixture replaces the standard A3 piece but still provides A3 while extending
+   into deck slot A4; keep deck slot A4 empty for this workflow. This is distinct
+   from reservoir well A4, which contains methanol. Confirm every other cutout
+   matches the table above; the Flex default deck reserves A3 for trash and
+   treats C1/B2 as ordinary slots, so physical placement alone is not sufficient.
 5. **Analyze without motion.** Upload the prepared Python file and both exact
    labware JSON files. Confirm protocol analysis completes without warnings or
    labware-offset requests. Do not press Run yet.

@@ -211,6 +211,45 @@ def test_ready_deck_has_no_errors() -> None:
     assert run_asms_hardware._deck_configuration_errors(_ready_deck()) == []
 
 
+def test_staging_area_fixture_preserves_a3_and_requires_operator_note() -> None:
+    deck = _ready_deck()
+    deck["data"]["cutoutFixtures"][0]["cutoutFixtureId"] = "stagingAreaRightSlot"
+
+    assert run_asms_hardware._deck_configuration_errors(deck) == []
+    assert run_asms_hardware._deck_configuration_notes(deck) == [
+        (
+            "A3 staging-area fixture accepted: physically verify the fixture extends to deck slot A4 "
+            "and keep deck slot A4 empty."
+        )
+    ]
+
+    assert run_asms_hardware._staging_area_execution_error(
+        deck,
+        execute=True,
+        confirmation=None,
+    ) == (
+        "A3 uses a staging-area fixture; physically verify that it extends to deck slot A4 and "
+        "deck slot A4 is empty, then pass --confirm-staging-area-deck-slot-a4-empty "
+        "ASMS-DECK-SLOT-A4-EMPTY"
+    )
+    assert (
+        run_asms_hardware._staging_area_execution_error(
+            deck,
+            execute=True,
+            confirmation="ASMS-DECK-SLOT-A4-EMPTY",
+        )
+        is None
+    )
+    assert (
+        run_asms_hardware._staging_area_execution_error(
+            deck,
+            execute=False,
+            confirmation=None,
+        )
+        is None
+    )
+
+
 def test_deck_validation_reports_wrong_fixture_and_missing_module_serial() -> None:
     deck = _ready_deck()
     fixtures = deck["data"]["cutoutFixtures"]
@@ -218,9 +257,17 @@ def test_deck_validation_reports_wrong_fixture_and_missing_module_serial() -> No
     fixtures[2].pop("opentronsModuleSerialNumber")
 
     assert run_asms_hardware._deck_configuration_errors(deck) == [
-        "cutoutA3: expected singleRightSlot, found trashBinAdapter",
+        "cutoutA3: expected singleRightSlot or stagingAreaRightSlot, found trashBinAdapter",
         "cutoutC1: Temperature Module serial number is missing",
     ]
+    assert (
+        run_asms_hardware._staging_area_execution_error(
+            _ready_deck(),
+            execute=True,
+            confirmation=None,
+        )
+        is None
+    )
 
 
 def test_hardware_inventory_requires_right_flex_pipette_and_temperature_module() -> None:

@@ -25,6 +25,7 @@ _LABWARE_DIR = _PROTOCOL.parent / "labware"
 _LABWARE_DEFINITIONS = tuple(sorted(_LABWARE_DIR.glob("*.json")))
 _HTTP_API_VERSION_HEADER = "Opentrons-Version"
 _EXECUTION_CONFIRMATION = "ASMS-DECK-READY"
+_STAGING_AREA_EXECUTION_CONFIRMATION = "ASMS-DECK-SLOT-A4-EMPTY"
 _TERMINAL_RUN_STATES = {"succeeded", "failed", "stopped"}
 _TERMINAL_ANALYSIS_STATES = {"completed", "failed"}
 _EXPECTED_RIGHT_PIPETTE_NAMES = frozenset(
@@ -39,11 +40,15 @@ _EXPECTED_LABWARE_HASHES = {
         "2ea9c15468816ace3970fe497cef7e1dc22d5f9ab033656bf9472a62396dfb47"
     ),
 }
-_EXPECTED_DECK_FIXTURES = {
-    "cutoutA3": "singleRightSlot",
-    "cutoutB2": "magneticBlockV1",
-    "cutoutC1": "temperatureModuleV2",
-    "cutoutD1": "trashBinAdapter",
+_A3_FIXTURE_EXECUTION_CONFIRMATIONS = {
+    "singleRightSlot": None,
+    "stagingAreaRightSlot": _STAGING_AREA_EXECUTION_CONFIRMATION,
+}
+_COMPATIBLE_DECK_FIXTURES = {
+    "cutoutA3": tuple(_A3_FIXTURE_EXECUTION_CONFIRMATIONS),
+    "cutoutB2": ("magneticBlockV1",),
+    "cutoutC1": ("temperatureModuleV2",),
+    "cutoutD1": ("trashBinAdapter",),
 }
 _EXPECTED_TWO_COLUMN_COMMANDS = {
     "moveLabware": 9,
@@ -99,6 +104,15 @@ def _parser() -> argparse.ArgumentParser:
         metavar="PHRASE",
         help=f"Required execution confirmation phrase: {_EXECUTION_CONFIRMATION}",
     )
+    parser.add_argument(
+        "--confirm-staging-area-deck-slot-a4-empty",
+        default=None,
+        metavar="PHRASE",
+        help=(
+            "Required in execution mode when A3 uses a staging-area fixture and deck slot A4 is empty: "
+            f"{_STAGING_AREA_EXECUTION_CONFIRMATION}"
+        ),
+    )
     parser.add_argument("--analysis-timeout", type=float, default=120.0)
     parser.add_argument("--run-timeout", type=float, default=3600.0)
     parser.add_argument(
@@ -149,15 +163,48 @@ def _deck_configuration_errors(deck_response: dict) -> list[str]:
     fixtures = deck_response.get("data", {}).get("cutoutFixtures", [])
     fixture_by_cutout = {fixture.get("cutoutId"): fixture for fixture in fixtures}
     errors = []
-    for cutout, expected_fixture in _EXPECTED_DECK_FIXTURES.items():
+    for cutout, compatible_fixtures in _COMPATIBLE_DECK_FIXTURES.items():
         actual = fixture_by_cutout.get(cutout, {}).get("cutoutFixtureId")
-        if actual != expected_fixture:
-            errors.append(f"{cutout}: expected {expected_fixture}, found {actual or 'missing'}")
+        if actual not in compatible_fixtures:
+            expected = " or ".join(compatible_fixtures)
+            errors.append(f"{cutout}: expected {expected}, found {actual or 'missing'}")
 
     temperature_fixture = fixture_by_cutout.get("cutoutC1", {})
     if not temperature_fixture.get("opentronsModuleSerialNumber"):
         errors.append("cutoutC1: Temperature Module serial number is missing")
     return errors
+
+
+def _deck_configuration_notes(deck_response: dict) -> list[str]:
+    fixtures = deck_response.get("data", {}).get("cutoutFixtures", [])
+    fixture_by_cutout = {fixture.get("cutoutId"): fixture for fixture in fixtures}
+    if fixture_by_cutout.get("cutoutA3", {}).get("cutoutFixtureId") == "stagingAreaRightSlot":
+        return [
+            "A3 staging-area fixture accepted: physically verify the fixture extends to deck slot A4 "
+            "and keep deck slot A4 empty."
+        ]
+    return []
+
+
+def _staging_area_execution_error(
+    deck_response: dict,
+    *,
+    execute: bool,
+    confirmation: str | None,
+) -> str | None:
+    if not execute:
+        return None
+    fixtures = deck_response.get("data", {}).get("cutoutFixtures", [])
+    fixture_by_cutout = {fixture.get("cutoutId"): fixture for fixture in fixtures}
+    a3_fixture = fixture_by_cutout.get("cutoutA3", {}).get("cutoutFixtureId")
+    required_confirmation = _A3_FIXTURE_EXECUTION_CONFIRMATIONS.get(a3_fixture)
+    if required_confirmation is not None and confirmation != required_confirmation:
+        return (
+            "A3 uses a staging-area fixture; physically verify that it extends to deck slot A4 and "
+            "deck slot A4 is empty, then pass --confirm-staging-area-deck-slot-a4-empty "
+            f"{required_confirmation}"
+        )
+    return None
 
 
 def _pipette_name(pipette: dict) -> str | None:
@@ -537,7 +584,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         deck_errors = _deck_configuration_errors({"data": deck})
         if deck_errors:
             raise RuntimeError("Deck configuration is not AS-MS ready: " + "; ".join(deck_errors))
+        staging_execution_error = _staging_area_execution_error(
+            {"data": deck},
+            execute=args.execute,
+            confirmation=args.confirm_staging_area_deck_slot_a4_empty,
+        )
+        if staging_execution_error:
+            print(f"BLOCKED: {staging_execution_error}", file=sys.stderr)
+            return 2
         print("Deck configuration: PASS")
+        for note in _deck_configuration_notes({"data": deck}):
+            print(f"Deck configuration note: {note}")
 
         response = client.post(
             "/protocols",
