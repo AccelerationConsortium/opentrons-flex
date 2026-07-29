@@ -191,7 +191,7 @@ jobs:
         run: uv sync --all-extras
 
       - name: Validate Windows readiness and evidence path
-        run: uv run pytest -p no:cacheprovider tests/scripts/test_preflight_flex.py tests/test_hitl_evidence.py tests/test_acceptance_manifest.py tests/test_runtime_contract_consistency.py -q
+        run: uv run pytest -p no:cacheprovider tests/scripts/test_preflight_flex.py tests/test_hitl_evidence.py tests/test_acceptance_manifest.py tests/test_runtime_contract_consistency.py tests/test_asms_unit_operations.py -q
 
       - name: Build a valid offline workflow manifest
         run: uv run python -c "import json; from tests.test_acceptance_manifest import _manifest; open('flex-acceptance-ci.json', 'w', encoding='utf-8').write(json.dumps(_manifest()))"

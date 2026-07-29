@@ -32,6 +32,7 @@ from .heater_shaker import HeaterShakerFeature
 from .labware_movement import (
     LabwareDeckState,
     LabwareMovementController,
+    LabwareMovementProfile,
     LabwareMovementResult,
     LabwarePlanSummary,
     LabwarePosition,
@@ -67,6 +68,7 @@ __all__ = [
     "HopperDoorState",
     "LabwareDeckState",
     "LabwareMovementController",
+    "LabwareMovementProfile",
     "LabwareMovementResult",
     "LabwarePlanSummary",
     "LabwarePosition",

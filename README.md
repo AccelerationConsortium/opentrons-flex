@@ -1,19 +1,20 @@
 # Opentrons Flex
 
-A SiLA2 connector for the Opentrons Flex liquid-handling robot that also replaces the
-standard Opentrons robot-server HTTP API. Both servers share a single hardware API
-instance so they cannot conflict over the CAN bus.
+A SiLA2 connector for the Opentrons Flex liquid-handling robot. It supports two
+exclusive connector profiles: the full Protocol Engine profile also replaces the
+standard Opentrons robot-server HTTP API, while the unit-operation profile gives
+SiLA sole ownership of the hardware for guarded atomic commissioning.
 
 ## Architecture
 
-This project runs two servers in the same process when deployed to a real Flex:
+The deployed service has two selectable profiles:
 
-| Server | Protocol | Port | Purpose |
-|--------|----------|------|---------|
-| SiLA2 connector | gRPC | 50051 | Lab automation clients (SiLA Browser, UniteLabs platform) |
-| Opentrons robot-server | HTTP REST | 31950 | Opentrons App, any REST client |
+| Profile | Interfaces | Purpose |
+|--------|----------|---------|
+| `connector-pe` | SiLA gRPC 50051 + embedded HTTP 31950 | Protocol upload, Protocol Engine runs, and controlled checkpoints |
+| `connector-unit` | SiLA gRPC 50051 only | One guarded SiLA atomic operation at a time; no upload, run, or checkpoint path |
 
-Both servers are backed by one shared `HardwareControlAPI` (the Flex `OT3API`) wrapped
+In `connector-pe`, both servers are backed by one shared `HardwareControlAPI` (the Flex `OT3API`) wrapped
 in `HardwareProxy` — an `asyncio.Lock` around every hardware call. This serialises the
 SiLA gRPC server and the in-process HTTP robot-server so their CAN commands cannot
 interleave, and avoids the "hardware already initialised" error two separate processes
@@ -33,12 +34,20 @@ Engine services, so `/runs`, `/protocols`, and `/commands` remain available with
 creating a second hardware controller. The connector remains the sole owner of
 the underlying asynchronous hardware cleanup.
 
-The standard `opentrons-robot-server` systemd service is disabled on deployment. Our
-`sila2-connector` service owns the hardware and starts the HTTP API in-process via
-uvicorn on a Unix domain socket (`/run/aiohttp.sock`). nginx on the Flex proxies
-external TCP port 31950 to that socket — so the HTTP API is reachable at
-`http://<robot-ip>:31950` exactly as it would be with the stock `opentrons-robot-server`
-service.
+In either connector profile, the standard `opentrons-robot-server` systemd
+service is disabled and `sila2-connector` owns the hardware. In `connector-pe`,
+it also starts the HTTP API in-process via uvicorn on a Unix domain socket
+(`/run/aiohttp.sock`). nginx on the Flex proxies external TCP port 31950 to that
+socket, so the HTTP API remains reachable at `http://<robot-ip>:31950`.
+`connector-unit` does not start that HTTP server.
+
+In `connector-unit`, `with_robot_server=false`: the connector builds one real
+`OT3API`, exposes SiLA only on robot loopback (Windows clients use an
+authenticated SSH tunnel), and loads a local gripper-plan registry plus durable
+deck ledger. This is a reversible commissioning mode, not a second full-workflow
+implementation. Switch back to `connector-pe` for the current one-hour AS-MS
+Protocol Engine workflow until an external workflow owns all logical tip,
+liquid, material-lineage, and recovery state.
 
 Motion is exposed per **mount** (`LEFT`, `RIGHT`, `GRIPPER`) in deck coordinates
 (x, y, z mm), matching how the Flex hardware API models the robot.
@@ -667,12 +676,21 @@ timeout, the script restores the stock robot-server automatically:
 ./scripts/install_connector_service.sh <robot-ip>
 ```
 
-Switch between the SiLA connector and the stock opentrons robot-server at any time (the choice persists across reboot):
+Switch among full Protocol Engine connector mode, SiLA-only unit-operation mode,
+and the stock Opentrons robot-server at any time (the choice persists across
+reboot):
 
 ```sh
-./scripts/switch_mode.sh <robot-ip> connector
+./scripts/switch_mode.sh <robot-ip> connector-pe
+./scripts/switch_mode.sh <robot-ip> connector-unit
 ./scripts/switch_mode.sh <robot-ip> opentrons
 ```
+
+`connector` remains an alias for `connector-pe`. The unit-operation mode requires
+the selectable-config service installed by the current
+`install_connector_service.sh`; rerun that installer after deploying this release.
+For the exact guarded Windows commands, see
+[`docs/asms_flex_workflow_test.md`](docs/asms_flex_workflow_test.md#connector-unit-fast-commissioning-path-scheme-b).
 
 Run all general read-only readiness checks before uploading a protocol. For the
 commissioning/HITL command on the Windows operator machine, including its exact

@@ -115,6 +115,32 @@ case "$KIND" in
             echo "ERROR: recorded release is unavailable: $TARGET" >&2
             exit 1
         fi
+        COMPLETE_MARKER="$TARGET/.unitelabs-release-complete"
+        if [ ! -f "$COMPLETE_MARKER" ]; then
+            echo "ERROR: recorded release has no deployment completion marker: $TARGET" >&2
+            exit 1
+        fi
+        EXPECTED_CONFIG_SHA="$(cat "$COMPLETE_MARKER")"
+        case "$EXPECTED_CONFIG_SHA" in
+            *[!0-9a-f]*|"")
+                echo "ERROR: recorded release has an invalid completion marker." >&2
+                exit 1
+                ;;
+        esac
+        if [ "${#EXPECTED_CONFIG_SHA}" -ne 64 ]; then
+            echo "ERROR: recorded release completion marker is not a SHA-256 digest." >&2
+            exit 1
+        fi
+        INSTALLED_CONFIG_SHA="$(python3 -c \
+            'import hashlib,sys; h=hashlib.sha256(); [h.update(open(p,"rb").read()) for p in sys.argv[1:]]; print(h.hexdigest())' \
+            "$TARGET/config.json" \
+            "$TARGET/unit-config.json" \
+            "$TARGET/asms-unit-labware-movement.json" \
+            "$TARGET/asms-unit-operations.json")"
+        if [ "$INSTALLED_CONFIG_SHA" != "$EXPECTED_CONFIG_SHA" ]; then
+            echo "ERROR: recorded release configuration checksum mismatch." >&2
+            exit 1
+        fi
         if [ -f "$STATE_DIR/run-mutation.env" ]; then
             set -a
             . "$STATE_DIR/run-mutation.env"
@@ -123,6 +149,12 @@ case "$KIND" in
         "$TARGET/bin/python" -m unitelabs.opentrons_flex.runtime_preflight \
             --config "$TARGET/config.json" \
             --require-robot-server
+        "$TARGET/bin/python" -m unitelabs.opentrons_flex.runtime_preflight \
+            --config "$TARGET/unit-config.json" \
+            --require-sila-only \
+            --require-live-hardware
+        "$TARGET/bin/python" -c \
+            "from unitelabs.opentrons_flex.asms_unit_operations import load_manifest; from unitelabs.opentrons_flex.io import load_labware_movement_config; load_manifest('$TARGET/asms-unit-operations.json'); load_labware_movement_config('$TARGET/asms-unit-labware-movement.json')"
         activate_target "$TARGET"
         ;;
     legacy)

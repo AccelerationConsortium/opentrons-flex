@@ -19,10 +19,16 @@ from .runtime_identity import release_identity
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Validate the Flex connector runtime without initializing hardware.")
     parser.add_argument("--config", type=Path, required=True, help="Installed connector JSON configuration.")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--require-robot-server",
         action="store_true",
         help="Require the embedded Opentrons robot-server imports used in connector mode.",
+    )
+    mode.add_argument(
+        "--require-sila-only",
+        action="store_true",
+        help="Require connector-exclusive OT3API mode without the embedded robot-server.",
     )
     parser.add_argument(
         "--require-mutation",
@@ -60,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
             config,
             connector_version=report.connector_version,
             require_robot_server=args.require_robot_server,
+            require_sila_only=args.require_sila_only,
             require_live_hardware=args.require_live_hardware,
         )
         active_release_identity, release_issues = release_identity(
@@ -106,11 +113,31 @@ def _configuration_issues(
     *,
     connector_version: str,
     require_robot_server: bool,
+    require_sila_only: bool,
     require_live_hardware: bool,
 ) -> tuple[str, ...]:
     issues = []
     if require_robot_server and config.get("with_robot_server") is not True:
         issues.append("with_robot_server must be true for connector mode.")
+    if require_sila_only:
+        if config.get("with_robot_server") is not False:
+            issues.append("with_robot_server must be false for connector-unit mode.")
+        if config.get("run_mutation_required") is not False:
+            issues.append("run_mutation_required must be false for connector-unit mode.")
+        if config.get("run_mutation_ledger_path") is not None:
+            issues.append("run_mutation_ledger_path must be null for connector-unit mode.")
+        movement_config = config.get("labware_movement_config")
+        if not isinstance(movement_config, str) or not movement_config:
+            issues.append("labware_movement_config is required for connector-unit mode.")
+        elif not Path(movement_config).is_absolute():
+            issues.append("labware_movement_config must be an absolute path for connector-unit mode.")
+        sila_config = config.get("sila_server")
+        hostname = sila_config.get("hostname") if isinstance(sila_config, dict) else None
+        if hostname != "127.0.0.1":
+            issues.append(
+                "sila_server.hostname must be 127.0.0.1 for connector-unit mode; "
+                "reach it only through an authenticated SSH tunnel."
+            )
     if require_live_hardware and config.get("use_simulator") is not False:
         issues.append("use_simulator must be false for a real Flex deployment.")
     sila_config = config.get("sila_server")

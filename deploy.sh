@@ -16,6 +16,9 @@ if [ -f "$SCRIPT_DIR/config/flex_config.local.json" ]; then
 else
     CONFIG_SRC="$SCRIPT_DIR/config/flex_config.json"
 fi
+UNIT_CONFIG_SRC="$SCRIPT_DIR/config/flex_unit_operations.json"
+UNIT_MOVEMENT_SRC="$SCRIPT_DIR/config/asms_unit_labware_movement.json"
+UNIT_OPERATIONS_SRC="$SCRIPT_DIR/config/asms_unit_operations.json"
 
 if [ ! -d "$ARTIFACT_DIR" ]; then
     echo "ERROR: wheel directory '$ARTIFACT_DIR' not found." >&2
@@ -31,7 +34,8 @@ python3 "$MANIFEST_TOOL" verify "$ARTIFACT_DIR" \
     --python-version 3.10 \
     --architecture aarch64
 RELEASE_ID="$(python3 "$MANIFEST_TOOL" field "$ARTIFACT_DIR" releaseId)"
-CONFIG_SHA="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$CONFIG_SRC")"
+CONFIG_SHA="$(python3 -c 'import hashlib,sys; h=hashlib.sha256(); [h.update(open(p,"rb").read()) for p in sys.argv[1:]]; print(h.hexdigest())' \
+    "$CONFIG_SRC" "$UNIT_CONFIG_SRC" "$UNIT_MOVEMENT_SRC" "$UNIT_OPERATIONS_SRC")"
 CONFIG_ID="$(printf '%s' "$CONFIG_SHA" | cut -c1-12)"
 DEPLOYMENT_ID="$RELEASE_ID-cfg$CONFIG_ID"
 
@@ -61,6 +65,11 @@ scp -O \
     "$ARTIFACT_DIR/SHA256SUMS" \
     "root@$HOST:$UPLOAD_DIR/"
 scp -O "$CONFIG_SRC" "root@$HOST:$UPLOAD_DIR/flex_config.json"
+scp -O \
+    "$UNIT_CONFIG_SRC" \
+    "$UNIT_MOVEMENT_SRC" \
+    "$UNIT_OPERATIONS_SRC" \
+    "root@$HOST:$UPLOAD_DIR/"
 
 ssh "root@$HOST" sh -s -- "$UPLOAD_DIR" "$RELEASE_PATH" "$ACTIVE_PATH" "$STATE_DIR" "$CONFIG_SHA" <<'REMOTE'
 set -eu
@@ -79,7 +88,11 @@ python3 "$UPLOAD_DIR/artifact_manifest.py" verify "$UPLOAD_DIR" \
     --architecture aarch64 \
     --check-host-python \
     --check-host-architecture
-UPLOADED_CONFIG_SHA="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$UPLOAD_DIR/flex_config.json")"
+UPLOADED_CONFIG_SHA="$(python3 -c 'import hashlib,sys; h=hashlib.sha256(); [h.update(open(p,"rb").read()) for p in sys.argv[1:]]; print(h.hexdigest())' \
+    "$UPLOAD_DIR/flex_config.json" \
+    "$UPLOAD_DIR/flex_unit_operations.json" \
+    "$UPLOAD_DIR/asms_unit_labware_movement.json" \
+    "$UPLOAD_DIR/asms_unit_operations.json")"
 if [ "$UPLOADED_CONFIG_SHA" != "$EXPECTED_CONFIG_SHA" ]; then
     echo "ERROR: uploaded Flex configuration checksum mismatch." >&2
     exit 1
@@ -140,11 +153,21 @@ if [ ! -e "$RELEASE_PATH" ]; then
         --require-robot-server \
         --require-mutation \
         --require-live-hardware
+    "$RELEASE_PATH/bin/python" -m unitelabs.opentrons_flex.runtime_preflight \
+        --config "$RELEASE_PATH/unit-config.json" \
+        --require-sila-only \
+        --require-live-hardware
+    "$RELEASE_PATH/bin/python" -c \
+        "from unitelabs.opentrons_flex.asms_unit_operations import load_manifest; from unitelabs.opentrons_flex.io import load_labware_movement_config; load_manifest('$RELEASE_PATH/asms-unit-operations.json'); load_labware_movement_config('$RELEASE_PATH/asms-unit-labware-movement.json')"
     printf '%s\n' "$EXPECTED_CONFIG_SHA" > "$COMPLETE_MARKER"
     CLEANUP_INCOMPLETE=no
 else
     echo "Release already installed and complete; reusing $RELEASE_PATH"
-    INSTALLED_CONFIG_SHA="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$RELEASE_PATH/config.json")"
+    INSTALLED_CONFIG_SHA="$(python3 -c 'import hashlib,sys; h=hashlib.sha256(); [h.update(open(p,"rb").read()) for p in sys.argv[1:]]; print(h.hexdigest())' \
+        "$RELEASE_PATH/config.json" \
+        "$RELEASE_PATH/unit-config.json" \
+        "$RELEASE_PATH/asms-unit-labware-movement.json" \
+        "$RELEASE_PATH/asms-unit-operations.json")"
     if [ "$INSTALLED_CONFIG_SHA" != "$EXPECTED_CONFIG_SHA" ]; then
         echo "ERROR: immutable release configuration checksum mismatch." >&2
         exit 1
@@ -160,6 +183,10 @@ fi
     --config "$RELEASE_PATH/config.json" \
     --require-robot-server \
     --require-mutation \
+    --require-live-hardware
+"$RELEASE_PATH/bin/python" -m unitelabs.opentrons_flex.runtime_preflight \
+    --config "$RELEASE_PATH/unit-config.json" \
+    --require-sila-only \
     --require-live-hardware
 
 if [ -L "$ACTIVE_PATH" ]; then

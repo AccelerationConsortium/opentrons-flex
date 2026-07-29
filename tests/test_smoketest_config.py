@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SMOKETEST_CONFIG = ROOT / "config" / "smoketest_config.json"
 FLEX_CONFIG = ROOT / "config" / "flex_config.json"
+UNIT_CONFIG = ROOT / "config" / "flex_unit_operations.json"
 
 
 def _load(path: Path) -> dict:
@@ -45,3 +46,15 @@ def test_real_flex_config_stays_explicitly_live() -> None:
     assert cfg["with_robot_server"] is True
     assert cfg["sila_server"]["hostname"] == "0.0.0.0"
     assert cfg["run_mutation_required"] is True
+
+
+def test_unit_operation_config_is_live_sila_only_and_locally_allowlisted() -> None:
+    """The unit profile must own real hardware without exposing Protocol Engine."""
+    cfg = _load(UNIT_CONFIG)
+
+    assert cfg["use_simulator"] is False
+    assert cfg["with_robot_server"] is False
+    assert cfg["run_mutation_required"] is False
+    assert cfg["run_mutation_ledger_path"] is None
+    assert cfg["labware_movement_config"] == "/var/sila2_flex/asms-unit-labware-movement.json"
+    assert cfg["sila_server"]["hostname"] == "127.0.0.1"

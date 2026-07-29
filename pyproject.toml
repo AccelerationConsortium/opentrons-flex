@@ -137,6 +137,7 @@ ignore = [
 "!src/**.py" = ["D", "ANN", "ARG", "S101", "EM", "BLE", "PTH", "T201", "FIX", "ERA", "E7", "S", "B"]
 # ignore parameter name warnings in feature files
 "src/unitelabs/opentrons_flex/features/**/**.py" =  ["D417", "EM"]
+"src/unitelabs/opentrons_flex/asms_unit_operations.py" = ["D102", "EM"]
 # test scripts outside the tests/ suite
 "test_*.py" = ["E402"]
 

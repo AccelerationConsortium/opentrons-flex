@@ -13,6 +13,7 @@ set -eu
 STATE_DIR="/var/lib/unitelabs-opentrons-flex"
 ACTIVE_PATH="/var/sila2_flex"
 ENV_FILE="$STATE_DIR/run-mutation.env"
+CONFIG_SELECTOR="$STATE_DIR/connector-config.json"
 SERVICE_STATE="$STATE_DIR/stock-service-state"
 HARDWARE_SERVICES="opentrons-robot-server opentrons-status-bar opentrons-gpio-setup opentrons-status-leds"
 
@@ -57,6 +58,7 @@ if systemctl is-active --quiet sila2-connector 2>/dev/null; then
     echo "ERROR: connector is already active; switch to stock mode before reinstalling its service." >&2
     exit 1
 fi
+ln -sfn "$ACTIVE_PATH/config.json" "$CONFIG_SELECTOR"
 
 cat > /etc/systemd/system/sila2-connector.service <<EOF
 [Unit]
@@ -66,7 +68,7 @@ Wants=network.target
 
 [Service]
 Type=simple
-ExecStart=$ACTIVE_PATH/bin/connector start --app unitelabs.opentrons_flex:create_app --config-path $ACTIVE_PATH/config.json
+ExecStart=$ACTIVE_PATH/bin/connector start --app unitelabs.opentrons_flex:create_app --config-path $CONFIG_SELECTOR
 Environment=PYTHONPYCACHEPREFIX=/var/cache/sila2-pycache
 EnvironmentFile=-$ENV_FILE
 Restart=on-failure
@@ -119,10 +121,28 @@ restore_stock() {
     return 1
 }
 
+stock_services_stopped_and_disabled() {
+    for svc in $HARDWARE_SERVICES; do
+        if systemctl is-active --quiet "$svc" 2>/dev/null; then
+            return 1
+        fi
+        if systemctl is-enabled --quiet "$svc" 2>/dev/null; then
+            return 1
+        fi
+    done
+    return 0
+}
+
 echo "Stopping stock hardware owners..."
 for svc in $HARDWARE_SERVICES; do
     systemctl stop "$svc" 2>/dev/null || true
+    systemctl disable "$svc" 2>/dev/null || true
 done
+if ! stock_services_stopped_and_disabled; then
+    echo "ERROR: a stock hardware-owner service remained active or enabled; refusing dual OT3API ownership." >&2
+    restore_stock
+    exit 1
+fi
 
 systemctl reset-failed sila2-connector 2>/dev/null || true
 if ! systemctl start sila2-connector; then
@@ -137,7 +157,8 @@ i=60
 while [ "$i" -gt 0 ]; do
     if python3 -c "import socket; s=socket.create_connection(('127.0.0.1',50051),2); s.close()" 2>/dev/null &&
         curl --fail --silent --show-error --connect-timeout 2 --max-time 5 \
-            http://127.0.0.1:31950/health >/dev/null 2>&1; then
+            http://127.0.0.1:31950/health >/dev/null 2>&1 &&
+        stock_services_stopped_and_disabled; then
         READY=yes
         break
     fi
@@ -169,10 +190,12 @@ if ! curl --fail --silent --show-error --connect-timeout 2 --max-time 10 \
     exit 1
 fi
 
-for svc in $HARDWARE_SERVICES; do
-    systemctl disable "$svc" 2>/dev/null || true
-done
 systemctl enable sila2-connector
+if ! stock_services_stopped_and_disabled; then
+    echo "ERROR: stock hardware ownership reappeared after connector startup." >&2
+    restore_stock
+    exit 1
+fi
 
 echo "Connector mode is healthy."
 systemctl status sila2-connector --no-pager

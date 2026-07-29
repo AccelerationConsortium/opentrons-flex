@@ -86,6 +86,11 @@ def test_runtime_preflight_rejects_simulator_for_live_deployment(tmp_path, monke
         )
     )
     monkeypatch.setattr(runtime_preflight, "inspect_runtime_compatibility", lambda **_: _report())
+    monkeypatch.setattr(
+        runtime_preflight,
+        "release_identity",
+        lambda **_: ({"release_id": "test", "bundle_sha256": "a" * 64}, ()),
+    )
 
     result = runtime_preflight.main(
         [
@@ -98,6 +103,67 @@ def test_runtime_preflight_rejects_simulator_for_live_deployment(tmp_path, monke
 
     assert result == 1
     assert "use_simulator must be false" in capsys.readouterr().out
+
+
+def test_runtime_preflight_passes_connector_unit_config(tmp_path, monkeypatch, capsys) -> None:
+    config = tmp_path / "unit-config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "with_robot_server": False,
+                "use_simulator": False,
+                "run_mutation_required": False,
+                "run_mutation_ledger_path": None,
+                "labware_movement_config": "/var/sila2_flex/asms-unit-labware-movement.json",
+                "sila_server": {"version": "0.9.1", "hostname": "127.0.0.1"},
+            }
+        )
+    )
+    monkeypatch.setattr(runtime_preflight, "inspect_runtime_compatibility", lambda **_: _report())
+    monkeypatch.setattr(
+        runtime_preflight,
+        "release_identity",
+        lambda **_: ({"release_id": "test", "bundle_sha256": "a" * 64}, ()),
+    )
+
+    result = runtime_preflight.main(
+        [
+            "--config",
+            str(config),
+            "--require-sila-only",
+            "--require-live-hardware",
+        ]
+    )
+
+    assert result == 0
+    assert json.loads(capsys.readouterr().out)["configuration_issues"] == []
+
+
+def test_runtime_preflight_rejects_robot_server_in_connector_unit_mode(tmp_path, monkeypatch, capsys) -> None:
+    config = tmp_path / "unit-config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "with_robot_server": True,
+                "use_simulator": False,
+                "run_mutation_required": True,
+                "run_mutation_ledger_path": "/var/lib/unitelabs-opentrons-flex/mutations.jsonl",
+                "labware_movement_config": "relative.json",
+                "sila_server": {"version": "0.9.1", "hostname": "0.0.0.0"},
+            }
+        )
+    )
+    monkeypatch.setattr(runtime_preflight, "inspect_runtime_compatibility", lambda **_: _report())
+
+    result = runtime_preflight.main(["--config", str(config), "--require-sila-only"])
+
+    assert result == 1
+    output = capsys.readouterr().out
+    assert "with_robot_server must be false" in output
+    assert "run_mutation_required must be false" in output
+    assert "run_mutation_ledger_path must be null" in output
+    assert "labware_movement_config must be an absolute path" in output
+    assert "sila_server.hostname must be 127.0.0.1" in output
 
 
 def test_release_identity_binds_active_venv_to_verified_bundle(tmp_path, monkeypatch) -> None:

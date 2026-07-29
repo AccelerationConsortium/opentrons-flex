@@ -275,6 +275,7 @@ def _register_core_features(
                 gripper,
                 plans=labware_config.plans,
                 state=labware_state,
+                profile_sha256=labware_config.profile_sha256,
             )
         )
     )
@@ -401,7 +402,12 @@ async def create_app(config: OpentronsFlexConfig) -> collections.abc.AsyncGenera
     labware_config = (
         load_labware_movement_config(config.labware_movement_config)
         if config.labware_movement_config is not None
-        else LoadedLabwareMovementConfig(plans=(), initial_occupancy={}, state_file=None)
+        else LoadedLabwareMovementConfig(
+            plans=(),
+            initial_occupancy={},
+            state_file=None,
+            profile_sha256="0" * 64,
+        )
     )
 
     if config.with_robot_server:

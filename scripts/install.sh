@@ -25,6 +25,9 @@ python3 -m venv --system-site-packages "$RELEASE_PATH"
 # is required even inside a venv or pip silently installs elsewhere.
 "$RELEASE_PATH/bin/pip" install --root / --no-index --no-deps "$ARTIFACT_DIR"/*.whl
 cp "$ARTIFACT_DIR/flex_config.json" "$RELEASE_PATH/config.json"
+cp "$ARTIFACT_DIR/flex_unit_operations.json" "$RELEASE_PATH/unit-config.json"
+cp "$ARTIFACT_DIR/asms_unit_labware_movement.json" "$RELEASE_PATH/asms-unit-labware-movement.json"
+cp "$ARTIFACT_DIR/asms_unit_operations.json" "$RELEASE_PATH/asms-unit-operations.json"
 cp "$ARTIFACT_DIR/runtime-manifest.json" "$RELEASE_PATH/runtime-manifest.json"
 
 echo "Installed immutable release at $RELEASE_PATH"

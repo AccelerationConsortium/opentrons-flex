@@ -215,6 +215,161 @@ An authenticated `play` with no mutation is the explicit, audited
 skip a named checkpoint. The two native `resume-from-recovery` action variants
 have the same token and audit requirement while the run is `awaiting-recovery`.
 
+## Connector-unit fast commissioning path (Scheme B)
+
+Use this path to qualify the currently prepared hardware quickly without
+Protocol Engine. It starts the connector with `with_robot_server=false`; the
+connector is the only `OT3API` owner, port 31950 is intentionally unavailable,
+and no protocol, custom labware, or run is uploaded. Each command below runs at
+most one atomic operation. There is deliberately no `all` phase.
+
+This is the exact physical contract for the pictured deck:
+
+- staging-area fixtures are installed at A3, B3, C3, and D3; their raised
+  extensions occupy A4, B4, C4, and D4, so no labware may be placed on any of
+  those four extensions;
+- empty Axygen plates start at A1 and B1;
+- Magnetic Block GEN1 is at B2;
+- the complete Flex 1000 µL tip rack is at A3, with column 1 unused;
+- Temperature Module GEN2 plus reservoir is at C1;
+- the exact waste plate is at C2;
+- the right eight-channel 1000 µL pipette and Flex Gripper are attached.
+
+On the Windows operator computer, open PowerShell in the repository and use the
+immutable Scheme B commit reported in the release handoff. Production lab use
+must take that commit from `main`; a pre-merge qualification run may use the
+explicit handoff commit in detached mode, but must not silently follow a moving
+test branch:
+
+```powershell
+git fetch --prune origin
+git switch --detach <approved-scheme-b-commit>
+git status --short
+uv sync --extra test
+```
+
+Deploying and installing the Linux service still requires Git Bash or WSL. The
+deployment includes both connector profiles, the four gripper routes, and the
+unit-operation manifest:
+
+```sh
+gh run download <verified-arm-build-run-id> \
+  --repo AccelerationConsortium/opentrons-flex \
+  --name flex-arm-wheels \
+  --dir dist_arm_connector_unit
+sh scripts/switch_mode.sh 169.254.105.239 opentrons
+sh deploy.sh 169.254.105.239 dist_arm_connector_unit
+sh scripts/install_connector_service.sh 169.254.105.239
+sh scripts/switch_mode.sh 169.254.105.239 connector-unit
+```
+
+Use the run ID reported with this branch's handoff. Do not reuse an older
+`dist_arm` wheel: the robot-side health command is packaged inside the new
+connector wheel.
+
+The unit connector deliberately binds only to robot loopback. In a second
+PowerShell window, open the authenticated tunnel and keep it running for the
+whole qualification session:
+
+```powershell
+ssh -N -L 50052:127.0.0.1:50051 root@169.254.105.239
+```
+
+Back in the first PowerShell window, run the read-only checks through that
+tunnel. `health` permits an invalid
+ledger so the service can explain its state; `preflight` additionally requires
+the door closed, E-stop disengaged, no robot error, and exact ledger occupancy
+`A1=asms-plate`, `B1=elution-plate`:
+
+```powershell
+uv run --extra test python scripts/run_asms_unit_operations.py health `
+  --host 127.0.0.1 --port 50052 `
+  --manifest config/asms_unit_operations.json
+
+uv run --extra test python scripts/run_asms_unit_operations.py preflight `
+  --host 127.0.0.1 --port 50052 `
+  --manifest config/asms_unit_operations.json
+```
+
+Continue only when `preflight` reports `"ready": true`. Run the atomic mechanical
+checks in this order, inspecting the physical result after every command:
+
+```powershell
+# 1. Home only.
+uv run --extra test python scripts/run_asms_unit_operations.py home --execute `
+  --host 127.0.0.1 --port 50052 --manifest config/asms_unit_operations.json `
+  --confirm-deck-ready ASMS-UNIT-DECK-READY `
+  --confirm-staging-slots-clear ASMS-UNIT-STAGING-A4-B4-C4-D4-CLEAR
+
+# 2. Empty A1 plate: A1 -> Magnetic Block B2 -> A1.
+uv run --extra test python scripts/run_asms_unit_operations.py gripper-a1 --execute `
+  --host 127.0.0.1 --port 50052 --manifest config/asms_unit_operations.json `
+  --confirm-deck-ready ASMS-UNIT-DECK-READY `
+  --confirm-staging-slots-clear ASMS-UNIT-STAGING-A4-B4-C4-D4-CLEAR `
+  --confirm-empty-plates ASMS-UNIT-EMPTY-AXYGEN-A1-B1
+
+# 3. Empty B1 plate: B1 -> Magnetic Block B2 -> B1.
+uv run --extra test python scripts/run_asms_unit_operations.py gripper-b1 --execute `
+  --host 127.0.0.1 --port 50052 --manifest config/asms_unit_operations.json `
+  --confirm-deck-ready ASMS-UNIT-DECK-READY `
+  --confirm-staging-slots-clear ASMS-UNIT-STAGING-A4-B4-C4-D4-CLEAR `
+  --confirm-empty-plates ASMS-UNIT-EMPTY-AXYGEN-A1-B1
+
+# 4. Pick up and return only tip column A3/A1.
+uv run --extra test python scripts/run_asms_unit_operations.py tip --execute `
+  --host 127.0.0.1 --port 50052 --manifest config/asms_unit_operations.json `
+  --confirm-deck-ready ASMS-UNIT-DECK-READY `
+  --confirm-staging-slots-clear ASMS-UNIT-STAGING-A4-B4-C4-D4-CLEAR `
+  --confirm-tip-column ASMS-UNIT-TIPS-A3-A1
+
+# 5. One 20 µL/channel water transfer: reservoir A2 -> waste plate C2/A1.
+uv run --extra test python scripts/run_asms_unit_operations.py liquid --execute `
+  --host 127.0.0.1 --port 50052 --manifest config/asms_unit_operations.json `
+  --confirm-deck-ready ASMS-UNIT-DECK-READY `
+  --confirm-staging-slots-clear ASMS-UNIT-STAGING-A4-B4-C4-D4-CLEAR `
+  --confirm-tip-column ASMS-UNIT-TIPS-A3-A1 `
+  --confirm-test-liquid ASMS-UNIT-WATER-A2-TO-C2
+
+# 6. Accept 4 °C, read the response, then always deactivate the module.
+uv run --extra test python scripts/run_asms_unit_operations.py temperature --execute `
+  --host 127.0.0.1 --port 50052 --manifest config/asms_unit_operations.json `
+  --confirm-deck-ready ASMS-UNIT-DECK-READY `
+  --confirm-staging-slots-clear ASMS-UNIT-STAGING-A4-B4-C4-D4-CLEAR `
+  --confirm-temperature-module ASMS-UNIT-TEMP-C1-READY
+```
+
+Stop on scraping, a poor grip, a plate that is not fully seated, unexpected tip
+state, liquid in the wrong wells, or any non-zero command exit. After any
+interrupted/failed gripper move, do not delete or edit the ledger remotely:
+physically reconcile the plate locations first. The fail-closed ledger is
+`/var/lib/unitelabs-opentrons-flex/asms-unit-deck-state.json`.
+
+If the physical reconciliation confirms both empty plates are back at A1 and B1
+and B2 is empty, preserve and reset the ledger through the guarded script from
+Git Bash/WSL, then restart unit mode:
+
+```sh
+sh scripts/switch_mode.sh 169.254.105.239 opentrons
+sh scripts/reconcile_asms_unit_deck.sh 169.254.105.239 <operator-name> \
+  ASMS-UNIT-RECONCILE-A1-B1-B2-EMPTY
+sh scripts/switch_mode.sh 169.254.105.239 connector-unit
+```
+
+The script refuses to run while the connector owns hardware, copies the old
+ledger to a timestamped byte-for-byte backup, durably records authorization,
+and then atomically replaces the ledger with the confirmed A1/B1 state. A
+malformed ledger is still preserved; it is never silently deleted.
+
+Passing these six operations proves the SiLA atoms and their prepared geometry;
+it does not prove AS-MS ordering, tip allocation across all 26 pickups, liquid
+lineage, programmed delays, or recovery for the one-hour workflow. For the
+existing complete AS-MS test, return to the Protocol Engine profile and rerun
+analysis before execution:
+
+```sh
+sh scripts/switch_mode.sh 169.254.105.239 connector-pe
+```
+
 ## Fastest safe real-Flex sequence
 
 From macOS or Linux, `scripts/run_asms_hardware.py` provides the shortest
@@ -299,8 +454,8 @@ already consumes every available fresh tip.
    Temperature Module GEN2, and B2 to Magnetic Block GEN1. Each staging-area
    fixture replaces a standard column-3 piece while preserving that working slot
    and extending into the matching column-4 deck slot. Keep every installed
-   staging-area deck slot empty for this workflow; with the observed A3 and B3
-   fixtures, both A4 and B4 must be empty. This is distinct from reservoir well
+   staging-area deck slot empty for this workflow; with the observed fixtures in
+   all four rows, A4, B4, C4, and D4 must all be empty. This is distinct from reservoir well
    A4, which contains methanol. Confirm every other cutout matches the table
    above; the Flex default deck reserves A3 for trash and treats C1/B2 as ordinary
    slots, so physical placement alone is not sufficient.

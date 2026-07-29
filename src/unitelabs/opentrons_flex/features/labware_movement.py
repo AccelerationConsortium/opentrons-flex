@@ -102,11 +102,18 @@ class LabwareDeckState:
     occupied_locations: list[OccupiedLocation]
 
 
+@dataclass
+class LabwareMovementProfile:
+    """Identity of the complete server-loaded movement geometry profile."""
+
+    sha256: typing.Annotated[str, constraints.Pattern(r"^[0-9a-f]{64}$")]
+
+
 class LabwareMovementController(sila.Feature):
     """Execute server-provisioned labware and lid plans with pickup verification."""
 
     def __init__(self, controller: FlexLabwareMovementController) -> None:
-        super().__init__(originator="ca.accelerationconsortium", category="robots", version="1.0")
+        super().__init__(originator="ca.accelerationconsortium", category="robots", version="1.1")
         self._controller = controller
 
     @sila.ObservableCommand(errors=_LABWARE_ERRORS)
@@ -157,6 +164,11 @@ class LabwareMovementController(sila.Feature):
             ],
         )
 
+    @sila.UnobservableProperty()
+    def profile_identity(self) -> LabwareMovementProfile:
+        """Return the SHA-256 identity of all server-loaded routes and geometry."""
+        return LabwareMovementProfile(sha256=self._controller.profile_sha256)
+
     async def _move(
         self,
         plan_identifier: str,
@@ -196,6 +208,7 @@ class LabwareMovementController(sila.Feature):
 __all__ = [
     "LabwareDeckState",
     "LabwareMovementController",
+    "LabwareMovementProfile",
     "LabwareMovementResult",
     "LabwarePlanSummary",
     "LabwarePosition",
