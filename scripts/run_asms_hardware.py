@@ -12,6 +12,7 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
@@ -25,7 +26,7 @@ _LABWARE_DIR = _PROTOCOL.parent / "labware"
 _LABWARE_DEFINITIONS = tuple(sorted(_LABWARE_DIR.glob("*.json")))
 _HTTP_API_VERSION_HEADER = "Opentrons-Version"
 _EXECUTION_CONFIRMATION = "ASMS-DECK-READY"
-_STAGING_AREA_EXECUTION_CONFIRMATION = "ASMS-DECK-SLOT-A4-EMPTY"
+_LEGACY_A4_EXECUTION_CONFIRMATION = "ASMS-DECK-SLOT-A4-EMPTY"
 _TERMINAL_RUN_STATES = {"succeeded", "failed", "stopped"}
 _TERMINAL_ANALYSIS_STATES = {"completed", "failed"}
 _EXPECTED_RIGHT_PIPETTE_NAMES = frozenset(
@@ -40,22 +41,57 @@ _EXPECTED_LABWARE_HASHES = {
         "2ea9c15468816ace3970fe497cef7e1dc22d5f9ab033656bf9472a62396dfb47"
     ),
 }
-_A3_FIXTURE_EXECUTION_CONFIRMATIONS = {
-    "singleRightSlot": None,
-    "stagingAreaRightSlot": _STAGING_AREA_EXECUTION_CONFIRMATION,
-}
-_COMPATIBLE_DECK_FIXTURES = {
-    "cutoutA3": tuple(_A3_FIXTURE_EXECUTION_CONFIRMATIONS),
-    "cutoutB2": ("magneticBlockV1",),
-    "cutoutC1": ("temperatureModuleV2",),
-    "cutoutD1": ("trashBinAdapter",),
-}
+_REQUIRED_DECK_CUTOUTS = ("cutoutA3", "cutoutB2", "cutoutC1", "cutoutD1")
+_RIGHT_STAGING_SLOTS_BY_CUTOUT = (
+    ("cutoutA3", "A4"),
+    ("cutoutB3", "B4"),
+    ("cutoutC3", "C4"),
+    ("cutoutD3", "D4"),
+)
 _EXPECTED_TWO_COLUMN_COMMANDS = {
     "moveLabware": 9,
     "pickUpTip": 26,
     "aspirate": 82,
     "dispense": 66,
     "temperatureModule/deactivate": 1,
+}
+
+
+@dataclass(frozen=True)
+class _DeckFixtureMetadata:
+    satisfies_required_cutouts: frozenset[str]
+    staging_slots_by_cutout: tuple[tuple[str, str], ...]
+
+
+_DECK_FIXTURE_METADATA = {
+    "singleRightSlot": _DeckFixtureMetadata(frozenset({"cutoutA3"}), ()),
+    "stagingAreaRightSlot": _DeckFixtureMetadata(
+        frozenset({"cutoutA3"}),
+        _RIGHT_STAGING_SLOTS_BY_CUTOUT,
+    ),
+    "magneticBlockV1": _DeckFixtureMetadata(frozenset({"cutoutB2"}), ()),
+    "temperatureModuleV2": _DeckFixtureMetadata(frozenset({"cutoutC1"}), ()),
+    "trashBinAdapter": _DeckFixtureMetadata(frozenset({"cutoutD1"}), ()),
+    "stagingAreaSlotWithMagneticBlockV1": _DeckFixtureMetadata(
+        frozenset(),
+        _RIGHT_STAGING_SLOTS_BY_CUTOUT,
+    ),
+    "stagingAreaSlotWithWasteChuteRightAdapterCovered": _DeckFixtureMetadata(
+        frozenset(),
+        _RIGHT_STAGING_SLOTS_BY_CUTOUT,
+    ),
+    "stagingAreaSlotWithWasteChuteRightAdapterNoCover": _DeckFixtureMetadata(
+        frozenset(),
+        _RIGHT_STAGING_SLOTS_BY_CUTOUT,
+    ),
+}
+_COMPATIBLE_DECK_FIXTURES = {
+    cutout: tuple(
+        fixture_id
+        for fixture_id, metadata in _DECK_FIXTURE_METADATA.items()
+        if cutout in metadata.satisfies_required_cutouts
+    )
+    for cutout in _REQUIRED_DECK_CUTOUTS
 }
 
 
@@ -105,13 +141,19 @@ def _parser() -> argparse.ArgumentParser:
         help=f"Required execution confirmation phrase: {_EXECUTION_CONFIRMATION}",
     )
     parser.add_argument(
-        "--confirm-staging-area-deck-slot-a4-empty",
+        "--confirm-staging-area-slots-empty",
         default=None,
         metavar="PHRASE",
         help=(
-            "Required in execution mode when A3 uses a staging-area fixture and deck slot A4 is empty: "
-            f"{_STAGING_AREA_EXECUTION_CONFIRMATION}"
+            "Required in execution mode when staging-area fixtures are installed. "
+            "The live deck inspection prints a confirmation phrase bound to every installed column-4 slot."
         ),
+    )
+    parser.add_argument(
+        "--confirm-staging-area-deck-slot-a4-empty",
+        default=None,
+        metavar="PHRASE",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument("--analysis-timeout", type=float, default=120.0)
     parser.add_argument("--run-timeout", type=float, default=3600.0)
@@ -176,14 +218,38 @@ def _deck_configuration_errors(deck_response: dict) -> list[str]:
 
 
 def _deck_configuration_notes(deck_response: dict) -> list[str]:
-    fixtures = deck_response.get("data", {}).get("cutoutFixtures", [])
-    fixture_by_cutout = {fixture.get("cutoutId"): fixture for fixture in fixtures}
-    if fixture_by_cutout.get("cutoutA3", {}).get("cutoutFixtureId") == "stagingAreaRightSlot":
+    staging_slots = _installed_staging_area_slots(deck_response)
+    if staging_slots:
+        slot_list = ", ".join(staging_slots)
         return [
-            "A3 staging-area fixture accepted: physically verify the fixture extends to deck slot A4 "
-            "and keep deck slot A4 empty."
+            f"Installed staging-area deck slots detected: {slot_list}. "
+            "Keep every listed deck slot physically empty for this workflow."
         ]
     return []
+
+
+def _installed_staging_area_slots(deck_response: dict) -> tuple[str, ...]:
+    fixtures = deck_response.get("data", {}).get("cutoutFixtures", [])
+    staging_slots = set()
+    for fixture in fixtures:
+        fixture_id = fixture.get("cutoutFixtureId")
+        metadata = _DECK_FIXTURE_METADATA.get(fixture_id)
+        if metadata is None:
+            if isinstance(fixture_id, str) and "stagingArea" in fixture_id:
+                raise RuntimeError(f"Unknown staging-area fixture {fixture_id!r}; update the runner before execution.")
+            continue
+        cutout = fixture.get("cutoutId")
+        staging_slot = dict(metadata.staging_slots_by_cutout).get(cutout)
+        if not metadata.staging_slots_by_cutout:
+            continue
+        if staging_slot is None:
+            raise RuntimeError(f"Staging-area fixture is installed in an unsupported cutout: {cutout}")
+        staging_slots.add(staging_slot)
+    return tuple(sorted(staging_slots))
+
+
+def _staging_area_execution_confirmation(staging_slots: Sequence[str]) -> str:
+    return f"ASMS-STAGING-SLOTS-{'-'.join(staging_slots)}-EMPTY"
 
 
 def _staging_area_execution_error(
@@ -191,17 +257,37 @@ def _staging_area_execution_error(
     *,
     execute: bool,
     confirmation: str | None,
+    legacy_a4_confirmation: str | None,
 ) -> str | None:
     if not execute:
         return None
-    fixtures = deck_response.get("data", {}).get("cutoutFixtures", [])
-    fixture_by_cutout = {fixture.get("cutoutId"): fixture for fixture in fixtures}
-    a3_fixture = fixture_by_cutout.get("cutoutA3", {}).get("cutoutFixtureId")
-    required_confirmation = _A3_FIXTURE_EXECUTION_CONFIRMATIONS.get(a3_fixture)
-    if required_confirmation is not None and confirmation != required_confirmation:
+    staging_slots = _installed_staging_area_slots(deck_response)
+    if legacy_a4_confirmation is not None:
+        if staging_slots != ("A4",):
+            detected = ", ".join(staging_slots) if staging_slots else "none"
+            replacement = (
+                f" Use --confirm-staging-area-slots-empty {_staging_area_execution_confirmation(staging_slots)}."
+                if staging_slots
+                else ""
+            )
+            return (
+                "Deprecated --confirm-staging-area-deck-slot-a4-empty is valid only when A4 is the "
+                f"sole installed staging-area deck slot; detected {detected}.{replacement}"
+            )
+        if legacy_a4_confirmation != _LEGACY_A4_EXECUTION_CONFIRMATION:
+            return (
+                "Deprecated --confirm-staging-area-deck-slot-a4-empty requires the exact phrase "
+                f"{_LEGACY_A4_EXECUTION_CONFIRMATION}."
+            )
+        return None
+    if not staging_slots:
+        return None
+    required_confirmation = _staging_area_execution_confirmation(staging_slots)
+    if confirmation != required_confirmation:
+        slot_list = ", ".join(staging_slots)
         return (
-            "A3 uses a staging-area fixture; physically verify that it extends to deck slot A4 and "
-            "deck slot A4 is empty, then pass --confirm-staging-area-deck-slot-a4-empty "
+            f"Installed staging-area deck slots {slot_list} must all be physically empty; "
+            "verify every listed slot, then pass --confirm-staging-area-slots-empty "
             f"{required_confirmation}"
         )
     return None
@@ -587,11 +673,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         staging_execution_error = _staging_area_execution_error(
             {"data": deck},
             execute=args.execute,
-            confirmation=args.confirm_staging_area_deck_slot_a4_empty,
+            confirmation=args.confirm_staging_area_slots_empty,
+            legacy_a4_confirmation=args.confirm_staging_area_deck_slot_a4_empty,
         )
         if staging_execution_error:
             print(f"BLOCKED: {staging_execution_error}", file=sys.stderr)
             return 2
+        if args.execute and args.confirm_staging_area_deck_slot_a4_empty is not None:
+            print(
+                "WARNING: --confirm-staging-area-deck-slot-a4-empty is deprecated and is accepted only "
+                "when A4 is the sole installed staging-area deck slot. Use "
+                "--confirm-staging-area-slots-empty with the live topology-bound phrase.",
+                file=sys.stderr,
+            )
         print("Deck configuration: PASS")
         for note in _deck_configuration_notes({"data": deck}):
             print(f"Deck configuration note: {note}")

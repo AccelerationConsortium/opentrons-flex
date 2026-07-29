@@ -152,6 +152,25 @@ class _FailingRunClient(_Client):
         return super().post(path, files=files, data=data, json=json)
 
 
+class _StagingDeckClient(_Client):
+    def get(self, path: str, *, params: dict | None = None) -> _Response:
+        if path == "/deck_configuration":
+            deck = _ready_deck()
+            deck["data"]["cutoutFixtures"][0]["cutoutFixtureId"] = "stagingAreaRightSlot"
+            deck["data"]["cutoutFixtures"].append({"cutoutId": "cutoutB3", "cutoutFixtureId": "stagingAreaRightSlot"})
+            return _Response(200, deck)
+        return super().get(path, params=params)
+
+
+class _A4StagingDeckClient(_Client):
+    def get(self, path: str, *, params: dict | None = None) -> _Response:
+        if path == "/deck_configuration":
+            deck = _ready_deck()
+            deck["data"]["cutoutFixtures"][0]["cutoutFixtureId"] = "stagingAreaRightSlot"
+            return _Response(200, deck)
+        return super().get(path, params=params)
+
+
 def _ready_deck() -> dict:
     return {
         "data": {
@@ -211,15 +230,17 @@ def test_ready_deck_has_no_errors() -> None:
     assert run_asms_hardware._deck_configuration_errors(_ready_deck()) == []
 
 
-def test_staging_area_fixture_preserves_a3_and_requires_operator_note() -> None:
+def test_staging_area_fixtures_require_confirmation_bound_to_every_installed_slot() -> None:
     deck = _ready_deck()
     deck["data"]["cutoutFixtures"][0]["cutoutFixtureId"] = "stagingAreaRightSlot"
+    deck["data"]["cutoutFixtures"].append({"cutoutId": "cutoutB3", "cutoutFixtureId": "stagingAreaRightSlot"})
 
     assert run_asms_hardware._deck_configuration_errors(deck) == []
+    assert run_asms_hardware._installed_staging_area_slots(deck) == ("A4", "B4")
     assert run_asms_hardware._deck_configuration_notes(deck) == [
         (
-            "A3 staging-area fixture accepted: physically verify the fixture extends to deck slot A4 "
-            "and keep deck slot A4 empty."
+            "Installed staging-area deck slots detected: A4, B4. "
+            "Keep every listed deck slot physically empty for this workflow."
         )
     ]
 
@@ -227,16 +248,18 @@ def test_staging_area_fixture_preserves_a3_and_requires_operator_note() -> None:
         deck,
         execute=True,
         confirmation=None,
+        legacy_a4_confirmation=None,
     ) == (
-        "A3 uses a staging-area fixture; physically verify that it extends to deck slot A4 and "
-        "deck slot A4 is empty, then pass --confirm-staging-area-deck-slot-a4-empty "
-        "ASMS-DECK-SLOT-A4-EMPTY"
+        "Installed staging-area deck slots A4, B4 must all be physically empty; "
+        "verify every listed slot, then pass --confirm-staging-area-slots-empty "
+        "ASMS-STAGING-SLOTS-A4-B4-EMPTY"
     )
     assert (
         run_asms_hardware._staging_area_execution_error(
             deck,
             execute=True,
-            confirmation="ASMS-DECK-SLOT-A4-EMPTY",
+            confirmation="ASMS-STAGING-SLOTS-A4-B4-EMPTY",
+            legacy_a4_confirmation=None,
         )
         is None
     )
@@ -245,9 +268,87 @@ def test_staging_area_fixture_preserves_a3_and_requires_operator_note() -> None:
             deck,
             execute=False,
             confirmation=None,
+            legacy_a4_confirmation=None,
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "fixture_id",
+    [
+        "stagingAreaRightSlot",
+        "stagingAreaSlotWithMagneticBlockV1",
+        "stagingAreaSlotWithWasteChuteRightAdapterCovered",
+        "stagingAreaSlotWithWasteChuteRightAdapterNoCover",
+    ],
+)
+def test_all_pinned_staging_area_fixture_variants_map_to_column_four(fixture_id: str) -> None:
+    deck = {
+        "data": {
+            "cutoutFixtures": [
+                {"cutoutId": "cutoutD3", "cutoutFixtureId": fixture_id},
+            ]
+        }
+    }
+
+    assert run_asms_hardware._installed_staging_area_slots(deck) == ("D4",)
+
+
+def test_staging_area_confirmation_changes_when_installed_slots_change() -> None:
+    assert run_asms_hardware._staging_area_execution_confirmation(("A4", "B4")) == "ASMS-STAGING-SLOTS-A4-B4-EMPTY"
+    assert (
+        run_asms_hardware._staging_area_execution_confirmation(("A4", "B4", "C4"))
+        == "ASMS-STAGING-SLOTS-A4-B4-C4-EMPTY"
+    )
+
+
+def test_legacy_a4_confirmation_is_accepted_only_for_a4() -> None:
+    a4_only_deck = _ready_deck()
+    a4_only_deck["data"]["cutoutFixtures"][0]["cutoutFixtureId"] = "stagingAreaRightSlot"
+
+    assert (
+        run_asms_hardware._staging_area_execution_error(
+            a4_only_deck,
+            execute=True,
+            confirmation=None,
+            legacy_a4_confirmation="ASMS-DECK-SLOT-A4-EMPTY",
+        )
+        is None
+    )
+
+    a4_b4_deck = _StagingDeckClient().get("/deck_configuration").json()
+    assert "ASMS-STAGING-SLOTS-A4-B4-EMPTY" in (
+        run_asms_hardware._staging_area_execution_error(
+            a4_b4_deck,
+            execute=True,
+            confirmation=None,
+            legacy_a4_confirmation="ASMS-DECK-SLOT-A4-EMPTY",
+        )
+        or ""
+    )
+    assert "detected none" in (
+        run_asms_hardware._staging_area_execution_error(
+            _ready_deck(),
+            execute=True,
+            confirmation=None,
+            legacy_a4_confirmation="ASMS-DECK-SLOT-A4-EMPTY",
+        )
+        or ""
+    )
+
+
+def test_unknown_staging_area_fixture_fails_closed() -> None:
+    deck = {
+        "data": {
+            "cutoutFixtures": [
+                {"cutoutId": "cutoutB3", "cutoutFixtureId": "stagingAreaFutureFixture"},
+            ]
+        }
+    }
+
+    with pytest.raises(RuntimeError, match="Unknown staging-area fixture"):
+        run_asms_hardware._installed_staging_area_slots(deck)
 
 
 def test_deck_validation_reports_wrong_fixture_and_missing_module_serial() -> None:
@@ -265,6 +366,7 @@ def test_deck_validation_reports_wrong_fixture_and_missing_module_serial() -> No
             _ready_deck(),
             execute=True,
             confirmation=None,
+            legacy_a4_confirmation=None,
         )
         is None
     )
@@ -483,6 +585,77 @@ def test_default_mode_analyzes_without_creating_or_playing_a_run(monkeypatch, ca
     assert result == 0
     assert client.posts == ["/protocols"]
     assert "ANALYSIS ONLY" in capsys.readouterr().out
+
+
+def test_analysis_reports_all_staging_slots_without_requiring_confirmation(monkeypatch, capsys) -> None:
+    client = _StagingDeckClient()
+    monkeypatch.setattr(run_asms_hardware, "_validate_exact_bundle", lambda: None)
+    monkeypatch.setattr(run_asms_hardware.httpx, "Client", lambda *args, **kwargs: client)
+
+    result = run_asms_hardware.main([])
+
+    assert result == 0
+    assert client.posts == ["/protocols"]
+    assert "Installed staging-area deck slots detected: A4, B4" in capsys.readouterr().out
+
+
+def test_execution_blocks_before_upload_until_all_staging_slots_are_confirmed(monkeypatch, capsys) -> None:
+    client = _StagingDeckClient()
+    monkeypatch.setattr(run_asms_hardware, "_validate_exact_bundle", lambda: None)
+    monkeypatch.setattr(run_asms_hardware.httpx, "Client", lambda *args, **kwargs: client)
+
+    result = run_asms_hardware.main(
+        [
+            "--execute",
+            "--confirm-deck-ready",
+            "ASMS-DECK-READY",
+            "--confirm-staging-area-slots-empty",
+            "ASMS-STAGING-SLOTS-A4-EMPTY",
+        ]
+    )
+
+    assert result == 2
+    assert client.posts == []
+    assert "ASMS-STAGING-SLOTS-A4-B4-EMPTY" in capsys.readouterr().err
+
+
+def test_legacy_a4_option_warns_and_remains_accepted_for_a4_only(monkeypatch, capsys) -> None:
+    client = _A4StagingDeckClient()
+    monkeypatch.setattr(run_asms_hardware, "_validate_exact_bundle", lambda: None)
+    monkeypatch.setattr(run_asms_hardware.httpx, "Client", lambda *args, **kwargs: client)
+
+    result = run_asms_hardware.main(
+        [
+            "--execute",
+            "--confirm-deck-ready",
+            "ASMS-DECK-READY",
+            "--confirm-staging-area-deck-slot-a4-empty",
+            "ASMS-DECK-SLOT-A4-EMPTY",
+        ]
+    )
+
+    assert result == 0
+    assert client.posts == ["/protocols", "/runs", "/runs/run-1/actions"]
+    assert "deprecated" in capsys.readouterr().err
+
+
+def test_execution_accepts_confirmation_bound_to_all_installed_staging_slots(monkeypatch) -> None:
+    client = _StagingDeckClient()
+    monkeypatch.setattr(run_asms_hardware, "_validate_exact_bundle", lambda: None)
+    monkeypatch.setattr(run_asms_hardware.httpx, "Client", lambda *args, **kwargs: client)
+
+    result = run_asms_hardware.main(
+        [
+            "--execute",
+            "--confirm-deck-ready",
+            "ASMS-DECK-READY",
+            "--confirm-staging-area-slots-empty",
+            "ASMS-STAGING-SLOTS-A4-B4-EMPTY",
+        ]
+    )
+
+    assert result == 0
+    assert client.posts == ["/protocols", "/runs", "/runs/run-1/actions"]
 
 
 def test_confirmed_two_column_execution_requires_pinned_command_evidence(monkeypatch, capsys) -> None:

@@ -259,12 +259,20 @@ uv run --extra test python scripts/run_asms_hardware.py \
   --confirm-deck-ready ASMS-DECK-READY
 ```
 
-When A3 uses a physically installed staging-area fixture, inspect the fixture,
-keep deck slot A4 empty, and add
-`--confirm-staging-area-deck-slot-a4-empty ASMS-DECK-SLOT-A4-EMPTY` to every
-command that also uses `--execute`. Analysis-only commands do not require this
-additional confirmation. This requirement applies to deck slot A4, not reservoir
-well A4, which contains the prepared methanol.
+When staging-area fixtures are physically installed, keep every corresponding
+column-4 deck slot empty. The runner discovers the complete set from the live
+deck configuration and binds it into the required execution phrase. For example,
+fixtures providing A4 and B4 require
+`--confirm-staging-area-slots-empty ASMS-STAGING-SLOTS-A4-B4-EMPTY` on every
+command that also uses `--execute`. If the installed set changes, the old phrase
+is rejected before protocol upload. Analysis-only commands report the detected
+slots but do not require this additional confirmation. This requirement applies
+to deck slots such as A4 and B4, not reservoir wells with the same names; reservoir
+well A4 contains the prepared methanol.
+
+The earlier A4-only option remains temporarily accepted, with a deprecation
+warning, only when A4 is the sole detected staging-area slot. It is rejected for
+the observed A4/B4 configuration; use the topology-bound option above.
 
 This inserts one 10 µL eight-channel reservoir-to-waste transfer at the first
 named checkpoint, verifies allocation of eight clean tips and a terminal
@@ -288,12 +296,14 @@ already consumes every available fresh tip.
 4. **Match the Flex deck configuration.** In the Opentrons App, set A3 to either
    the standard right-slot fixture or a physically installed staging-area
    fixture for the tip rack, D1 to the trash-bin adapter, C1 to the connected
-   Temperature Module GEN2, and B2 to Magnetic Block GEN1. A staging-area
-   fixture replaces the standard A3 piece but still provides A3 while extending
-   into deck slot A4; keep deck slot A4 empty for this workflow. This is distinct
-   from reservoir well A4, which contains methanol. Confirm every other cutout
-   matches the table above; the Flex default deck reserves A3 for trash and
-   treats C1/B2 as ordinary slots, so physical placement alone is not sufficient.
+   Temperature Module GEN2, and B2 to Magnetic Block GEN1. Each staging-area
+   fixture replaces a standard column-3 piece while preserving that working slot
+   and extending into the matching column-4 deck slot. Keep every installed
+   staging-area deck slot empty for this workflow; with the observed A3 and B3
+   fixtures, both A4 and B4 must be empty. This is distinct from reservoir well
+   A4, which contains methanol. Confirm every other cutout matches the table
+   above; the Flex default deck reserves A3 for trash and treats C1/B2 as ordinary
+   slots, so physical placement alone is not sufficient.
 5. **Analyze without motion.** Upload the prepared Python file and both exact
    labware JSON files. Confirm protocol analysis completes without warnings or
    labware-offset requests. Do not press Run yet.
