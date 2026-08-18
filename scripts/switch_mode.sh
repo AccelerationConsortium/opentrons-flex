@@ -59,8 +59,12 @@ stock_services_stopped_and_disabled() {
     return 0
 }
 
+# Every robot-server request below sends "Opentrons-Version: *". From Opentrons 9.0.0 the
+# header is mandatory; without it robot-server answers 422
+# "header.opentrons-version: Field required", which --fail turns into a failed check and
+# makes a healthy connector look unreachable.
 unit_http_is_unavailable() {
-    ! curl --fail --silent --connect-timeout 2 --max-time 5 \
+    ! curl --fail --silent -H "Opentrons-Version: *" --connect-timeout 2 --max-time 5 \
         http://127.0.0.1:31950/health >/dev/null 2>&1
 }
 
@@ -68,11 +72,11 @@ wait_for_pe_connector() {
     i=60
     while [ "$i" -gt 0 ]; do
         if python3 -c "import socket; s=socket.create_connection(('127.0.0.1',50051),2); s.close()" 2>/dev/null &&
-            curl --fail --silent --connect-timeout 2 --max-time 5 \
+            curl --fail --silent -H "Opentrons-Version: *" --connect-timeout 2 --max-time 5 \
                 http://127.0.0.1:31950/health >/dev/null 2>&1; then
-            curl --fail --silent --connect-timeout 2 --max-time 10 \
+            curl --fail --silent -H "Opentrons-Version: *" --connect-timeout 2 --max-time 10 \
                 http://127.0.0.1:31950/deck_configuration >/dev/null &&
-            curl --fail --silent --connect-timeout 2 --max-time 10 \
+            curl --fail --silent -H "Opentrons-Version: *" --connect-timeout 2 --max-time 10 \
                 http://127.0.0.1:31950/openapi.json |
                 python3 -c "import json,sys; assert '/unitelabs/runs/{run_id}/mutations' in json.load(sys.stdin).get('paths',{})" &&
             stock_services_stopped_and_disabled
@@ -107,7 +111,7 @@ wait_for_stock() {
     i=60
     while [ "$i" -gt 0 ]; do
         if systemctl is-active --quiet opentrons-robot-server 2>/dev/null &&
-            curl --fail --silent --connect-timeout 2 --max-time 5 \
+            curl --fail --silent -H "Opentrons-Version: *" --connect-timeout 2 --max-time 5 \
                 http://127.0.0.1:31950/health >/dev/null 2>&1; then
             return 0
         fi

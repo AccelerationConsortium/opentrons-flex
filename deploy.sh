@@ -46,7 +46,14 @@ case "$DEPLOYMENT_ID" in
         ;;
 esac
 
-UPLOAD_DIR="/root/unitelabs-flex-upload-$DEPLOYMENT_ID-$$"
+# Stage on the always-writable data partition, not on the root filesystem. The Flex boots
+# with / read-only and this staging mkdir runs before the remount inside the remote script
+# below, so /root failed outright with:
+#   mkdir: cannot create directory '/root': Read-only file system
+# /root also does not exist on the Flex (root's home is /home/root), so -p would have
+# created a stray directory at /. /var, /home and /data share one rw partition
+# (/dev/mmcblk0p4), so /var/tmp needs no remount at all.
+UPLOAD_DIR="/var/tmp/unitelabs-flex-upload-$DEPLOYMENT_ID-$$"
 RELEASE_PATH="$STATE_DIR/releases/$DEPLOYMENT_ID"
 
 echo "=== Flex connector staged deployment ==="

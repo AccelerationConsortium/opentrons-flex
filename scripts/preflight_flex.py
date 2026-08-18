@@ -47,7 +47,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--ssh-user", type=_ssh_user, default="root")
     parser.add_argument("--http-port", type=_port, default=31950)
     parser.add_argument("--grpc-port", type=_port, default=50051)
-    parser.add_argument("--timeout", type=_positive_float, default=8.0)
+    # 8s is not enough on real Flex hardware. This budget is spent by a nested chain:
+    # ssh (timeout + 5) -> robot_readiness --timeout N -> runtime_preflight
+    # --require-robot-server --require-live-hardware --require-mutation. Importing the
+    # connector stack and running the live-hardware checks on the robot's aarch64 SoC
+    # measured ~31s, so the inner call died at 8s and reported "runtime preflight failed:
+    # ... timed out after 8.0 seconds". That also silently failed the mutation-route check,
+    # which reads the openapi payload collected by this same ssh call and therefore saw an
+    # empty dict rather than the route that was actually present.
+    parser.add_argument("--timeout", type=_positive_float, default=60.0)
     parser.add_argument("--runtime-only", action="store_true", help="Skip live HTTP and gRPC checks.")
     parser.add_argument(
         "--allow-base-only",
@@ -134,7 +142,17 @@ def _tcp_check(host: str, port: int, timeout: float) -> Check:
 
 def _http_json(host: str, port: int, path: str, timeout: float) -> tuple[Check, Any | None]:
     url = f"http://{_url_host(host)}:{port}{path}"
-    request = urllib.request.Request(url, headers={"User-Agent": "unitelabs-flex-preflight/0.9.1"})
+    # Opentrons-Version is mandatory from Opentrons 9.0.0 on: without it robot-server
+    # rejects /health, /deck_configuration and /pipettes with
+    # 422 "header.opentrons-version: Field required", which surfaced here as spurious
+    # readiness failures against a perfectly healthy robot.
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "unitelabs-flex-preflight/0.9.1",
+            "Opentrons-Version": "*",
+        },
+    )
     try:
         with open_no_redirect(request, timeout=timeout) as response:
             if response.geturl() != url:
