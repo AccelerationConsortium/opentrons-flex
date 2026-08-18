@@ -17,6 +17,8 @@ Wire conventions worth knowing:
 
 from __future__ import annotations
 
+import asyncio
+import time
 import typing
 
 from sila_toolkit import AsyncSilaTransport, connect_sila
@@ -38,6 +40,15 @@ RIGHT = "right"
 GRIPPER_MOUNT = "gripper"
 
 _RESPONSE = "Response0"
+
+#: How long to wait for an observable command's result. Without a timeout,
+#: ``get_responses`` returns as soon as the server says the result is not ready yet,
+#: which surfaces as "Result is not ready" rather than waiting for the motion to finish.
+#: Gantry moves across the deck and a homing pass both take tens of seconds.
+DEFAULT_COMMAND_TIMEOUT_S = 120.0
+
+#: The connector's "still running" answer to a premature result request.
+_NOT_READY = "Result is not ready"
 
 #: Transfer profile that performs a plain aspirate/dispense with a blow-out and no
 #: mixing or air gap. Rates of 1.0 mean "the pipette's configured default".
@@ -101,7 +112,7 @@ class FlexTransport(AsyncSilaTransport):
         name: str,
         params: dict[str, object] | None = None,
         *,
-        timeout: float | None = None,
+        timeout: float | None = DEFAULT_COMMAND_TIMEOUT_S,
     ) -> dict:
         """
         Run one SiLA command and return its responses.
@@ -112,14 +123,38 @@ class FlexTransport(AsyncSilaTransport):
         return the response mapping directly, so both shapes are handled here and the
         callers stay uniform.
         """
+        deadline = time.monotonic() + (timeout if timeout is not None else DEFAULT_COMMAND_TIMEOUT_S)
         try:
             result = await self._features[feature].commands[name].execute(params or {})
             if hasattr(result, "get_responses"):
-                result = await result.get_responses(timeout=timeout)
+                result = await self._await_responses(result, deadline)
+        except ConnectorError:
+            raise
         except Exception as exc:  # noqa: BLE001 - re-raised with the connector's own message
             msg = f"{feature.rsplit('/', 2)[-2]}.{name} failed: {exc}"
             raise ConnectorError(msg) from exc
         return dict(result) if result is not None else {}
+
+    @staticmethod
+    async def _await_responses(execution: object, deadline: float) -> dict:
+        """
+        Poll an observable command until its result is available.
+
+        ``get_responses`` does not wait: while the command is still executing the server
+        answers "Result is not ready" and the call raises straight away. Physical motion
+        takes seconds to tens of seconds, so the result has to be re-requested until it
+        appears or the deadline passes.
+        """
+        while True:
+            try:
+                return await execution.get_responses()
+            except Exception as exc:  # noqa: BLE001 - inspected, then re-raised or retried
+                if _NOT_READY not in str(exc):
+                    raise
+                if time.monotonic() >= deadline:
+                    msg = f"observable command did not produce a result within {DEFAULT_COMMAND_TIMEOUT_S:.0f}s"
+                    raise ConnectorError(msg) from exc
+                await asyncio.sleep(0.25)
 
     async def _property(self, feature: str, name: str) -> object:
         try:

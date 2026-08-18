@@ -105,7 +105,13 @@ class PipetteFeature(sila.Feature):
 
         results: list[PipetteInfo] = []
         for mount, ot3_mount in PIPETTE_MOUNTS.items():
-            info = instruments.get(ot3_mount) or {}
+            # OT3API.attached_pipettes -- which attached_instruments returns -- is keyed by
+            # top_types.Mount, not OT3Mount:
+            #     {m.to_mount(): d for m, d in ...attached_instruments.items() ...}
+            # Looking up the OT3Mount alone always missed, so every mount reported
+            # attached=False even with both pipettes installed and healthy. Both keys are
+            # tried here for the same reason flex_motion.attached_pipette_info does.
+            info = instruments.get(ot3_mount) or instruments.get(ot3_mount.to_mount()) or {}
             model = info.get("model") or ""
             results.append(
                 PipetteInfo(
