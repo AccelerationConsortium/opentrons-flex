@@ -35,7 +35,9 @@
     },
     "root": {
       "level": "INFO",
-      "handlers": ["stderr"]
+      "handlers": [
+        "stderr"
+      ]
     }
   },
   "use_simulator": true,
@@ -52,5 +54,7 @@
   "run_mutation_ledger_path": "/private/tmp/unitelabs-opentrons-flex-smoketest/run-mutations.jsonl",
   "run_mutation_token_env": "UNITELABS_RUN_MUTATION_TOKEN",
   "run_mutation_actor_env": "UNITELABS_RUN_MUTATION_ACTOR",
-  "run_mutation_required": true
+  "run_mutation_required": true,
+  "simulated_left_pipette": "p1000_single_v3.5",
+  "simulated_right_pipette": "p50_single_v3.5"
 }

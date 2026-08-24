@@ -154,6 +154,15 @@ class OpentronsFlexConfig(ConnectorBaseConfig):
     simulated_gripper: bool = False
     """Attach a simulated Flex Gripper when ``use_simulator`` is enabled."""
 
+    simulated_left_pipette: str = ""
+    """Pipette model to attach to the left mount when ``use_simulator`` is
+    enabled, e.g. ``p1000_single_v3.5`` (the bench Flex's left pipette).
+    Empty attaches nothing."""
+
+    simulated_right_pipette: str = ""
+    """Pipette model to attach to the right mount when ``use_simulator`` is
+    enabled, e.g. ``p50_single_v3.5``. Empty attaches nothing."""
+
     run_mutation_ledger_path: str | None = None
     """Durable JSONL audit ledger enabling controlled Protocol Engine run mutation.
 
@@ -248,14 +257,23 @@ def _simulator_attached_instruments(config: OpentronsFlexConfig) -> dict:
     """Build the explicit instrument inventory passed to the OT3 simulator."""
     from opentrons.hardware_control.types import OT3Mount
 
-    if not config.simulated_gripper:
-        return {}
-    return {
-        OT3Mount.GRIPPER: {
+    instruments: dict = {}
+    if config.simulated_gripper:
+        instruments[OT3Mount.GRIPPER] = {
             "model": "gripperV1",
             "id": "GRIPPER-SIM-1",
         }
-    }
+    if config.simulated_left_pipette:
+        instruments[OT3Mount.LEFT] = {
+            "model": config.simulated_left_pipette,
+            "id": "LEFT-PIPETTE-SIM-1",
+        }
+    if config.simulated_right_pipette:
+        instruments[OT3Mount.RIGHT] = {
+            "model": config.simulated_right_pipette,
+            "id": "RIGHT-PIPETTE-SIM-1",
+        }
+    return instruments
 
 
 def _register_core_features(
@@ -388,6 +406,8 @@ async def create_app(config: OpentronsFlexConfig) -> collections.abc.AsyncGenera
             (config.simulated_temperature_module, "simulated_temperature_module"),
             (config.simulated_thermocycler, "simulated_thermocycler"),
             (config.simulated_gripper, "simulated_gripper"),
+            (bool(config.simulated_left_pipette), "simulated_left_pipette"),
+            (bool(config.simulated_right_pipette), "simulated_right_pipette"),
         )
         if enabled
     ]
