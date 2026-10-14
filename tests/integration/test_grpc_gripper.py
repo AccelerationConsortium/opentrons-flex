@@ -44,8 +44,8 @@ class _GripperClient:
     async def grip(self, force: float) -> None:
         await self._observable("Grip", {"force": force})
 
-    async def ungrip(self) -> None:
-        await self._observable("Ungrip")
+    async def ungrip(self, force: float) -> None:
+        await self._observable("Ungrip", {"force": force})
 
     async def home_jaw(self) -> None:
         await self._observable("HomeJaw")
@@ -87,7 +87,7 @@ async def test_grip_without_gripper_raises_defined_error(client: _GripperClient)
 async def test_ungrip_without_gripper_raises_defined_error(client: _GripperClient) -> None:
     """Ungrip surfaces the GripperNotAttachedError defined execution error over the wire."""
     with pytest.raises(grpc.aio.AioRpcError) as excinfo:
-        await client.ungrip()
+        await client.ungrip(10.0)
     assert b"GripperNotAttachedError" in _error_identifier(excinfo.value)
 
 
