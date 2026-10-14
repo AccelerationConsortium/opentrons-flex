@@ -450,7 +450,7 @@ class GrpcUnitClient:
         self._channel = channel
         self._protobuf = protobuf
 
-    async def _unary(self, path: str, request: bytes, *, timeout: float) -> bytes:
+    async def _unary(self, path: str, request: bytes, *, timeout: float) -> bytes:  # noqa: ASYNC109 - forwarded as the gRPC call deadline
         call = self._channel.unary_unary(path)
         return await asyncio.wait_for(call(request, timeout=timeout), timeout=timeout + 1.0)
 
@@ -460,7 +460,7 @@ class GrpcUnitClient:
         package: str,
         method: str,
         *,
-        timeout: float = 15.0,
+        timeout: float = 15.0,  # noqa: ASYNC109 - forwarded as the gRPC call deadline
     ) -> object:
         response = await self._unary(f"/{service}/{method}", b"", timeout=timeout)
         decoded = await self._protobuf.decode(f"{package}.{method}_Responses", response)
@@ -485,7 +485,7 @@ class GrpcUnitClient:
         method: str,
         parameters: dict[str, Any] | None = None,
         *,
-        timeout: float = 300.0,
+        timeout: float = 300.0,  # noqa: ASYNC109 - forwarded as the gRPC call deadline
         emergency_on_failure: bool = True,
     ) -> object:
         try:
@@ -497,7 +497,7 @@ class GrpcUnitClient:
             if emergency_on_failure:
                 await self._halt_after_uncertain_execution(method)
             raise
-        except (asyncio.TimeoutError, TimeoutError, grpc.aio.AioRpcError) as exc:
+        except (TimeoutError, grpc.aio.AioRpcError) as exc:
             timed_out = isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or (
                 exc.code() is grpc.StatusCode.DEADLINE_EXCEEDED
             )
@@ -517,7 +517,7 @@ class GrpcUnitClient:
         method: str,
         parameters: dict[str, Any] | None,
         *,
-        timeout: float,
+        timeout: float,  # noqa: ASYNC109 - forwarded as the gRPC call deadline
     ) -> object:
         request = await self._protobuf.encode(f"{package}.{method}_Parameters", parameters or {})
         confirmation_raw = await self._unary(

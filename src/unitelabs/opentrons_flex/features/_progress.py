@@ -8,8 +8,6 @@ from dataclasses import dataclass
 
 from unitelabs.cdk import sila
 
-_T = typing.TypeVar("_T")
-
 
 class OperationPhase(enum.Enum):
     """Lifecycle phase for an observable robot action."""
@@ -40,14 +38,14 @@ def report_progress(
     intermediate.send(OperationProgress(phase=phase, message=message))
 
 
-async def run_observable(
+async def run_observable[T](
     status: sila.Status,
     intermediate: sila.Intermediate[OperationProgress],
     start_message: str,
     complete_message: str,
     cancelled_message: str,
-    action: typing.Awaitable[_T],
-) -> _T:
+    action: typing.Awaitable[T],
+) -> T:
     """Run an awaitable with standard observable-command progress updates."""
     report_progress(status, intermediate, 0.0, OperationPhase.STARTING, start_message)
     try:
@@ -59,17 +57,17 @@ async def run_observable(
     return result
 
 
-async def run_observable_with_updates(
+async def run_observable_with_updates[T](
     status: sila.Status,
     intermediate: sila.Intermediate[OperationProgress],
     start_message: str,
     complete_message: str,
     cancelled_message: str,
-    action: typing.Awaitable[_T],
+    action: typing.Awaitable[T],
     read_update: typing.Callable[[], typing.Awaitable[tuple[float, str]]],
     *,
     interval: float = 0.25,
-) -> _T:
+) -> T:
     """Run an observable action while polling truthful intermediate progress."""
     report_progress(status, intermediate, 0.0, OperationPhase.STARTING, start_message)
     task = asyncio.ensure_future(action)

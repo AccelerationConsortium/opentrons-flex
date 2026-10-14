@@ -2,16 +2,13 @@
 
 import asyncio
 import collections.abc
-import typing
-
-_T = typing.TypeVar("_T")
 
 
-async def stream_changes(
-    read: collections.abc.Callable[[], _T],
+async def stream_changes[T](
+    read: collections.abc.Callable[[], T],
     *,
     interval: float = 0.25,
-) -> collections.abc.AsyncIterator[_T]:
+) -> collections.abc.AsyncIterator[T]:
     """Yield immediately and then whenever a polled value changes."""
     previous: object = object()
     while True:
