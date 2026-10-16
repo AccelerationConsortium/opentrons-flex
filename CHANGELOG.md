@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- Fixed Windows deck-state persistence by retaining file flush and atomic replacement
+  while applying directory fsync only on POSIX hosts. Embedded robot-server startup
+  now initializes the native lazy run-orchestrator store before admitting requests,
+  preserving fail-closed hardware ownership checks from the first HTTP request.
+
+- Aligned `HeaterShakerController` v3.2 with the pinned Opentrons 9.0 API:
+  finite 0–95 °C targets are accepted while the documentation warns that
+  below-ambient targets may be physically unreachable.
+- Hardened accessory correctness and SiLA conformance: duplicate same-type
+  modules now fail connector startup with their serial numbers instead of
+  silently replacing a Feature; Heater-Shaker and Thermocycler autonomous waits
+  release the connector-wide lock and detect parallel target changes; thermal
+  values and direction-dependent Thermocycler ramp rates are validated before
+  actuation; long operations emit measured progress; cancelled profiles
+  deactivate thermal control. `HeaterShakerController` v3.1 and
+  `ThermocyclerController` v2.1 add observable `Status` and static `DeviceInfo`
+  properties while retaining read commands for existing clients. CI now runs
+  the vendored official SiLA v1.2 semantic XSLT in addition to XSD validation.
+- Version 0.9.1 aligns the deployable runtime with Flex Opentrons 9.0.0 on
+  Python 3.12, packages the co-versioned private robot-server stack, verifies a
+  checksummed ARM artifact manifest built from an immutable upstream commit, and
+  rejects cross-release imports before any hardware initialization. Runtime
+  wheels are resolved strictly from `uv.lock`, without a second unpinned
+  dependency solve. Deployments
+  now use versioned immutable releases with completion markers, bounded
+  no-motion/live health checks, automatic stock robot-server recovery, and
+  explicit release rollback. The multipart upload parser is upgraded to the
+  patched 0.0.18 release, and authenticated mutation clients are restricted to
+  an encrypted loopback tunnel.
 - Added a corrected, parameterized AS-MS wash/elution protocol candidate, pinned exact
   Azenta and Thermo KingFisher custom-labware definitions, exact-vs-shadow offline
   preflight, full exact-bundle Protocol Engine execution coverage, and a staged real-Flex
@@ -19,9 +48,9 @@
   restricted to token-authenticated, audited, non-actuating built-in-resource commands
   and serialized with play; protocol-backed runs and custom definitions fail closed.
   Stop remains available during state-provider failure, command audit is written in
-  bounded batches, and the ARM artifact is pinned to the validated Python 3.10/Opentrons
-  8.8.1 runtime. Python 3.11+ is intentionally outside the supported matrix because
-  robot-server 8.8.1 does not import reliably on current Python 3.11 patch releases.
+  bounded batches, and the ARM artifact is pinned to the Python
+  3.12/Opentrons 9.0.0 runtime observed on the target Flex. Incompatible wheel
+  ABI and architecture tags are rejected before upload.
 
 All notable changes to this project will be documented in this file.
 

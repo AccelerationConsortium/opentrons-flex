@@ -1,0 +1,700 @@
+from __future__ import annotations
+
+from collections import Counter
+from typing import Any
+
+import pytest
+
+from scripts import run_asms_hardware
+
+
+class _Response:
+    def __init__(self, status_code: int, payload: dict[str, Any]) -> None:
+        self.status_code = status_code
+        self._payload = payload
+        self.text = str(payload)
+        self.is_success = 200 <= status_code < 300
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+
+class _Client:
+    def __init__(self, *args, **kwargs) -> None:
+        self.posts: list[str] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args) -> None:
+        return None
+
+    def get(self, path: str, *, params: dict | None = None) -> _Response:
+        if path == "/health":
+            return _Response(200, {"robot_model": "OT-3 Standard"})
+        if path == "/pipettes":
+            return _Response(200, {"left": {}, "right": {"name": "flex_8channel_1000"}})
+        if path == "/modules":
+            return _Response(200, {"data": [{"moduleModel": "temperatureModuleV2", "serialNumber": "TM-123"}]})
+        if path == "/deck_configuration":
+            return _Response(200, _ready_deck())
+        if path == "/runs/run-1":
+            return _Response(200, {"data": {"id": "run-1", "status": "succeeded", "current": None}})
+        if path == "/runs/run-1/commands":
+            commands = []
+            for command_type, count in run_asms_hardware._EXPECTED_TWO_COLUMN_COMMANDS.items():
+                commands.extend({"commandType": command_type} for _ in range(count))
+            commands.extend({"commandType": "other"} for _ in range(462 - len(commands)))
+            return _Response(200, {"data": commands})
+        raise AssertionError(f"Unexpected GET {path} params={params}")
+
+    def post(
+        self,
+        path: str,
+        *,
+        files: list | None = None,
+        data: dict | None = None,
+        json: dict | None = None,
+    ) -> _Response:
+        self.posts.append(path)
+        if path == "/protocols":
+            assert files is not None
+            assert data is not None
+            return _Response(
+                201,
+                {
+                    "data": {
+                        "id": "protocol-1",
+                        "analysisSummaries": [{"id": "analysis-1", "status": "completed"}],
+                    }
+                },
+            )
+        if path == "/runs":
+            assert json is not None
+            return _Response(201, {"data": {"id": "run-1", "status": "idle"}})
+        if path == "/runs/run-1/actions":
+            assert json == {"data": {"actionType": "play"}}
+            return _Response(201, {"data": {"id": "action-1"}})
+        raise AssertionError(f"Unexpected POST {path}")
+
+
+class _CheckpointClient:
+    def __init__(self) -> None:
+        self.posts: list[str] = []
+
+    def get(self, path: str, *, headers: dict | None = None) -> _Response:
+        assert headers == {"Authorization": "Bearer " + ("t" * 32)}
+        if path.endswith("/mutation-snapshot"):
+            return _Response(
+                200,
+                {
+                    "currentCommand": {
+                        "id": "checkpoint-1",
+                        "params": {"message": "UNITELABS_MUTATION_CHECKPOINT:ready-before-initial-separation"},
+                    },
+                    "pipettes": [{"id": "pipette-1", "mount": "right", "name": "p1000_multi_flex"}],
+                    "tipRacks": {"tips-1": {}},
+                    "labware": [
+                        {"id": "reservoir-1", "loadName": "nest_12_reservoir_22ml"},
+                        {
+                            "id": "waste-1",
+                            "loadName": "thermokingfisherdeepwell_96_wellplate_2000ul",
+                        },
+                    ],
+                    "disposalAreas": [
+                        {
+                            "areaType": "movableTrash",
+                            "addressableAreaName": "movableTrashA3",
+                        }
+                    ],
+                },
+            )
+        if path.endswith("/mutations"):
+            return _Response(200, [{"event": "mutation_enqueued"}])
+        raise AssertionError(f"Unexpected GET {path}")
+
+    def post(
+        self,
+        path: str,
+        *,
+        headers: dict | None = None,
+        json: dict | None = None,
+    ) -> _Response:
+        assert headers == {"Authorization": "Bearer " + ("t" * 32)}
+        self.posts.append(path)
+        if path.endswith("/mutations"):
+            assert json is not None
+            return _Response(
+                201,
+                {
+                    "allocatedTips": [{"tipCount": 8}],
+                    "commandIds": [f"command-{index}" for index in range(6)],
+                },
+            )
+        if path.endswith("/actions"):
+            assert json == {"data": {"actionType": "play"}}
+            return _Response(201, {"data": {"id": "action-1"}})
+        raise AssertionError(f"Unexpected POST {path}")
+
+
+class _FailingRunClient(_Client):
+    def post(
+        self,
+        path: str,
+        *,
+        files: list | None = None,
+        data: dict | None = None,
+        json: dict | None = None,
+    ) -> _Response:
+        if path == "/runs/run-1/actions" and json == {"data": {"actionType": "stop"}}:
+            self.posts.append("stop")
+            return _Response(201, {"data": {"id": "stop-action"}})
+        return super().post(path, files=files, data=data, json=json)
+
+
+class _StagingDeckClient(_Client):
+    def get(self, path: str, *, params: dict | None = None) -> _Response:
+        if path == "/deck_configuration":
+            deck = _ready_deck()
+            deck["data"]["cutoutFixtures"][0]["cutoutFixtureId"] = "stagingAreaRightSlot"
+            deck["data"]["cutoutFixtures"].append({"cutoutId": "cutoutB3", "cutoutFixtureId": "stagingAreaRightSlot"})
+            return _Response(200, deck)
+        return super().get(path, params=params)
+
+
+class _A4StagingDeckClient(_Client):
+    def get(self, path: str, *, params: dict | None = None) -> _Response:
+        if path == "/deck_configuration":
+            deck = _ready_deck()
+            deck["data"]["cutoutFixtures"][0]["cutoutFixtureId"] = "stagingAreaRightSlot"
+            return _Response(200, deck)
+        return super().get(path, params=params)
+
+
+def _ready_deck() -> dict:
+    return {
+        "data": {
+            "cutoutFixtures": [
+                {"cutoutId": "cutoutA3", "cutoutFixtureId": "singleRightSlot"},
+                {"cutoutId": "cutoutB2", "cutoutFixtureId": "magneticBlockV1"},
+                {
+                    "cutoutId": "cutoutC1",
+                    "cutoutFixtureId": "temperatureModuleV2",
+                    "opentronsModuleSerialNumber": "TM-123",
+                },
+                {"cutoutId": "cutoutD1", "cutoutFixtureId": "trashBinAdapter"},
+            ]
+        }
+    }
+
+
+def test_runtime_parameters_default_to_short_non_mutating_mechanics_run() -> None:
+    assert run_asms_hardware._runtime_parameters(columns=1, scientific=False) == {
+        "connector_test_mode": True,
+        "number_of_columns": 1,
+        "enable_mutation_checkpoints": False,
+    }
+
+
+def test_runtime_parameters_enable_checkpoints_only_for_explicit_transfer_test() -> None:
+    assert run_asms_hardware._runtime_parameters(
+        columns=1,
+        scientific=False,
+        checkpoint_transfer=True,
+    ) == {
+        "connector_test_mode": True,
+        "number_of_columns": 1,
+        "enable_mutation_checkpoints": True,
+    }
+
+
+def test_runtime_parameters_preserve_full_scientific_mode() -> None:
+    assert run_asms_hardware._runtime_parameters(columns=2, scientific=True) == {
+        "connector_test_mode": False,
+        "number_of_columns": 2,
+        "enable_mutation_checkpoints": False,
+    }
+
+
+def test_exact_upload_bundle_contains_protocol_and_two_labware_definitions() -> None:
+    files = run_asms_hardware._exact_protocol_files()
+    names = [file_info[1][0] for file_info in files]
+    assert names == [
+        "asms_single_point_wash_and_elute.py",
+        "azenta_96_wellplate_200ul_pcr.json",
+        "thermokingfisherdeepwell_96_wellplate_2000ul.json",
+    ]
+
+
+def test_ready_deck_has_no_errors() -> None:
+    assert run_asms_hardware._deck_configuration_errors(_ready_deck()) == []
+
+
+def test_staging_area_fixtures_require_confirmation_bound_to_every_installed_slot() -> None:
+    deck = _ready_deck()
+    deck["data"]["cutoutFixtures"][0]["cutoutFixtureId"] = "stagingAreaRightSlot"
+    deck["data"]["cutoutFixtures"].append({"cutoutId": "cutoutB3", "cutoutFixtureId": "stagingAreaRightSlot"})
+
+    assert run_asms_hardware._deck_configuration_errors(deck) == []
+    assert run_asms_hardware._installed_staging_area_slots(deck) == ("A4", "B4")
+    assert run_asms_hardware._deck_configuration_notes(deck) == [
+        (
+            "Installed staging-area deck slots detected: A4, B4. "
+            "Keep every listed deck slot physically empty for this workflow."
+        )
+    ]
+
+    assert run_asms_hardware._staging_area_execution_error(
+        deck,
+        execute=True,
+        confirmation=None,
+        legacy_a4_confirmation=None,
+    ) == (
+        "Installed staging-area deck slots A4, B4 must all be physically empty; "
+        "verify every listed slot, then pass --confirm-staging-area-slots-empty "
+        "ASMS-STAGING-SLOTS-A4-B4-EMPTY"
+    )
+    assert (
+        run_asms_hardware._staging_area_execution_error(
+            deck,
+            execute=True,
+            confirmation="ASMS-STAGING-SLOTS-A4-B4-EMPTY",
+            legacy_a4_confirmation=None,
+        )
+        is None
+    )
+    assert (
+        run_asms_hardware._staging_area_execution_error(
+            deck,
+            execute=False,
+            confirmation=None,
+            legacy_a4_confirmation=None,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "fixture_id",
+    [
+        "stagingAreaRightSlot",
+        "stagingAreaSlotWithMagneticBlockV1",
+        "stagingAreaSlotWithWasteChuteRightAdapterCovered",
+        "stagingAreaSlotWithWasteChuteRightAdapterNoCover",
+    ],
+)
+def test_all_pinned_staging_area_fixture_variants_map_to_column_four(fixture_id: str) -> None:
+    deck = {
+        "data": {
+            "cutoutFixtures": [
+                {"cutoutId": "cutoutD3", "cutoutFixtureId": fixture_id},
+            ]
+        }
+    }
+
+    assert run_asms_hardware._installed_staging_area_slots(deck) == ("D4",)
+
+
+def test_staging_area_confirmation_changes_when_installed_slots_change() -> None:
+    assert run_asms_hardware._staging_area_execution_confirmation(("A4", "B4")) == "ASMS-STAGING-SLOTS-A4-B4-EMPTY"
+    assert (
+        run_asms_hardware._staging_area_execution_confirmation(("A4", "B4", "C4"))
+        == "ASMS-STAGING-SLOTS-A4-B4-C4-EMPTY"
+    )
+
+
+def test_legacy_a4_confirmation_is_accepted_only_for_a4() -> None:
+    a4_only_deck = _ready_deck()
+    a4_only_deck["data"]["cutoutFixtures"][0]["cutoutFixtureId"] = "stagingAreaRightSlot"
+
+    assert (
+        run_asms_hardware._staging_area_execution_error(
+            a4_only_deck,
+            execute=True,
+            confirmation=None,
+            legacy_a4_confirmation="ASMS-DECK-SLOT-A4-EMPTY",
+        )
+        is None
+    )
+
+    a4_b4_deck = _StagingDeckClient().get("/deck_configuration").json()
+    assert "ASMS-STAGING-SLOTS-A4-B4-EMPTY" in (
+        run_asms_hardware._staging_area_execution_error(
+            a4_b4_deck,
+            execute=True,
+            confirmation=None,
+            legacy_a4_confirmation="ASMS-DECK-SLOT-A4-EMPTY",
+        )
+        or ""
+    )
+    assert "detected none" in (
+        run_asms_hardware._staging_area_execution_error(
+            _ready_deck(),
+            execute=True,
+            confirmation=None,
+            legacy_a4_confirmation="ASMS-DECK-SLOT-A4-EMPTY",
+        )
+        or ""
+    )
+
+
+def test_unknown_staging_area_fixture_fails_closed() -> None:
+    deck = {
+        "data": {
+            "cutoutFixtures": [
+                {"cutoutId": "cutoutB3", "cutoutFixtureId": "stagingAreaFutureFixture"},
+            ]
+        }
+    }
+
+    with pytest.raises(RuntimeError, match="Unknown staging-area fixture"):
+        run_asms_hardware._installed_staging_area_slots(deck)
+
+
+def test_deck_validation_reports_wrong_fixture_and_missing_module_serial() -> None:
+    deck = _ready_deck()
+    fixtures = deck["data"]["cutoutFixtures"]
+    fixtures[0]["cutoutFixtureId"] = "trashBinAdapter"
+    fixtures[2].pop("opentronsModuleSerialNumber")
+
+    assert run_asms_hardware._deck_configuration_errors(deck) == [
+        "cutoutA3: expected singleRightSlot or stagingAreaRightSlot, found trashBinAdapter",
+        "cutoutC1: Temperature Module serial number is missing",
+    ]
+    assert (
+        run_asms_hardware._staging_area_execution_error(
+            _ready_deck(),
+            execute=True,
+            confirmation=None,
+            legacy_a4_confirmation=None,
+        )
+        is None
+    )
+
+
+def test_hardware_inventory_requires_right_flex_pipette_and_temperature_module() -> None:
+    for pipette_name in ("flex_8channel_1000", "p1000_multi_flex"):
+        assert (
+            run_asms_hardware._hardware_inventory_errors(
+                {"right": {"name": pipette_name}},
+                {"data": [{"moduleModel": "temperatureModuleV2"}]},
+            )
+            == []
+        )
+    assert run_asms_hardware._hardware_inventory_errors(
+        {"right": {"name": "flex_1channel_1000"}},
+        {"data": []},
+    ) == [
+        (
+            "right pipette: expected Flex 8-Channel 1000 µL "
+            "(flex_8channel_1000 or p1000_multi_flex), found flex_1channel_1000"
+        ),
+        "Temperature Module GEN2 is not connected",
+    ]
+
+
+def test_checkpoint_transfer_accepts_internal_flex_pipette_name() -> None:
+    snapshot = {
+        "pipettes": [{"id": "pipette-1", "mount": "right", "name": "p1000_multi_flex"}],
+        "tipRacks": {"tips-1": {"wells": {}}},
+        "labware": [
+            {"id": "reservoir-1", "loadName": "nest_12_reservoir_22ml"},
+            {
+                "id": "waste-1",
+                "loadName": "thermokingfisherdeepwell_96_wellplate_2000ul",
+            },
+        ],
+        "disposalAreas": [
+            {
+                "areaType": "movableTrash",
+                "addressableAreaName": "movableTrashA3",
+            }
+        ],
+    }
+
+    body = run_asms_hardware._checkpoint_transfer_body(
+        snapshot,
+        actor="operator-1",
+        mutation_id="mutation-1",
+    )
+
+    assert body["steps"][0]["pipetteId"] == "pipette-1"
+
+    snapshot["pipettes"][0].pop("name")
+    with pytest.raises(RuntimeError, match="must contain exactly one"):
+        run_asms_hardware._checkpoint_transfer_body(
+            snapshot,
+            actor="operator-1",
+            mutation_id="mutation-2",
+        )
+
+    snapshot["pipettes"][0]["name"] = "flex_1channel_1000"
+    with pytest.raises(RuntimeError, match="must contain exactly one"):
+        run_asms_hardware._checkpoint_transfer_body(
+            snapshot,
+            actor="operator-1",
+            mutation_id="mutation-3",
+        )
+
+    snapshot["pipettes"] = [
+        {"id": "pipette-1", "mount": "right", "name": "p1000_multi_flex"},
+        {"id": "pipette-2", "mount": "right", "name": "flex_8channel_1000"},
+    ]
+    with pytest.raises(RuntimeError, match="found 2"):
+        run_asms_hardware._checkpoint_transfer_body(
+            snapshot,
+            actor="operator-1",
+            mutation_id="mutation-4",
+        )
+
+
+def test_checkpoint_preflight_requires_both_controlled_mutation_routes() -> None:
+    openapi = {
+        "paths": {
+            "/unitelabs/runs/{run_id}/mutations": {},
+            "/unitelabs/runs/{run_id}/mutation-snapshot": {},
+        }
+    }
+    assert run_asms_hardware._mutation_route_errors(openapi) == []
+
+    openapi["paths"].pop("/unitelabs/runs/{run_id}/mutation-snapshot")
+    assert run_asms_hardware._mutation_route_errors(openapi) == ["missing /unitelabs/runs/{run_id}/mutation-snapshot"]
+
+
+def test_checkpoint_transfer_uses_snapshot_ids_and_eight_channel_resources() -> None:
+    snapshot = {
+        "pipettes": [{"id": "pipette-1", "mount": "right", "name": "flex_8channel_1000"}],
+        "tipRacks": {"tips-1": {"wells": {}}},
+        "labware": [
+            {"id": "reservoir-1", "loadName": "nest_12_reservoir_22ml"},
+            {
+                "id": "waste-1",
+                "loadName": "thermokingfisherdeepwell_96_wellplate_2000ul",
+            },
+        ],
+        "disposalAreas": [
+            {
+                "areaType": "movableTrash",
+                "addressableAreaName": "movableTrashA3",
+            }
+        ],
+    }
+
+    body = run_asms_hardware._checkpoint_transfer_body(
+        snapshot,
+        actor="operator-1",
+        mutation_id="mutation-1",
+    )
+
+    transfer = body["steps"][0]
+    assert body["actor"] == "operator-1"
+    assert transfer["pipetteId"] == "pipette-1"
+    assert transfer["tipRackIds"] == ["tips-1"]
+    assert transfer["source"] == {"labwareId": "reservoir-1", "wellName": "A2"}
+    assert transfer["destination"] == {"labwareId": "waste-1", "wellName": "A1"}
+    assert transfer["volume"] == 10
+
+
+def test_checkpoint_controller_audits_mutation_and_resumes_once() -> None:
+    client = _CheckpointClient()
+    controller = run_asms_hardware._CheckpointController(
+        client,
+        "run-1",
+        token="t" * 32,
+        actor="operator-1",
+    )
+
+    controller.handle_pause()
+    controller.handle_pause()
+
+    assert controller.handled_checkpoint_ids == {"checkpoint-1"}
+    assert controller.mutation_result is not None
+    assert client.posts == [
+        "/unitelabs/runs/run-1/mutations",
+        "/runs/run-1/actions",
+    ]
+
+
+def test_two_column_evidence_requires_the_offline_pinned_counts() -> None:
+    counts = Counter(run_asms_hardware._EXPECTED_TWO_COLUMN_COMMANDS)
+    run_asms_hardware._verify_two_column_evidence(462, counts)
+
+    with pytest.raises(RuntimeError, match="aspirate: expected 82, found 81"):
+        counts["aspirate"] = 81
+        run_asms_hardware._verify_two_column_evidence(462, counts)
+
+
+def test_execute_requires_explicit_deck_confirmation(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(run_asms_hardware, "_validate_exact_bundle", lambda: None)
+
+    result = run_asms_hardware.main(["--execute"])
+
+    assert result == 2
+    assert "ASMS-DECK-READY" in capsys.readouterr().err
+
+
+def test_request_timeout_must_be_positive_before_network(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(run_asms_hardware, "_validate_exact_bundle", lambda: None)
+
+    result = run_asms_hardware.main(["--request-timeout", "0"])
+
+    assert result == 2
+    assert "greater than zero" in capsys.readouterr().err
+
+
+def test_checkpoint_transfer_rejects_two_column_run_before_network(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(run_asms_hardware, "_validate_exact_bundle", lambda: None)
+
+    result = run_asms_hardware.main(
+        [
+            "--columns",
+            "2",
+            "--checkpoint-transfer",
+        ]
+    )
+
+    assert result == 2
+    assert "no spare tips" in capsys.readouterr().err
+
+
+def test_checkpoint_transfer_requires_encrypted_loopback_tunnel(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(run_asms_hardware, "_validate_exact_bundle", lambda: None)
+
+    result = run_asms_hardware.main(
+        [
+            "--execute",
+            "--checkpoint-transfer",
+            "--mutation-actor",
+            "operator-1",
+            "--confirm-deck-ready",
+            "ASMS-DECK-READY",
+        ]
+    )
+
+    assert result == 2
+    assert "SSH tunnel" in capsys.readouterr().err
+
+
+def test_default_mode_analyzes_without_creating_or_playing_a_run(monkeypatch, capsys) -> None:
+    client = _Client()
+    monkeypatch.setattr(run_asms_hardware, "_validate_exact_bundle", lambda: None)
+    monkeypatch.setattr(run_asms_hardware.httpx, "Client", lambda *args, **kwargs: client)
+
+    result = run_asms_hardware.main([])
+
+    assert result == 0
+    assert client.posts == ["/protocols"]
+    assert "ANALYSIS ONLY" in capsys.readouterr().out
+
+
+def test_analysis_reports_all_staging_slots_without_requiring_confirmation(monkeypatch, capsys) -> None:
+    client = _StagingDeckClient()
+    monkeypatch.setattr(run_asms_hardware, "_validate_exact_bundle", lambda: None)
+    monkeypatch.setattr(run_asms_hardware.httpx, "Client", lambda *args, **kwargs: client)
+
+    result = run_asms_hardware.main([])
+
+    assert result == 0
+    assert client.posts == ["/protocols"]
+    assert "Installed staging-area deck slots detected: A4, B4" in capsys.readouterr().out
+
+
+def test_execution_blocks_before_upload_until_all_staging_slots_are_confirmed(monkeypatch, capsys) -> None:
+    client = _StagingDeckClient()
+    monkeypatch.setattr(run_asms_hardware, "_validate_exact_bundle", lambda: None)
+    monkeypatch.setattr(run_asms_hardware.httpx, "Client", lambda *args, **kwargs: client)
+
+    result = run_asms_hardware.main(
+        [
+            "--execute",
+            "--confirm-deck-ready",
+            "ASMS-DECK-READY",
+            "--confirm-staging-area-slots-empty",
+            "ASMS-STAGING-SLOTS-A4-EMPTY",
+        ]
+    )
+
+    assert result == 2
+    assert client.posts == []
+    assert "ASMS-STAGING-SLOTS-A4-B4-EMPTY" in capsys.readouterr().err
+
+
+def test_legacy_a4_option_warns_and_remains_accepted_for_a4_only(monkeypatch, capsys) -> None:
+    client = _A4StagingDeckClient()
+    monkeypatch.setattr(run_asms_hardware, "_validate_exact_bundle", lambda: None)
+    monkeypatch.setattr(run_asms_hardware.httpx, "Client", lambda *args, **kwargs: client)
+
+    result = run_asms_hardware.main(
+        [
+            "--execute",
+            "--confirm-deck-ready",
+            "ASMS-DECK-READY",
+            "--confirm-staging-area-deck-slot-a4-empty",
+            "ASMS-DECK-SLOT-A4-EMPTY",
+        ]
+    )
+
+    assert result == 0
+    assert client.posts == ["/protocols", "/runs", "/runs/run-1/actions"]
+    assert "deprecated" in capsys.readouterr().err
+
+
+def test_execution_accepts_confirmation_bound_to_all_installed_staging_slots(monkeypatch) -> None:
+    client = _StagingDeckClient()
+    monkeypatch.setattr(run_asms_hardware, "_validate_exact_bundle", lambda: None)
+    monkeypatch.setattr(run_asms_hardware.httpx, "Client", lambda *args, **kwargs: client)
+
+    result = run_asms_hardware.main(
+        [
+            "--execute",
+            "--confirm-deck-ready",
+            "ASMS-DECK-READY",
+            "--confirm-staging-area-slots-empty",
+            "ASMS-STAGING-SLOTS-A4-B4-EMPTY",
+        ]
+    )
+
+    assert result == 0
+    assert client.posts == ["/protocols", "/runs", "/runs/run-1/actions"]
+
+
+def test_confirmed_two_column_execution_requires_pinned_command_evidence(monkeypatch, capsys) -> None:
+    client = _Client()
+    monkeypatch.setattr(run_asms_hardware, "_validate_exact_bundle", lambda: None)
+    monkeypatch.setattr(run_asms_hardware.httpx, "Client", lambda *args, **kwargs: client)
+
+    result = run_asms_hardware.main(
+        [
+            "--columns",
+            "2",
+            "--execute",
+            "--confirm-deck-ready",
+            "ASMS-DECK-READY",
+        ]
+    )
+
+    assert result == 0
+    assert client.posts == ["/protocols", "/runs", "/runs/run-1/actions"]
+    assert "AS-MS hardware workflow PASS" in capsys.readouterr().out
+
+
+def test_execution_error_stops_non_terminal_owned_run(monkeypatch) -> None:
+    client = _FailingRunClient()
+    monkeypatch.setattr(run_asms_hardware, "_validate_exact_bundle", lambda: None)
+    monkeypatch.setattr(run_asms_hardware.httpx, "Client", lambda *args, **kwargs: client)
+    monkeypatch.setattr(
+        run_asms_hardware,
+        "_wait_for_run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("poll timed out")),
+    )
+
+    with pytest.raises(TimeoutError, match="poll timed out"):
+        run_asms_hardware.main(
+            [
+                "--execute",
+                "--confirm-deck-ready",
+                "ASMS-DECK-READY",
+            ]
+        )
+
+    assert client.posts[-1] == "stop"

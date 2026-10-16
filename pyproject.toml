@@ -1,6 +1,6 @@
 [project]
 name = "unitelabs-opentrons-flex"
-version = "0.9.0"
+version = "0.9.1"
 description = "A SiLA2 connector for the Opentrons Flex liquid handling robot"
 readme = "README.md"
 authors = [{name = "Acceleration Consortium", email = "developers@accelerationconsortium.ca"},]
@@ -13,18 +13,33 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Human Machine Interfaces",
     "Topic :: System :: Hardware",
 ]
-requires-python=">=3.10,<3.11"
+requires-python=">=3.12,<3.13"
 dependencies=[
     "unitelabs-cdk~=0.9.0",
-    "opentrons==8.8.1",
-    "numpy<1.25",
-    "uvicorn>=0.20",
-    "wsproto",
+    "unitelabs-flex-acceptance-contract==0.1.0",
+    "opentrons==9.0.0",
+    "numpy>=1.26.4,<2",
+    "aiohttp==3.12.14",
+    "anyio==4.9.0",
+    "fastapi==0.100.0",
+    "idna==3.3",
+    "paho-mqtt==1.6.1",
+    "pydantic==2.11.7",
+    "pydantic-settings==2.4.0",
+    "python-can==4.2.2",
+    "python-dotenv==1.0.1",
+    "python-multipart==0.0.18",
+    "sqlalchemy==1.4.51",
+    "uvicorn==0.27.0.post1",
+    "wsproto==1.2.0",
 ]
+
+[tool.uv.sources]
+unitelabs-flex-acceptance-contract = { path = "packages/flex-acceptance-contract" }
 
 [project.urls]
 repository = "https://github.com/AccelerationConsortium/opentrons-flex"
@@ -37,6 +52,7 @@ test = [
     "pytest-asyncio",
     "pytest-cov",
     "httpx",
+    "lxml>=5,<7",
 ]
 dev = [
     "unitelabs-cdk[dev]",
@@ -63,6 +79,7 @@ markers = [
     "temperature_module_actuation: opt-in Temperature Module GEN2 heating/cooling; requires --temperature-module-actuation",
     "gripper_labware_actuation: opt-in prepared-labware gripper movement; requires --gripper-labware-actuation",
     "acceptance_workflow_actuation: opt-in manifest-driven multi-module hardware acceptance workflow",
+    "flex_workflow_offline: Python 3.12-safe Flex workflow import, phase wiring, and shutdown coverage",
 ]
 
 [tool.ruff]
@@ -120,6 +137,7 @@ ignore = [
 "!src/**.py" = ["D", "ANN", "ARG", "S101", "EM", "BLE", "PTH", "T201", "FIX", "ERA", "E7", "S", "B"]
 # ignore parameter name warnings in feature files
 "src/unitelabs/opentrons_flex/features/**/**.py" =  ["D417", "EM"]
+"src/unitelabs/opentrons_flex/asms_unit_operations.py" = ["D102", "EM"]
 # test scripts outside the tests/ suite
 "test_*.py" = ["E402"]
 

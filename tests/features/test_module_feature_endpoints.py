@@ -99,6 +99,10 @@ class _BaseController:
         self.calls.append(("get_device_info",))
         return DeviceInfo(serial_number="SN123", model="module", firmware_version="1.2.3")
 
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(serial_number="SN123", model="module", firmware_version="1.2.3")
+
 
 class _TemperatureController(_BaseController):
     async def set_temperature(self, temperature: float) -> None:
@@ -202,6 +206,10 @@ class _ThermocyclerController(_BaseController):
 
     async def execute_profile(self, steps: list[dict], repetitions: int, volume: float | None) -> None:
         self.calls.append(("execute_profile", steps, repetitions, volume))
+
+    @property
+    def profile_progress(self) -> tuple[int, int, int, int, bool]:
+        return (0, 2, 1, 1, True)
 
     async def deactivate_lid(self) -> None:
         self.calls.append(("deactivate_lid",))
@@ -401,6 +409,8 @@ async def test_heater_shaker_feature_endpoints() -> None:
     assert isinstance(await feature.get_status(status=status, intermediate=intermediate), HeaterShakerStatus)
     status, intermediate = _obs()
     assert (await feature.get_device_info(status=status, intermediate=intermediate)).model == "module"
+    assert isinstance(await _first(feature.subscribe_status()), HeaterShakerStatus)
+    assert feature.device_info().serial_number == "SN123"
 
     assert ("set_rpm", 1000) in controller.calls
     assert ("open_latch",) in controller.calls
@@ -435,6 +445,41 @@ async def test_heater_shaker_motion_can_be_cancelled() -> None:
 
     assert intermediate.messages[-1].phase is OperationPhase.CANCELLED
     assert status.updates[-1]["progress"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_heater_shaker_wait_reports_measured_running_progress() -> None:
+    """Long thermal waits publish measured current/target values before completion."""
+
+    class _ProgressHeaterShaker(_HeaterShakerController):
+        def __init__(self) -> None:
+            super().__init__(calls=[])
+            self.current = 25.0
+            self.release = asyncio.Event()
+
+        async def get_temperature(self) -> Temperature:
+            return Temperature(current=self.current, target=42.0)
+
+        async def wait_for_temperature(self, temperature: float) -> None:
+            await self.release.wait()
+
+    controller = _ProgressHeaterShaker()
+    feature = HeaterShakerFeature(controller)
+    status, intermediate = _obs()
+    task = asyncio.create_task(feature.wait_for_temperature(42.0, status=status, intermediate=intermediate))
+
+    await asyncio.sleep(0)
+    controller.current = 30.0
+    await asyncio.sleep(0.3)
+    controller.current = 42.0
+    controller.release.set()
+    await task
+
+    running = [message for message in intermediate.messages if message.phase is OperationPhase.RUNNING]
+    assert running
+    assert "30.0 °C" in running[0].message
+    assert "42.0 °C" in running[0].message
+    assert any(0.0 < update["progress"] < 1.0 for update in status.updates)
 
 
 @pytest.mark.asyncio
@@ -493,11 +538,48 @@ async def test_thermocycler_feature_endpoints() -> None:
     assert isinstance(await feature.get_status(status=status, intermediate=intermediate), ThermocyclerStatus)
     status, intermediate = _obs()
     assert (await feature.get_device_info(status=status, intermediate=intermediate)).firmware_version == "1.2.3"
+    assert isinstance(await _first(feature.subscribe_status()), ThermocyclerStatus)
+    assert feature.device_info().serial_number == "SN123"
 
     assert ("set_plate_temperature", 60.0, None, None, None) in controller.calls
     assert ("execute_profile", [{"temperature": 55.0, "hold_time_seconds": 10.0, "ramp_rate": None}], 2, 25.0) in (
         controller.calls
     )
+
+
+@pytest.mark.asyncio
+async def test_thermocycler_profile_cancellation_deactivates_thermal_control() -> None:
+    """A cancelled profile leaves neither block nor lid energy enabled."""
+
+    class _BlockingThermocycler(_ThermocyclerController):
+        def __init__(self) -> None:
+            super().__init__(calls=[])
+            self.started = asyncio.Event()
+
+        async def execute_profile(self, steps: list[dict], repetitions: int, volume: float | None) -> None:
+            self.started.set()
+            await asyncio.Event().wait()
+
+    controller = _BlockingThermocycler()
+    feature = ThermocyclerFeature(controller)
+    status, intermediate = _obs()
+    task = asyncio.create_task(
+        feature.execute_profile(
+            [ThermocyclerProfileStep(temperature=55.0, hold_time=10.0, ramp_rate=0.0)],
+            repetitions=2,
+            volume=25.0,
+            status=status,
+            intermediate=intermediate,
+        )
+    )
+    await controller.started.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert ("deactivate_all",) in controller.calls
+    assert intermediate.messages[-1].phase is OperationPhase.CANCELLED
 
 
 @pytest.mark.asyncio

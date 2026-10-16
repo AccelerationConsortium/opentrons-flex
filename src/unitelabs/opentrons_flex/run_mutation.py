@@ -11,7 +11,7 @@ import os
 import threading
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from pathlib import Path
 from typing import Annotated, Any, BinaryIO, Literal
 
@@ -223,7 +223,7 @@ class MutationLedger:
             record: dict[str, Any] = {
                 "version": 1,
                 "sequence": len(self._records) + 1,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "event": event,
                 "previousHash": previous_hash,
                 **_jsonable(payload),
@@ -468,7 +468,7 @@ class _ProtocolEngineStateAdapter:
         }
         return MutationSnapshot(
             **state_payload,
-            capturedAt=datetime.now(timezone.utc),
+            capturedAt=datetime.now(UTC),
             fingerprint=hashlib.sha256(_canonical_json(state_payload).encode()).hexdigest(),
         )
 

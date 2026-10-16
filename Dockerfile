@@ -1,4 +1,4 @@
-ARG PYTHON_VERSION=3.10
+ARG PYTHON_VERSION=3.12
 
 FROM ghcr.io/astral-sh/uv:python${PYTHON_VERSION}-bookworm AS build
 

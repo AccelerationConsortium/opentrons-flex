@@ -5,7 +5,7 @@ description = "Guarded end-to-end Opentrons Flex system acceptance workflow."
 requires-python = ">=3.12"
 dependencies = [
     "unitelabs-sdk[automate]~=0.11.3",
-    "unitelabs-opentrons-flex~=0.9.0",
+    "unitelabs-flex-acceptance-contract==0.1.0",
 ]
 
 [project.optional-dependencies]
@@ -31,7 +31,7 @@ authenticate = "always"
 
 [tool.uv.sources]
 unitelabs-sdk = { index = "unitelabs" }
-unitelabs-opentrons-flex = { path = "../..", editable = true }
+unitelabs-flex-acceptance-contract = { path = "../../packages/flex-acceptance-contract", editable = true }
 
 [build-system]
 requires = ["uv_build>=0.4,<0.10"]

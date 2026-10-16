@@ -8,12 +8,13 @@ Hardware boundary: the OT3API simulator is real (fast, no mocks); the Connector
 is patched to capture registrations without starting a gRPC server.
 """
 
+import asyncio
 import contextlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from unitelabs.opentrons_flex import OpentronsFlexConfig, create_app
+from unitelabs.opentrons_flex import OpentronsFlexConfig, _register_modules, create_app
 from unitelabs.opentrons_flex.features import (
     AbsorbanceReaderFeature,
     CalibrationFeature,
@@ -183,6 +184,24 @@ async def test_attached_flex_modules_register_features():
     assert ThermocyclerFeature in types
 
 
+def test_duplicate_same_type_modules_fail_before_sila_module_registration() -> None:
+    """Two modules with one FQI must fail closed instead of last-write-wins replacement."""
+    from opentrons.hardware_control.modules.types import ModuleType
+
+    class _Module:
+        MODULE_TYPE = ModuleType.HEATER_SHAKER
+
+        def __init__(self, serial: str) -> None:
+            self.device_info = {"serial": serial}
+
+    connector = MagicMock()
+
+    with pytest.raises(RuntimeError, match=r"HEATER_SHAKER: HS-1, HS-2.*serial-number routing"):
+        _register_modules(connector, [_Module("HS-1"), _Module("HS-2")], asyncio.Lock())
+
+    connector.register.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_shared_api_cleaned_up_on_shutdown():
     """create_app must clean up the shared OT3API when the generator is closed."""
@@ -203,3 +222,23 @@ async def test_shared_api_cleaned_up_on_shutdown():
             await gen.__anext__()
 
     fake_api.clean_up.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_runtime_preflight_fails_before_simulator_initialization():
+    """A mismatched release must fail before even simulated hardware is built."""
+    with (
+        patch(
+            "unitelabs.opentrons_flex.require_compatible_runtime",
+            side_effect=RuntimeError("runtime preflight failed"),
+        ),
+        patch(
+            "opentrons.hardware_control.ot3api.OT3API.build_hardware_simulator",
+            new_callable=AsyncMock,
+        ) as mock_build,
+    ):
+        gen = create_app(OpentronsFlexConfig(use_simulator=True))
+        with pytest.raises(RuntimeError, match="runtime preflight failed"):
+            await gen.__anext__()
+
+    mock_build.assert_not_awaited()

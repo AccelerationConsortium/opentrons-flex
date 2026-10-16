@@ -25,6 +25,8 @@ from opentrons.simulate import simulate
 from opentrons_shared_data.labware.labware_definition import labware_definition_type_adapter
 from pydantic import ValidationError
 
+from .hitl_evidence import HITL_OFFLINE_VALIDATED_STATUS
+
 
 @dataclass(frozen=True)
 class ProtocolPreflightReport:
@@ -72,6 +74,7 @@ class ProtocolPreflightReport:
         result = asdict(self)
         result["exact_bundle_ready"] = self.exact_bundle_ready
         result["shadow_passed"] = self.shadow_passed
+        result["evidence_status"] = HITL_OFFLINE_VALIDATED_STATUS if self.exact_bundle_ready else "OFFLINE_INCOMPLETE"
         return result
 
 

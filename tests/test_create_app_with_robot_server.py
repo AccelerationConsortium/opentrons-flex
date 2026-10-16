@@ -12,8 +12,9 @@ Boundaries:
 
 import asyncio
 import contextlib
+import dataclasses
 import sys
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -53,6 +54,15 @@ def _reset_robot_server_stubs():
     sys.modules["robot_server.hardware"]._init_task_accessor.reset_mock()
     sys.modules["robot_server.app"].app.reset_mock()
     sys.modules["robot_server.app"].app.dependency_overrides.clear()
+    sys.modules["robot_server.app"].app.router.routes.clear()
+    with patch(
+        "unitelabs.opentrons_flex.process_runtime_identity",
+        return_value={
+            "runtimeContractId": "test",
+            "releaseIdentity": None,
+        },
+    ):
+        yield
 
 
 def _make_api() -> AsyncMock:
@@ -140,6 +150,26 @@ async def test_hardware_built_via_ot3api():
             await gen.__anext__()
 
 
+@pytest.mark.asyncio
+async def test_required_mutation_configuration_fails_before_hardware(monkeypatch, tmp_path):
+    """Full-workflow mode cannot silently start without its credential."""
+    config = dataclasses.replace(
+        _CONFIG,
+        run_mutation_ledger_path=str(tmp_path / "mutations.jsonl"),
+        run_mutation_required=True,
+    )
+    monkeypatch.delenv(config.run_mutation_token_env, raising=False)
+    monkeypatch.delenv(config.run_mutation_actor_env, raising=False)
+    mock_build = AsyncMock()
+
+    with patch(_OT3API_BUILD, mock_build):
+        gen = create_app(config)
+        with pytest.raises(RuntimeError, match="Controlled run mutation preflight failed"):
+            await gen.__anext__()
+
+    mock_build.assert_not_awaited()
+
+
 # ── app.state pre-population ──────────────────────────────────────────────────
 
 
@@ -198,18 +228,31 @@ async def test_shared_hardware_lifespan_runs_protocol_engine_callbacks():
     dependencies = MagicMock(
         start_light_control_task=start_light_control,
         mark_light_control_startup_finished=mark_startup_finished,
+        get_light_controller=AsyncMock(return_value=object()),
+        get_run_orchestrator_store=AsyncMock(side_effect=lambda **_: events.append("store-ready")),
     )
-    app = MagicMock()
+    app = sys.modules["robot_server.app"].app
     proxy = MagicMock(spec=HardwareProxy)
 
+    app.state.run_orchestrator_store = object()
     with patch.dict(sys.modules, {"robot_server.runs.dependencies": dependencies}):
         lifespan = _shared_hardware_robot_server_lifespan(original_lifespan, proxy)
         async with lifespan(app):
             events.append("serving")
 
-    assert events == ["native-started", "light-started", "light-ready", "serving", "native-stopped"]
+    assert events == ["native-started", "light-started", "light-ready", "store-ready", "serving", "native-stopped"]
     start_light_control.assert_awaited_once_with(app.state, proxy)
     mark_startup_finished.assert_awaited_once_with(app.state, proxy)
+    from opentrons.protocol_engine import DeckType
+
+    dependencies.get_run_orchestrator_store.assert_awaited_once_with(
+        app_state=app.state,
+        hardware_api=proxy,
+        robot_type="OT-3 Standard",
+        deck_type=DeckType.OT3_STANDARD,
+        light_controller=dependencies.get_light_controller.return_value,
+    )
+    del app.state.run_orchestrator_store
 
 
 # ── uvicorn startup ───────────────────────────────────────────────────────────
@@ -279,3 +322,40 @@ async def test_shutdown_disconnects_hardware():
     async with _run() as r:
         pass
     r.api.clean_up.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_startup_failure_after_app_install_unwinds_all_resources():
+    """A fail-closed identity error must restore globals and release CAN resources."""
+    mock_api = _make_api()
+    mock_uv_server = MagicMock()
+    mock_uv_server.serve = AsyncMock()
+    robot_server_app = sys.modules["robot_server.app"].app
+    robot_server_hardware = sys.modules["robot_server.hardware"]
+    original_lifespan = robot_server_app.router.lifespan_context
+    original_hardware = robot_server_hardware._hw_api_accessor.get_from.return_value
+    original_initialization_task = robot_server_hardware._init_task_accessor.get_from.return_value
+
+    with (
+        _patches(mock_api, MagicMock(), mock_uv_server),
+        patch(
+            "unitelabs.opentrons_flex.process_runtime_identity",
+            side_effect=RuntimeError("invalid release identity"),
+        ),
+    ):
+        gen = create_app(_CONFIG)
+        with pytest.raises(RuntimeError, match="invalid release identity"):
+            await gen.__anext__()
+
+    mock_api.clean_up.assert_awaited_once()
+    assert robot_server_app.dependency_overrides == {}
+    assert robot_server_app.router.routes == []
+    assert robot_server_app.router.lifespan_context is original_lifespan
+    assert robot_server_hardware._hw_api_accessor.set_on.call_args_list[-1] == call(
+        robot_server_app.state,
+        original_hardware,
+    )
+    assert robot_server_hardware._init_task_accessor.set_on.call_args_list[-1] == call(
+        robot_server_app.state,
+        original_initialization_task,
+    )

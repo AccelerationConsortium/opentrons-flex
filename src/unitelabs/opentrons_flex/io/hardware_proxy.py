@@ -71,7 +71,7 @@ class _TimedLock:
             else:
                 acquire = self._lock.acquire
             await asyncio.wait_for(acquire(), timeout=self._timeout_s)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             msg = f"Hardware lock not acquired within {self._timeout_s}s — robot_server may be holding the hardware API"
             raise TimeoutError(msg) from None
 

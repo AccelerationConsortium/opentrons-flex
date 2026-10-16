@@ -17,6 +17,7 @@ from unitelabs.opentrons_flex import OpentronsFlexConfig
 from unitelabs.opentrons_flex.features import (
     LabwareMovementController,
     LabwareDeckState,
+    LabwareMovementProfile,
     LabwareMovementResult,
     LabwarePlanSummary,
     LiquidHandlingController,
@@ -302,6 +303,9 @@ async def test_labware_and_lid_movement_endpoints_over_grpc(
     plans = next(iter((await labware_client.property("Get_AvailablePlans")).values()))
     assert all(isinstance(plan, LabwarePlanSummary) for plan in plans)
     assert {plan.plan_identifier for plan in plans} == {"plate-out", "lid-out", "occupied-target"}
+    profile = next(iter((await labware_client.property("Get_ProfileIdentity")).values()))
+    assert isinstance(profile, LabwareMovementProfile)
+    assert profile.sha256 == "0" * 64
 
     moved = await labware_client.observable("MoveLabware", {"plan_identifier": "plate-out"})
     assert isinstance(next(iter(moved.values())), LabwareMovementResult)

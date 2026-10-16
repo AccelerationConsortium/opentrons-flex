@@ -12,7 +12,7 @@
     "name": "Opentrons Flex",
     "type": "LiquidHandler",
     "description": "SiLA2 connector for Opentrons Flex motion, pipettes, gripper and calibration",
-    "version": "0.9.0",
+    "version": "0.9.1",
     "vendor_url": "https://opentrons.com/",
     "default_lifetime": 3600.0
   },
@@ -63,5 +63,6 @@
   "labware_movement_config": null,
   "run_mutation_ledger_path": "/var/lib/unitelabs-opentrons-flex/run-mutations.jsonl",
   "run_mutation_token_env": "UNITELABS_RUN_MUTATION_TOKEN",
-  "run_mutation_actor_env": "UNITELABS_RUN_MUTATION_ACTOR"
+  "run_mutation_actor_env": "UNITELABS_RUN_MUTATION_ACTOR",
+  "run_mutation_required": true
 }

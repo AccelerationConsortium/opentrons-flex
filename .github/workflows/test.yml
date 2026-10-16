@@ -12,10 +12,10 @@ jobs:
     strategy:
       matrix:
         include:
-          # Controlled mutation and the ARM artifact are validated only against
-          # the Opentrons 8.8.1 private Protocol Engine state surface.
-          - python-version: "3.10"
-            opentrons-version: "8.8.1"
+          # This is the exact runtime matrix deployed to Flex.
+          - python-version: "3.12"
+            opentrons-version: "9.0.0"
+            opentrons-commit: "44b37a2f91520bf2e7245c70bf799d46c8c2d9a5"
 
     steps:
       - uses: actions/checkout@v6
@@ -41,6 +41,9 @@ jobs:
       - name: Test (unit + gRPC simulator)
         run: uv run pytest --cov=src --cov-report=term --cov-report=xml --junit-xml=junit.xml
 
+      - name: Collect guarded HITL inventory (no hardware execution)
+        run: uv run pytest tests/integration/hardware --collect-only -q
+
       - name: Upload coverage
         uses: actions/upload-artifact@v7
         with:
@@ -59,29 +62,30 @@ jobs:
       # the util/ subpackage that robot_server imports.
       - name: Install opentrons robot-server ${{ matrix.opentrons-version }}
         run: |
-          VER="${{ matrix.opentrons-version }}"
+          REF="${{ matrix.opentrons-commit }}"
           # robot_server/server_utils are not on PyPI; install with --no-deps to skip the
           # monorepo-internal ==0.0.0 dep constraints that can't be satisfied from PyPI.
           uv pip install --no-deps \
-            "robot_server @ git+https://github.com/Opentrons/opentrons.git@v${VER}#subdirectory=robot-server" \
-            "server_utils @ git+https://github.com/Opentrons/opentrons.git@v${VER}#subdirectory=server-utils"
+            "robot_server @ git+https://github.com/Opentrons/opentrons.git@${REF}#subdirectory=robot-server" \
+            "server_utils @ git+https://github.com/Opentrons/opentrons.git@${REF}#subdirectory=server-utils"
           # Reinstall opentrons monorepo packages from git so robot_server gets all the
           # internal symbols it imports at module load time.  The PyPI builds omit or differ
           # from the monorepo source (e.g. PREVIEW_IMAGE, opentrons_shared_data.util,
           # opentrons_hardware which is not even a dep of the PyPI opentrons package).
           uv pip install --no-deps --reinstall \
-            "opentrons @ git+https://github.com/Opentrons/opentrons.git@v${VER}#subdirectory=api" \
-            "opentrons_shared_data @ git+https://github.com/Opentrons/opentrons.git@v${VER}#subdirectory=shared-data" \
-            "opentrons_hardware @ git+https://github.com/Opentrons/opentrons.git@v${VER}#subdirectory=hardware"
+            "opentrons @ git+https://github.com/Opentrons/opentrons.git@${REF}#subdirectory=api" \
+            "opentrons_shared_data @ git+https://github.com/Opentrons/opentrons.git@${REF}#subdirectory=shared-data" \
+            "opentrons_hardware @ git+https://github.com/Opentrons/opentrons.git@${REF}#subdirectory=hardware"
           # Install robot_server's non-monorepo deps (versions from its Pipfile.lock).
-          # aiohttp: needed by the legacy routers in robot_server 8.8.1.
+          # Versions match the Opentrons 9.0 robot-server lockfile.
           uv pip install \
-            "aiohttp" \
+            "aiohttp==3.12.14" \
+            "anyio==4.9.0" \
             "fastapi==0.100.0" \
             "pydantic==2.11.7" \
             "pydantic-settings==2.4.0" \
             "python-dotenv==1.0.1" \
-            "python-multipart==0.0.6" \
+            "python-multipart==0.0.18" \
             "uvicorn==0.27.0.post1" \
             "wsproto==1.2.0" \
             "sqlalchemy==1.4.51" \
@@ -109,10 +113,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download coverage (Python 3.10)
+      - name: Download coverage (Python 3.12)
         uses: actions/download-artifact@v4
         with:
-          name: coverage-3.10
+          name: coverage-3.12
           path: .
 
       - name: Skip SonarCloud when token is unavailable
@@ -168,3 +172,41 @@ jobs:
           if total == 0:
               print('  No open issues.')
           "
+
+  windows-operator-readiness:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          version: "0.9.6"
+          enable-cache: true
+
+      - name: Set up operator Python 3.12
+        run: uv python install 3.12
+
+      - name: Install connector and test dependencies
+        run: uv sync --all-extras
+
+      - name: Validate Windows readiness and evidence path
+        run: uv run pytest -p no:cacheprovider tests/scripts/test_preflight_flex.py tests/test_hitl_evidence.py tests/test_acceptance_manifest.py tests/test_runtime_contract_consistency.py tests/test_asms_unit_operations.py -q
+
+      - name: Build a valid offline workflow manifest
+        run: uv run python -c "import json; from tests.test_acceptance_manifest import _manifest; open('flex-acceptance-ci.json', 'w', encoding='utf-8').write(json.dumps(_manifest()))"
+
+      - name: Set up Windows workflow Python 3.12
+        run: |
+          uv python install 3.12
+          uv venv --python 3.12 .venv-workflow
+          uv pip install --python .venv-workflow\Scripts\python.exe --no-deps -e packages\flex-acceptance-contract -e workflows\flex-system-acceptance
+          uv pip install --python .venv-workflow\Scripts\python.exe "pytest==9.1.1" "pytest-asyncio==1.4.0"
+
+      - name: Execute the native PowerShell workflow entrypoint
+        run: .\.venv-workflow\Scripts\python.exe -m flex_system_acceptance --validate-only --manifest .\flex-acceptance-ci.json
+
+      - name: Import and execute offline workflow phases on Windows Python 3.12
+        run: |
+          .\.venv-workflow\Scripts\python.exe -m pytest -p no:cacheprovider `
+            tests\test_workflow_manifests.py -m flex_workflow_offline -q

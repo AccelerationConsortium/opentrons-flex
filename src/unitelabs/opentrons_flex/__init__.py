@@ -48,13 +48,26 @@ from .io.run_authority import (
     RunMutationHttpGuard,
 )
 from .io.simulator_compat import OT3SimulatorCompatibilityAdapter
-from .run_mutation import MUTATION_CHECKPOINT_PREFIX, MutationLedger, RunMutationCoordinator
+from .run_mutation import MUTATION_CHECKPOINT_PREFIX, MutationLedger, MutationLedgerError, RunMutationCoordinator
+from .runtime_identity_api import create_runtime_identity_router, process_runtime_identity
+from .robot_server_compat import (
+    current_run_store,
+    initialize_run_store,
+    include_robot_server_router,
+    install_robot_server_app,
+    load_robot_server_bindings,
+    protocol_run_state,
+    restore_robot_server_app,
+)
+from .runtime_compat import (
+    RuntimeCompatibilityReport,
+    mutation_configuration_issues,
+    require_compatible_runtime,
+)
 
 log = logging.getLogger(__name__)
 
 __version__ = version("unitelabs-opentrons-flex")
-_MINIMUM_MUTATION_TOKEN_LENGTH = 32
-_SUPPORTED_MUTATION_OPENTRONS_VERSIONS = frozenset({"8.8.1"})
 
 
 class _AppWithState(typing.Protocol):
@@ -163,6 +176,14 @@ class OpentronsFlexConfig(ConnectorBaseConfig):
     the environment-bound value rather than trusting caller-supplied identity.
     """
 
+    run_mutation_required: bool = False
+    """Fail connector startup when controlled run mutation is not ready.
+
+    The default keeps the base SiLA and HTTP interfaces available if only the
+    optional mutation extension is misconfigured. Set this to ``True`` for the
+    full workflow so an operator cannot accidentally start without checkpoints.
+    """
+
 
 # Module type -> (IO controller class, SiLA feature class). The Magnetic Module is
 # intentionally absent — the Flex does not support it.
@@ -255,6 +276,7 @@ def _register_core_features(
                 gripper,
                 plans=labware_config.plans,
                 state=labware_state,
+                profile_sha256=labware_config.profile_sha256,
             )
         )
     )
@@ -269,8 +291,32 @@ def _register_modules(
     attached_modules: collections.abc.Iterable,
     shared_lock: asyncio.Lock | RunAwareLock,
 ) -> None:
+    modules = list(attached_modules)
     factories = _module_factories()
-    for module in attached_modules:
+    modules_by_type: dict[object, list[object]] = {}
+    for module in modules:
+        if module.MODULE_TYPE in factories:
+            modules_by_type.setdefault(module.MODULE_TYPE, []).append(module)
+    duplicates = {module_type: group for module_type, group in modules_by_type.items() if len(group) > 1}
+    if duplicates:
+        details = []
+        for module_type, group in sorted(duplicates.items(), key=lambda item: item[0].name):
+            serials = []
+            for module in group:
+                device_info = getattr(module, "device_info", {})
+                serial = device_info.get("serial") if isinstance(device_info, collections.abc.Mapping) else None
+                serials.append(str(serial or "unknown"))
+            details.append(f"{module_type.name}: {', '.join(serials)}")
+        duplicate_summary = "; ".join(details)
+        message = (
+            "Multiple attached modules of the same type cannot be represented by the current "
+            "single-instance SiLA feature contract. Connector startup was refused to prevent "
+            f"silent feature replacement. Duplicate modules: {duplicate_summary}. "
+            "Disconnect the extra module or use a connector release with serial-number routing."
+        )
+        raise RuntimeError(message)
+
+    for module in modules:
         factory = factories.get(module.MODULE_TYPE)
         if factory is None:
             log.info("Skipping unsupported module type %s", module.MODULE_TYPE.name)
@@ -298,14 +344,20 @@ def _shared_hardware_robot_server_lifespan(
 
     @contextlib.asynccontextmanager
     async def lifespan(app: _AppWithState) -> collections.abc.AsyncGenerator[None, None]:
-        from robot_server.runs.dependencies import (  # type: ignore[import]
-            mark_light_control_startup_finished,
-            start_light_control_task,
+        bindings = load_robot_server_bindings()
+        start_light_control_task = typing.cast(
+            collections.abc.Callable[..., collections.abc.Awaitable[object]],
+            bindings.start_light_control_task,
+        )
+        mark_light_control_startup_finished = typing.cast(
+            collections.abc.Callable[..., collections.abc.Awaitable[object]],
+            bindings.mark_light_control_startup_finished,
         )
 
         async with original_lifespan(app):
             await start_light_control_task(app.state, proxy)
             await mark_light_control_startup_finished(app.state, proxy)
+            await initialize_run_store(bindings, proxy)
             yield
 
     return lifespan
@@ -327,6 +379,7 @@ async def create_app(config: OpentronsFlexConfig) -> collections.abc.AsyncGenera
         config.use_simulator,
         config.with_robot_server,
     )
+    compatibility = require_compatible_runtime(require_robot_server=config.with_robot_server)
 
     simulated_modules = [
         name
@@ -351,11 +404,16 @@ async def create_app(config: OpentronsFlexConfig) -> collections.abc.AsyncGenera
     labware_config = (
         load_labware_movement_config(config.labware_movement_config)
         if config.labware_movement_config is not None
-        else LoadedLabwareMovementConfig(plans=(), initial_occupancy={}, state_file=None)
+        else LoadedLabwareMovementConfig(
+            plans=(),
+            initial_occupancy={},
+            state_file=None,
+            profile_sha256="0" * 64,
+        )
     )
 
     if config.with_robot_server:
-        async for connector in _create_app_with_robot_server(config, labware_config):
+        async for connector in _create_app_with_robot_server(config, labware_config, compatibility):
             yield connector
         return
 
@@ -397,78 +455,70 @@ async def create_app(config: OpentronsFlexConfig) -> collections.abc.AsyncGenera
             await api.clean_up()
 
 
+def _prepare_mutation_runtime(
+    config: OpentronsFlexConfig,
+    compatibility: RuntimeCompatibilityReport,
+) -> tuple[str | None, str | None, MutationLedger | None]:
+    """Validate controlled-mutation state before hardware acquisition."""
+    mutation_api_token = os.environ.get(config.run_mutation_token_env)
+    mutation_authenticated_actor = os.environ.get(config.run_mutation_actor_env)
+    mutation_ledger: MutationLedger | None = None
+    mutation_issues = mutation_configuration_issues(
+        compatibility,
+        ledger_path=config.run_mutation_ledger_path,
+        token=mutation_api_token,
+        actor=mutation_authenticated_actor,
+    )
+    if mutation_issues:
+        detail = " ".join(mutation_issues)
+        if config.run_mutation_required:
+            message = f"Controlled run mutation preflight failed: {detail}"
+            raise RuntimeError(message)
+        log.warning(
+            "Controlled run mutation endpoints are disabled: %s "
+            "Protocol Engine run ownership protection remains active.",
+            detail,
+        )
+        mutation_api_token = None
+        mutation_authenticated_actor = None
+    else:
+        mutation_authenticated_actor = typing.cast(str, mutation_authenticated_actor).strip()
+        try:
+            # Verify durable state before acquiring OT3API or mutating the
+            # global robot-server app. A corrupt ledger must never be ignored
+            # when mutation is required.
+            mutation_ledger = MutationLedger(typing.cast(str, config.run_mutation_ledger_path))
+        except (MutationLedgerError, OSError) as exc:
+            if config.run_mutation_required:
+                message = f"Controlled run mutation ledger preflight failed: {exc}"
+                raise RuntimeError(message) from exc
+            log.error(
+                "Controlled run mutation endpoints are disabled because the durable ledger failed verification: %s",
+                exc,
+            )
+            mutation_api_token = None
+            mutation_authenticated_actor = None
+    return mutation_api_token, mutation_authenticated_actor, mutation_ledger
+
+
 async def _create_app_with_robot_server(
     config: OpentronsFlexConfig,
     labware_config: LoadedLabwareMovementConfig,
+    compatibility: RuntimeCompatibilityReport,
 ) -> collections.abc.AsyncGenerator[Connector, None]:
     """
     Start both the SiLA2 gRPC server and the opentrons HTTP robot-server in one process.
 
-    Mirrors the OT-2 connector's in-process design, but builds an ``OT3API`` (CAN) instead
-    of an OT-2 ``API`` (Smoothie serial):
-
-    1. ``OT3API.build_hardware_controller`` brings up the CAN bus once.
-    2. ``HardwareProxy`` wraps it with an ``asyncio.Lock`` — every command from either
-       server acquires this lock.
-    3. App-state pre-population sets a completed init task + our proxy on
-       ``robot_server_app.state`` so robot-server skips its own hardware init.
-    4. uvicorn serves ``robot_server_app`` on a Unix domain socket (nginx proxies TCP 31950)
-       or a TCP port for testing.
-
-    ``robot_server`` is a system package on the Flex (not on PyPI); its imports are deferred.
+    Hardware cleanup is registered immediately after acquisition. Synchronous
+    robot-server and labware cleanup is registered before any subsequent
+    fallible startup step.
     """
-    import uvicorn
     from opentrons.hardware_control.ot3api import OT3API
 
-    from opentrons.protocol_engine import DeckType
-    from opentrons_shared_data.robot.types import RobotTypeEnum
-
-    from robot_server.hardware import (  # type: ignore[import]
-        _hw_api_accessor,
-        _init_task_accessor,
-        get_deck_type,
-        get_robot_type,
-        get_robot_type_enum,
+    mutation_api_token, mutation_authenticated_actor, mutation_ledger = _prepare_mutation_runtime(
+        config,
+        compatibility,
     )
-    from robot_server.app import app as robot_server_app  # type: ignore[import]
-
-    mutation_api_token: str | None = None
-    mutation_authenticated_actor: str | None = None
-    mutation_ledger: MutationLedger | None = None
-    if config.run_mutation_ledger_path is not None:
-        mutation_api_token = os.environ.get(config.run_mutation_token_env)
-        if mutation_api_token is None or len(mutation_api_token) < _MINIMUM_MUTATION_TOKEN_LENGTH:
-            message = (
-                "Controlled run mutation requires environment variable "
-                f"{config.run_mutation_token_env!r} to contain at least "
-                f"{_MINIMUM_MUTATION_TOKEN_LENGTH} random characters."
-            )
-            raise RuntimeError(message)
-        mutation_authenticated_actor = os.environ.get(config.run_mutation_actor_env)
-        if (
-            mutation_authenticated_actor is None
-            or not mutation_authenticated_actor.strip()
-            or len(mutation_authenticated_actor) > 200
-        ):
-            message = (
-                "Controlled run mutation requires environment variable "
-                f"{config.run_mutation_actor_env!r} to contain a non-empty operator identity "
-                "of at most 200 characters."
-            )
-            raise RuntimeError(message)
-        mutation_authenticated_actor = mutation_authenticated_actor.strip()
-        opentrons_version = version("opentrons")
-        if opentrons_version not in _SUPPORTED_MUTATION_OPENTRONS_VERSIONS:
-            supported = ", ".join(sorted(_SUPPORTED_MUTATION_OPENTRONS_VERSIONS))
-            message = (
-                f"Controlled run mutation is not validated for Opentrons {opentrons_version}; "
-                f"supported runtime version: {supported}."
-            )
-            raise RuntimeError(message)
-        # Verify durable state before acquiring OT3API or mutating the global
-        # robot-server app. A corrupt ledger must fail without leaking either.
-        mutation_ledger = MutationLedger(config.run_mutation_ledger_path)
-
     if config.use_simulator:
         log.info("Building shared OT3API (simulator)")
         shared_hardware = await OT3API.build_hardware_simulator(
@@ -479,59 +529,55 @@ async def _create_app_with_robot_server(
         log.info("Building shared OT3API on CAN bus")
         shared_hardware = await OT3API.build_hardware_controller()
 
+    try:
+        with contextlib.ExitStack() as setup_cleanup:
+            async for connector in _serve_with_robot_server(
+                config,
+                labware_config,
+                compatibility,
+                shared_hardware=shared_hardware,
+                mutation_api_token=mutation_api_token,
+                mutation_authenticated_actor=mutation_authenticated_actor,
+                mutation_ledger=mutation_ledger,
+                setup_cleanup=setup_cleanup,
+            ):
+                yield connector
+    finally:
+        await shared_hardware.clean_up()
+
+
+async def _serve_with_robot_server(
+    config: OpentronsFlexConfig,
+    labware_config: LoadedLabwareMovementConfig,
+    compatibility: RuntimeCompatibilityReport,
+    *,
+    shared_hardware: object,
+    mutation_api_token: str | None,
+    mutation_authenticated_actor: str | None,
+    mutation_ledger: MutationLedger | None,
+    setup_cleanup: contextlib.ExitStack,
+) -> collections.abc.AsyncGenerator[Connector, None]:
+    """Wire and serve robot-server using already-acquired shared hardware."""
+    import uvicorn
+    from opentrons.protocol_engine import DeckType
+    from opentrons_shared_data.robot.types import RobotTypeEnum
+
+    robot_server = load_robot_server_bindings()
+
     def _current_run_store() -> object | None:
         # robot-server stores this singleton under the stable app-state key used
         # by its AppStateAccessor. Reading the state directly keeps the shared
         # hardware wiring testable without importing robot-server's private runs
         # package on development hosts.
-        return getattr(robot_server_app.state, "run_orchestrator_store", None)
+        return current_run_store(robot_server, robot_server_ready=robot_server_ready)
 
     robot_server_ready = False
 
     def _current_run_state() -> ProtocolRunState:
-        store = _current_run_store()
-        if store is None:
-            if not robot_server_ready:
-                return ProtocolRunState(
-                    run_id="robot-server-startup",
-                    status="initializing",
-                    started=False,
-                    terminal=False,
-                )
-            return ProtocolRunState(run_id=None, status="idle", started=False, terminal=True)
-        run_id = store.current_run_id
-        if run_id is None:
-            return ProtocolRunState(run_id=None, status="idle", started=False, terminal=True)
-        status = store.get_status()
-        status_value = str(getattr(status, "value", status))
-        missing_protocol_runner = object()
-        protocol_runner = getattr(store.run_orchestrator, "_protocol_runner", missing_protocol_runner)
-        checkpoint_id = None
-        current_pointer = store.get_current_command()
-        if current_pointer is not None:
-            current_command = store.get_command(current_pointer.command_id)
-            message = getattr(current_command.params, "message", None)
-            command_status = str(getattr(current_command.status, "value", current_command.status))
-            if (
-                current_command.commandType == "waitForResume"
-                and command_status == "running"
-                and isinstance(message, str)
-                and message.startswith(MUTATION_CHECKPOINT_PREFIX)
-            ):
-                checkpoint_id = current_command.id
-        return ProtocolRunState(
-            run_id=run_id,
-            status=status_value,
-            started=bool(store.run_was_started()),
-            # PE marks its logical run result before halt/reset/home cleanup.
-            # Retain exclusive ownership throughout the observable FINISHING or
-            # STOP_REQUESTED phase until hardware cleanup has completed.
-            terminal=status_value in {"succeeded", "failed", "stopped"},
-            mutation_checkpoint_id=checkpoint_id,
-            # In the version-pinned RunOrchestrator, only runs created without
-            # a protocol have no Python/JSON protocol runner. Unknown layouts
-            # fail closed as not protocol-less.
-            protocol_less=protocol_runner is None,
+        return protocol_run_state(
+            _current_run_store(),
+            robot_server_ready=robot_server_ready,
+            checkpoint_prefix=MUTATION_CHECKPOINT_PREFIX,
         )
 
     run_authority = ProtocolRunAuthority(_current_run_state)
@@ -542,6 +588,8 @@ async def _create_app_with_robot_server(
         if labware_config.state_file is not None
         else None
     )
+    if labware_state is not None:
+        setup_cleanup.callback(labware_state.close)
     robot_server_hardware = (
         OT3SimulatorCompatibilityAdapter(shared_hardware) if config.use_simulator else shared_hardware
     )
@@ -563,8 +611,6 @@ async def _create_app_with_robot_server(
 
     init_task: asyncio.Task[None] = asyncio.create_task(_noop())
     await init_task
-    _init_task_accessor.set_on(robot_server_app.state, init_task)
-    _hw_api_accessor.set_on(robot_server_app.state, proxy)
 
     # robot-server normally derives these values from process-wide feature flags.
     # Those flags identify an off-robot development host as OT-2 even though this
@@ -579,25 +625,43 @@ async def _create_app_with_robot_server(
     async def _get_flex_deck_type() -> DeckType:
         return DeckType.OT3_STANDARD
 
-    dependency_overrides = robot_server_app.dependency_overrides
     flex_identity_overrides = {
-        get_robot_type: _get_flex_robot_type,
-        get_robot_type_enum: _get_flex_robot_type_enum,
-        get_deck_type: _get_flex_deck_type,
+        robot_server.get_robot_type: _get_flex_robot_type,
+        robot_server.get_robot_type_enum: _get_flex_robot_type_enum,
+        robot_server.get_deck_type: _get_flex_deck_type,
     }
-    missing_override = object()
-    original_identity_overrides = {
-        dependency: dependency_overrides.get(dependency, missing_override) for dependency in flex_identity_overrides
-    }
-    dependency_overrides.update(flex_identity_overrides)
-
-    original_robot_server_lifespan = robot_server_app.router.lifespan_context
-    robot_server_app.router.lifespan_context = _shared_hardware_robot_server_lifespan(
-        original_robot_server_lifespan,
-        proxy,
+    added_robot_server_routes: list[object] = []
+    robot_server_installation = install_robot_server_app(
+        robot_server,
+        initialization_task=init_task,
+        hardware_proxy=proxy,
+        identity_overrides=flex_identity_overrides,
+        lifespan_factory=lambda original_lifespan: _shared_hardware_robot_server_lifespan(
+            typing.cast(typing.Callable[..., object], original_lifespan),
+            proxy,
+        ),
     )
 
-    added_mutation_routes: tuple[object, ...] = ()
+    def _restore_installed_robot_server() -> None:
+        restore_robot_server_app(
+            robot_server_installation,
+            added_routes=tuple(added_robot_server_routes),
+        )
+
+    setup_cleanup.callback(_restore_installed_robot_server)
+    robot_server_app = typing.cast(typing.Any, robot_server_installation.app)
+
+    runtime_identity = process_runtime_identity(
+        compatibility,
+        require_release=not config.use_simulator,
+    )
+    runtime_identity_router = create_runtime_identity_router(runtime_identity)
+    added_robot_server_routes.extend(
+        include_robot_server_router(
+            robot_server_installation,
+            runtime_identity_router,
+        )
+    )
     mutation_coordinator: RunMutationCoordinator | None = None
     if mutation_ledger is not None:
         from .run_mutation_api import create_run_mutation_router
@@ -612,15 +676,15 @@ async def _create_app_with_robot_server(
             mutation_coordinator,
             api_token=typing.cast(str, mutation_api_token),
         )
-        added_mutation_routes = tuple(mutation_router.routes)
-        robot_server_app.include_router(mutation_router)
-        robot_server_app.openapi_schema = None
+        added_robot_server_routes.extend(
+            include_robot_server_router(
+                robot_server_installation,
+                mutation_router,
+            )
+        )
         log.info("Controlled run mutation enabled with durable ledger %s", mutation_ledger.path)
     else:
-        log.warning(
-            "Controlled run mutation endpoints are disabled because run_mutation_ledger_path is not configured; "
-            "Protocol Engine run ownership protection remains active."
-        )
+        log.info("Controlled run mutation routes were not registered.")
 
     guarded_robot_server_app = RunMutationHttpGuard(
         robot_server_app,
@@ -682,19 +746,3 @@ async def _create_app_with_robot_server(
     finally:
         uv_server.should_exit = True
         await asyncio.gather(robot_server_task, return_exceptions=True)
-        robot_server_app.router.lifespan_context = original_robot_server_lifespan
-        if added_mutation_routes:
-            robot_server_app.router.routes[:] = [
-                route for route in robot_server_app.router.routes if route not in added_mutation_routes
-            ]
-            robot_server_app.openapi_schema = None
-        for dependency, original_override in original_identity_overrides.items():
-            if original_override is missing_override:
-                dependency_overrides.pop(dependency, None)
-            else:
-                dependency_overrides[dependency] = original_override
-        try:
-            if labware_state is not None:
-                labware_state.close()
-        finally:
-            await shared_hardware.clean_up()

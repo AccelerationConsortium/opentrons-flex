@@ -58,6 +58,7 @@ def test_bundled_exact_preflight_executes_complete_command_and_tip_plan() -> Non
     )
 
     assert report.exact_bundle_ready is True
+    assert report.to_dict()["evidence_status"] == "OFFLINE_VALIDATED"
     assert report.shadow_passed is False
     assert report.missing_labware == ()
     assert report.shadow_substitutions == ()

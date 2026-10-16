@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "movement_profile_sha256": "fb8fa69a3d781acd2f0edb1a6e710dec626cdf5661b5d9db46b35bab88df14f3",
+  "expected_staging_slots": [
+    "A4",
+    "B4",
+    "C4",
+    "D4"
+  ],
+  "expected_pipette_models": [
+    "flex_8channel_1000",
+    "p1000_multi_flex"
+  ],
+  "expected_plan_routes": {
+    "asms-v1-a1-to-b2": [
+      "asms-plate",
+      "A1",
+      "B2"
+    ],
+    "asms-v1-b2-to-a1": [
+      "asms-plate",
+      "B2",
+      "A1"
+    ],
+    "asms-v1-b1-to-b2": [
+      "elution-plate",
+      "B1",
+      "B2"
+    ],
+    "asms-v1-b2-to-b1": [
+      "elution-plate",
+      "B2",
+      "B1"
+    ]
+  },
+  "initial_occupancy": {
+    "A1": "asms-plate",
+    "B1": "elution-plate"
+  },
+  "pipetting": {
+    "mount": "RIGHT",
+    "tiprack_uri": "opentrons/opentrons_flex_96_tiprack_1000ul/1",
+    "tiprack_diameter": 5.47,
+    "tip_length": 95.6,
+    "tip_location": {
+      "x": 342.38,
+      "y": 395.38,
+      "z": 99.0
+    },
+    "source": {
+      "x": 23.38,
+      "y": 149.74,
+      "z": 18.85
+    },
+    "source_retract": {
+      "x": 23.38,
+      "y": 149.74,
+      "z": 51.4
+    },
+    "destination": {
+      "x": 178.21,
+      "y": 181.62,
+      "z": 12.22
+    },
+    "destination_retract": {
+      "x": 178.21,
+      "y": 181.62,
+      "z": 41.7
+    },
+    "volume": 20.0
+  },
+  "temperature_target": 4.0
+}

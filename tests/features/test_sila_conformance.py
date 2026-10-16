@@ -4,10 +4,12 @@ import inspect
 import re
 import typing
 from importlib.resources import files
+from pathlib import Path
 from xml.etree import ElementTree
 
 import pytest
 import xmlschema
+from lxml import etree
 from sila.framework.fdl import Serializer
 
 from unitelabs.opentrons_flex.features import (
@@ -43,6 +45,8 @@ _FEATURE_CLASSES = (
     TipController,
 )
 _SCHEMA = xmlschema.XMLSchema(str(files("sila").joinpath("resources", "FeatureDefinition.xsd")))
+_SEMANTIC_VALIDATOR_PATH = Path(__file__).parents[1] / "resources" / "sila-v1.2" / "fdl-validation.xsl"
+_SEMANTIC_VALIDATOR = etree.XSLT(etree.parse(str(_SEMANTIC_VALIDATOR_PATH)))
 _UNIT_SUFFIX = re.compile(r"(?:Celsius|Degrees|Milliseconds|Millimetres|Nanometres|Rpm|Seconds|Ul)$")
 
 
@@ -92,6 +96,16 @@ def test_public_feature_fdl_obeys_cross_feature_conventions(feature_cls: type) -
         assert constraints is not None and len(constraints), (
             f"{feature_identifier}.{_owner_identifier(basic, parents)} has no numeric constraints"
         )
+
+
+@pytest.mark.parametrize("feature_cls", _FEATURE_CLASSES)
+def test_public_feature_fdl_passes_official_sila_v1_2_semantic_validator(feature_cls: type) -> None:
+    """Run the official semantic XSLT in addition to schema validation."""
+    fdl = _serialize(feature_cls)
+
+    result = _SEMANTIC_VALIDATOR(etree.fromstring(fdl.encode()))
+
+    assert str(result) == ""
 
 
 @pytest.mark.parametrize("feature_cls", _FEATURE_CLASSES)

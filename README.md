@@ -1,19 +1,20 @@
 # Opentrons Flex
 
-A SiLA2 connector for the Opentrons Flex liquid-handling robot that also replaces the
-standard Opentrons robot-server HTTP API. Both servers share a single hardware API
-instance so they cannot conflict over the CAN bus.
+A SiLA2 connector for the Opentrons Flex liquid-handling robot. It supports two
+exclusive connector profiles: the full Protocol Engine profile also replaces the
+standard Opentrons robot-server HTTP API, while the unit-operation profile gives
+SiLA sole ownership of the hardware for guarded atomic commissioning.
 
 ## Architecture
 
-This project runs two servers in the same process when deployed to a real Flex:
+The deployed service has two selectable profiles:
 
-| Server | Protocol | Port | Purpose |
-|--------|----------|------|---------|
-| SiLA2 connector | gRPC | 50051 | Lab automation clients (SiLA Browser, UniteLabs platform) |
-| Opentrons robot-server | HTTP REST | 31950 | Opentrons App, any REST client |
+| Profile | Interfaces | Purpose |
+|--------|----------|---------|
+| `connector-pe` | SiLA gRPC 50051 + embedded HTTP 31950 | Protocol upload, Protocol Engine runs, and controlled checkpoints |
+| `connector-unit` | SiLA gRPC 50051 only | One guarded SiLA atomic operation at a time; no upload, run, or checkpoint path |
 
-Both servers are backed by one shared `HardwareControlAPI` (the Flex `OT3API`) wrapped
+In `connector-pe`, both servers are backed by one shared `HardwareControlAPI` (the Flex `OT3API`) wrapped
 in `HardwareProxy` — an `asyncio.Lock` around every hardware call. This serialises the
 SiLA gRPC server and the in-process HTTP robot-server so their CAN commands cannot
 interleave, and avoids the "hardware already initialised" error two separate processes
@@ -22,6 +23,10 @@ robot-server, so Heater-Shaker, Thermocycler, Temperature Module, Plate Reader, 
 Stacker HTTP operations use that same lock. Cancellation-sensitive Reader work holds
 ownership until its native operation settles; a cancelled Stacker move deactivates its
 motors before releasing ownership and requires a complete home before reuse.
+Autonomous Heater-Shaker and Thermocycler temperature waits release that global
+lock between short state reads, so unrelated gantry, pipette, or gripper work can
+continue. A target changed through the parallel HTTP API fails the original SiLA
+wait with a defined error instead of reporting success against the wrong target.
 The embedded server retains its native lifespan for persistence, notifications,
 and task management. After the connector injects the already-initialized shared
 hardware, it runs the native post-initialization callbacks that prepare Protocol
@@ -29,12 +34,20 @@ Engine services, so `/runs`, `/protocols`, and `/commands` remain available with
 creating a second hardware controller. The connector remains the sole owner of
 the underlying asynchronous hardware cleanup.
 
-The standard `opentrons-robot-server` systemd service is disabled on deployment. Our
-`sila2-connector` service owns the hardware and starts the HTTP API in-process via
-uvicorn on a Unix domain socket (`/run/aiohttp.sock`). nginx on the Flex proxies
-external TCP port 31950 to that socket — so the HTTP API is reachable at
-`http://<robot-ip>:31950` exactly as it would be with the stock `opentrons-robot-server`
-service.
+In either connector profile, the standard `opentrons-robot-server` systemd
+service is disabled and `sila2-connector` owns the hardware. In `connector-pe`,
+it also starts the HTTP API in-process via uvicorn on a Unix domain socket
+(`/run/aiohttp.sock`). nginx on the Flex proxies external TCP port 31950 to that
+socket, so the HTTP API remains reachable at `http://<robot-ip>:31950`.
+`connector-unit` does not start that HTTP server.
+
+In `connector-unit`, `with_robot_server=false`: the connector builds one real
+`OT3API`, exposes SiLA only on robot loopback (Windows clients use an
+authenticated SSH tunnel), and loads a local gripper-plan registry plus durable
+deck ledger. This is a reversible commissioning mode, not a second full-workflow
+implementation. Switch back to `connector-pe` for the current one-hour AS-MS
+Protocol Engine workflow until an external workflow owns all logical tip,
+liquid, material-lineage, and recovery state.
 
 Motion is exposed per **mount** (`LEFT`, `RIGHT`, `GRIPPER`) in deck coordinates
 (x, y, z mm), matching how the Flex hardware API models the robot.
@@ -42,7 +55,7 @@ Motion is exposed per **mount** (`LEFT`, `RIGHT`, `GRIPPER`) in deck coordinates
 ### Verified models and environments
 
 Automated verification and the ARM deployment artifact use the real Opentrons
-8.8.1 hardware simulators on Python 3.10. Controlled Protocol Engine
+9.0.0 hardware simulators on Python 3.12. Controlled Protocol Engine
 mutation is intentionally unavailable on unvalidated Opentrons/Python matrices.
 The connector recognizes these official model identifiers:
 
@@ -70,22 +83,27 @@ of the robot/module under test before that combination is described as validated
 | `TipController` | Atomic move + `PickUpTip` / `DropTip`, `GetTipPresence`; sensor verification and defined recovery errors (use `MotionController.EmergencyStop` for a global halt) |
 | `GripperController` | `Grip`, `Ungrip`, `HomeJaw`; `Status`, `JawWidth` |
 | `CalibrationController` | `CalibratePipette`, `CalibrateGripperJaw`, `CalibrateDeck` (automatic probe-based routines) |
-| `HeaterShakerController` | Observable heat, shake, stop, and latch commands with constrained °C/rpm inputs |
+| `HeaterShakerController` | Observable heat, shake, stop, and latch commands with constrained °C/rpm inputs; observable `Status`, static `DeviceInfo` |
 | `AbsorbanceReaderController` | `InitializeSingle`, `InitializeSingleWithReference`, `InitializeMultiple`, `ReadPlate`, `Deactivate`; observable `Status`, static `DeviceInfo` |
 | `FlexStackerController` | Routine `RetrieveLabware` and `StoreLabware`; observable `Status`, static `DeviceInfo` |
 | `FlexStackerMaintenanceController` | `HomeAll`, axis/latch, LED, and motor-stop service commands; observable `Status` and `LimitSwitchStatus`, static `DeviceInfo` |
 | `TemperatureController` | `SetTemperature`, atomic `SetTemperatureAndWait`, `Deactivate`; observable `Status`, static `DeviceInfo` |
-| `ThermocyclerController` | Observable lid control, lid/block temperatures, typed multi-step profiles, deactivation, status, and device identity |
+| `ThermocyclerController` | Observable lid control, lid/block temperatures, typed multi-step profiles and deactivation; observable `Status`, static `DeviceInfo` |
 
 The Heater-Shaker controller exposes observable temperature, shaking, and latch
 operations with intermediate execution updates and defined module errors:
 `SetTemperature`, `WaitForTemperature`, `DeactivateHeater`, `SetSpeed`,
 `StopShaking`, `OpenLatch`, `CloseLatch`, `GetTemperature`, `GetSpeed`,
 `GetLatchStatus`, `GetStatus`, and `GetDeviceInfo`.
-Temperature inputs carry a degrees Celsius unit constraint and a 0–95 °C range;
+The read commands remain for compatibility; new clients should subscribe to
+`Status` and read the static `DeviceInfo` property. Temperature inputs carry a
+degrees Celsius unit constraint and the Opentrons 9.0 API's 0–95 °C range;
+targets below ambient may be physically unreachable because the module does not cool.
 active shaking carries a revolutions-per-minute unit constraint and a 200–3000
 rpm range. The physical unit stays in the FDL constraint rather than the endpoint
 identifier. Use `StopShaking` instead of sending an implicit zero-speed sentinel.
+Cancelling `WaitForTemperature` stops the wait but intentionally leaves the active
+target enabled; call `DeactivateHeater` when heating must stop.
 
 The Absorbance Plate Reader workflow follows the official physical sequence:
 use an allowlisted `LabwareMovementController` plan and the Flex Gripper to place
@@ -112,6 +130,20 @@ so unrelated robot-server operations can continue; if the parallel HTTP path cha
 the module target, the SiLA command stops with a defined error instead of reporting
 false success. Status and identity are exposed as properties with structured state.
 
+The Thermocycler validates finite temperatures, hold times, block maximum volume,
+profile size, and direction-dependent ramp rates before actuation. A zero block
+volume selects the Opentrons default of 25 µL; non-zero values are the greatest
+volume in any individual well. Long waits and profiles publish current/target and
+step progress without monopolizing the global hardware lock. Cancelling a profile
+deactivates both thermal controllers, while cancelling a standalone wait leaves
+its target active and reports that explicitly.
+
+The current Feature Definitions represent one physical instance of each accessory
+type. If two supported modules of the same type are attached, startup fails with
+their serial numbers instead of silently replacing one Feature registration.
+Disconnect the extra module until a serial-routed, multi-instance Feature contract
+is deployed.
+
 The Magnetic Block is passive and has no powered state or command surface, so the
 connector intentionally does not register a Magnetic Block feature. Move plates on
 and off it with server-provisioned `LabwareMovementController` plans and the existing
@@ -121,7 +153,15 @@ For commissioning the complete robot plus Heater-Shaker, Thermocycler, Temperatu
 Module, Absorbance Plate Reader, Flex Stacker, and passive Magnetic Block, use the
 [manifest-driven system acceptance workflow](docs/flex_system_acceptance.md). It
 provides both a publishable Unitelabs workflow and a guarded direct SiLA gRPC HITL
-runner with JUnit identity evidence.
+runner with JUnit identity evidence. The operator-side preflight and evidence
+validation are pure Python and use `pathlib`, so the readiness, commissioning,
+and routine workflow operator path runs natively on the lab Windows computer;
+macOS remains a compatible backup environment. The `deploy.sh` and service
+management scripts are POSIX tooling for the Flex's Linux environment: invoke
+them from CI, macOS, WSL, or Git Bash rather than native PowerShell.
+The connector/runtime and local Unitelabs workflow both target Python 3.12. The
+workflow remains isolated and depends only on the shared acceptance contract;
+`uv run --directory` keeps its environment separate from robot-only packages.
 
 ### Module feature v2 migration
 
@@ -232,8 +272,8 @@ Activate the virtual environment:
 
 - On **Windows**:
 
-  ```sh
-  .\venv\Scripts\activate.bat
+  ```powershell
+  .\.venv\Scripts\Activate.ps1
   ```
 
 - On **macOS**/**Linux**:
@@ -244,8 +284,8 @@ Activate the virtual environment:
 
 If you are on a Windows machine, you may additionally wish to set the `UNITELABS_CDK_APP` environment variable to the connector's entry point:
 
-```sh
-set UNITELABS_CDK_APP=unitelabs.opentrons_flex:create_app
+```powershell
+$env:UNITELABS_CDK_APP = "unitelabs.opentrons_flex:create_app"
 ```
 
 Setting this environment variable will allow you to run various CLI commands without providing `--app unitelabs.opentrons_flex:create_app` every time.
@@ -255,7 +295,7 @@ Setting this environment variable will allow you to run various CLI commands wit
 Install the connector and its dependencies into your active virtual environment:
 
 ```sh
-uv sync --all-extras
+uv sync --python 3.12 --all-extras
 ```
 
 #### Configure the Connector
@@ -370,6 +410,15 @@ SiLA feature-definition generation, and real gRPC calls through the full chain
 `gRPC → SiLA server → feature → hardware API`, including defined-execution errors
 propagating over the wire.
 
+CI also creates an isolated Windows Python 3.12 workflow environment that does
+not install the connector runtime. It validates the native PowerShell
+entrypoint and runs the `flex_workflow_offline` import, phase-wiring,
+commissioning-digest, and fail-closed shutdown tests with offline SDK/Prefect
+stubs. Deployment-script tests execute the actual remote shell bodies under a
+temporary filesystem root with fake services, covering preflight refusal,
+bounded health failure with stock-service recovery, and atomic rollback
+activation.
+
 `config/smoketest_config.json` is the local no-hardware config. It keeps
 `use_simulator=true`, `with_robot_server=true`, and cloud/discovery disabled. The
 deployment config in `config/flex_config.json` remains explicitly live-hardware
@@ -388,8 +437,10 @@ controlled insertion is enabled only when `run_mutation_ledger_path` is configur
 and a bearer token of at least 32 random characters named by
 `run_mutation_token_env` is present at startup. The token is also bound to the
 operator identity named by `run_mutation_actor_env`; callers cannot self-attribute
-another actor in the audit. The current private-state adapter is startup-gated to
-its validated Opentrons 8.8.1 runtime.
+another actor in the audit. The private-state adapter is startup-gated to the
+validated Opentrons 9.0.0 runtime and reports a deterministic runtime contract
+identifier. Startup checks the required robot-server callables, mutable app/router
+surfaces, and package origins before OT3API or the CAN bus is initialized.
 
 Before a run starts, a small set of non-actuating setup commands remains available
 only when robot-server authoritatively identifies the run as protocol-less. This
@@ -562,9 +613,11 @@ against the live robot-server OpenAPI so the matrix cannot silently drift.
 
 ## Deploying to the Flex
 
-The Flex host is aarch64 (ARM64) with a modern glibc, so standard PyPI
-`manylinux_2_17_aarch64` wheels for C-extension packages (grpcio, numpy, …) install
-directly — no from-source build is required.
+The Flex host is aarch64 (ARM64) with a modern glibc, so standard
+`manylinux_2_17_aarch64` dependency wheels install directly. The build also
+packages the exact Opentrons 9.0.0 tag for `opentrons`, shared data, hardware,
+server utilities, and `robot_server`; connector mode never relies on an
+unverified mixture of those private packages from the robot image.
 
 ### Building `dist_arm/`
 
@@ -579,31 +632,81 @@ Or trigger the **Build Flex aarch64 Wheels** GitHub Actions workflow
 (`.github/workflows/build-flex-arm-wheels.yml`) and download the `flex-arm-wheels`
 artifact into `dist_arm/`.
 
+Changes to the connector, shared acceptance contract, artifact-manifest tool,
+Docker build, lockfile, or ARM workflow itself run this build on the pull
+request as well as after a main-branch push. Repository branch protection
+determines whether GitHub blocks merging on that job.
+
+The artifact is accepted only when `runtime-manifest.json` and `SHA256SUMS`
+verify every wheel, the connector/Opentrons/robot-server versions are exact, and
+the declared target is Python 3.12 on aarch64. Every platform-specific wheel
+must also carry a compatible `cp312`/`abi3` tag and an aarch64 platform tag.
+
 ### Installing on the Flex
 
-Copy the wheels and create the venv on the robot:
+Provision the mutation credential outside any replaceable release directory:
+
+```sh
+ssh root@<robot-ip> '
+  umask 077
+  mkdir -p /var/lib/unitelabs-opentrons-flex
+  token=$(od -An -N32 -tx1 /dev/urandom | tr -d " \n")
+  actor=operator-name
+  {
+    printf "UNITELABS_RUN_MUTATION_TOKEN=%s\n" "$token"
+    printf "UNITELABS_RUN_MUTATION_ACTOR=%s\n" "$actor"
+  } > /var/lib/unitelabs-opentrons-flex/run-mutation.env
+  printf "Save this token for the no-echo client prompt: %s\n" "$token"
+'
+```
+
+Replace `operator-name` first. Then verify, install to an immutable versioned
+directory, run the no-hardware import/configuration preflight, and atomically
+activate the release:
 
 ```sh
 ./deploy.sh <robot-ip>
 ```
 
-Then install the connector as a persistent systemd service (this disables the Opentrons robot server so the connector owns the hardware):
+Then install the connector service. The stock service is stopped only after the
+runtime preflight passes. If connector startup, gRPC, `/health`,
+`/deck_configuration`, or the mutation OpenAPI check fails within its bounded
+timeout, the script restores the stock robot-server automatically:
 
 ```sh
 ./scripts/install_connector_service.sh <robot-ip>
 ```
 
-Switch between the SiLA connector and the stock opentrons robot-server at any time (the choice persists across reboot):
+Switch among full Protocol Engine connector mode, SiLA-only unit-operation mode,
+and the stock Opentrons robot-server at any time (the choice persists across
+reboot):
 
 ```sh
-./scripts/switch_mode.sh <robot-ip> connector
+./scripts/switch_mode.sh <robot-ip> connector-pe
+./scripts/switch_mode.sh <robot-ip> connector-unit
 ./scripts/switch_mode.sh <robot-ip> opentrons
 ```
 
-To deploy Python source changes to a robot that already has the service installed:
+`connector` remains an alias for `connector-pe`. The unit-operation mode requires
+the selectable-config service installed by the current
+`install_connector_service.sh`; rerun that installer after deploying this release.
+For the exact guarded Windows commands, see
+[`docs/asms_flex_workflow_test.md`](docs/asms_flex_workflow_test.md#connector-unit-fast-commissioning-path-scheme-b).
+
+Run all general read-only readiness checks before uploading a protocol. For the
+commissioning/HITL command on the Windows operator machine, including its exact
+artifact-binding arguments, follow
+[`docs/flex_system_acceptance.md`](docs/flex_system_acceptance.md):
 
 ```sh
-./scripts/deploy_python_changes.sh <robot-ip>
+uv run python scripts/preflight_flex.py <robot-ip>
+```
+
+Restore the previously activated release while leaving stock Opentrons mode
+active:
+
+```sh
+./scripts/rollback_connector.sh <robot-ip>
 ```
 
 Logs:
@@ -612,23 +715,22 @@ Logs:
 ssh root@<robot-ip> 'journalctl -u sila2-connector -f'
 ```
 
-### Why `--system-site-packages`
+### Runtime isolation
 
-The `robot_server` HTTP server is pre-installed as a system package by the
-Opentrons robot software and is inherited through `--system-site-packages` because
-it is not published on PyPI. The ARM bundle pins and installs Opentrons 8.8.1 into
-the venv, where it takes precedence; the connector then refuses controlled
-mutation if the effective runtime does not match that validated version.
-
-`robot_server` is not distributed in the public `opentrons` PyPI wheel. Its source lives
-in the Opentrons monorepo under
-[`robot-server/robot_server`](https://github.com/Opentrons/opentrons/tree/edge/robot-server/robot_server).
-Before the first hardware run, verify the Flex image exposes the same package:
-
-```sh
-ssh root@<robot-ip> \
-  '/var/sila2_flex/bin/python -c "import robot_server, robot_server.hardware, robot_server.app; print(robot_server.__file__)"'
-```
+Each immutable release inherits the robot image only for operating-system
+bindings that Opentrons does not distribute as portable wheels, notably
+`systemd-python`. The ARM artifact supplies the complete portable dependency
+closure plus all five co-versioned Opentrons Python packages from the immutable
+9.0.0 source commit. Deployment rejects incomplete releases and writes a
+completion marker only after no-hardware runtime validation. Startup rejects a
+wrong Python/Opentrons version, a missing or incorrectly shaped private
+robot-server contract, or any of those five Opentrons modules imported from
+outside the active release before initializing OT3API or the CAN bus. The
+preflight report includes a deterministic `runtime_contract_id`; physical
+acceptance evidence must match that identifier and the selected manifest. The
+embedded `/unitelabs/runtime` route reports an identity captured by the running
+connector process, so preflight rejects an active symlink or artifact that does
+not match the process currently serving HTTP/gRPC.
 
 Then start the connector and run the live HTTP integration tests:
 
@@ -673,7 +775,7 @@ Clone the repository and set up the development environment:
 ```sh
 git clone https://github.com/AccelerationConsortium/opentrons-flex.git
 cd opentrons-flex
-uv sync --all-extras
+uv sync --python 3.12 --all-extras
 uv run connector start -vvv
 ```
 

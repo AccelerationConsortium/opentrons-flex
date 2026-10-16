@@ -1,6 +1,7 @@
 """Allowlisted Flex labware movement using the official gripper waypoint planner."""
 
 import asyncio
+import hashlib
 import json
 import math
 from collections.abc import Iterable, Mapping
@@ -66,6 +67,7 @@ class LoadedLabwareMovementConfig:
     plans: tuple[LabwareMovementPlan, ...]
     initial_occupancy: dict[str, str]
     state_file: Path | None
+    profile_sha256: str
 
 
 @dataclass(frozen=True)
@@ -173,7 +175,13 @@ def load_labware_movement_config(path: str | Path) -> LoadedLabwareMovementConfi
     state_path = Path(state_file).expanduser()
     if not state_path.is_absolute():
         state_path = config_path.parent / state_path
-    return LoadedLabwareMovementConfig(plans=plans, initial_occupancy=occupancy, state_file=state_path)
+    canonical = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    return LoadedLabwareMovementConfig(
+        plans=plans,
+        initial_occupancy=occupancy,
+        state_file=state_path,
+        profile_sha256=hashlib.sha256(canonical).hexdigest(),
+    )
 
 
 class FlexLabwareMovementController:
@@ -185,6 +193,7 @@ class FlexLabwareMovementController:
         gripper: FlexGripperController,
         plans: Iterable[LabwareMovementPlan] = (),
         state: LabwareMovementState | None = None,
+        profile_sha256: str = "0" * 64,
     ) -> None:
         self._motion = motion
         self._gripper = gripper
@@ -198,6 +207,7 @@ class FlexLabwareMovementController:
             msg = "Labware movement plan identifiers must be unique."
             raise ValueError(msg)
         self._state = state
+        self._profile_sha256 = profile_sha256
         if plan_list and state is None:
             msg = "Configured labware movement plans require a durable LabwareMovementState ledger."
             raise ValueError(msg)
@@ -331,6 +341,11 @@ class FlexLabwareMovementController:
     def available_plans(self) -> tuple[LabwareMovementPlan, ...]:
         """Return locally provisioned plan metadata for SiLA discovery."""
         return tuple(self._plans.values())
+
+    @property
+    def profile_sha256(self) -> str:
+        """Return the digest of the complete server-loaded movement profile."""
+        return self._profile_sha256
 
     @property
     def deck_state(self) -> tuple[bool, dict[str, str]]:

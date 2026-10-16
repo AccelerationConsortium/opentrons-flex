@@ -119,6 +119,7 @@ class GripperFeature(sila.Feature):
     )
     async def ungrip(
         self,
+        force: _GripForce,
         *,
         status: sila.Status,
         intermediate: sila.Intermediate[OperationProgress],
@@ -126,12 +127,15 @@ class GripperFeature(sila.Feature):
         """
         Open the jaw fully to release labware.
 
+        Args:
+            force: Release force in Newtons (5-25 N).
+
         Yields:
             Update: Current gripper progress update.
         """
         report_progress(status, intermediate, 0.0, OperationPhase.STARTING, "Starting gripper release.")
         try:
-            await self._controller.ungrip()
+            await self._controller.ungrip(force_newtons=force)
         except asyncio.CancelledError:
             report_progress(status, intermediate, 1.0, OperationPhase.CANCELLED, "Gripper release cancelled.")
             raise

@@ -1,0 +1,153 @@
+{
+  "schema_version": 1,
+  "geometry_contract": {
+    "opentrons_version": "9.0.0",
+    "robot_type": "OT-3 Standard",
+    "labware_uri": "opentrons/axygen_96_wellplate_500ul/1",
+    "magnetic_block_model": "magneticBlockV1",
+    "notes": "Grip points and jaw-width limits are derived from the pinned Opentrons geometry model. B2 pickup and drop points intentionally differ by the Magnetic Block gripper offset."
+  },
+  "state_file": "/var/lib/unitelabs-opentrons-flex/asms-unit-deck-state.json",
+  "initial_occupancy": {
+    "A1": "asms-plate",
+    "B1": "elution-plate"
+  },
+  "plans": [
+    {
+      "identifier": "asms-v1-a1-to-b2",
+      "labware_identifier": "asms-plate",
+      "is_lid": false,
+      "source": {
+        "identifier": "A1",
+        "kind": "DECK_SLOT",
+        "grip_point": {
+          "x": 64.0,
+          "y": 364.0,
+          "z": 7.175
+        }
+      },
+      "destination": {
+        "identifier": "B2",
+        "kind": "DECK_SLOT",
+        "grip_point": {
+          "x": 228.0,
+          "y": 257.0,
+          "z": -1.675
+        }
+      },
+      "grip": {
+        "force_newtons": 15.0,
+        "expected_width": 85.34,
+        "uncertainty_wider": 0.0,
+        "uncertainty_narrower": 13.84
+      },
+      "post_drop_slide_offset": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      }
+    },
+    {
+      "identifier": "asms-v1-b2-to-a1",
+      "labware_identifier": "asms-plate",
+      "is_lid": false,
+      "source": {
+        "identifier": "B2",
+        "kind": "DECK_SLOT",
+        "grip_point": {
+          "x": 228.0,
+          "y": 257.0,
+          "z": -2.675
+        }
+      },
+      "destination": {
+        "identifier": "A1",
+        "kind": "DECK_SLOT",
+        "grip_point": {
+          "x": 64.0,
+          "y": 364.0,
+          "z": 7.175
+        }
+      },
+      "grip": {
+        "force_newtons": 15.0,
+        "expected_width": 85.34,
+        "uncertainty_wider": 0.0,
+        "uncertainty_narrower": 13.84
+      },
+      "post_drop_slide_offset": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      }
+    },
+    {
+      "identifier": "asms-v1-b1-to-b2",
+      "labware_identifier": "elution-plate",
+      "is_lid": false,
+      "source": {
+        "identifier": "B1",
+        "kind": "DECK_SLOT",
+        "grip_point": {
+          "x": 64.0,
+          "y": 257.0,
+          "z": 7.175
+        }
+      },
+      "destination": {
+        "identifier": "B2",
+        "kind": "DECK_SLOT",
+        "grip_point": {
+          "x": 228.0,
+          "y": 257.0,
+          "z": -1.675
+        }
+      },
+      "grip": {
+        "force_newtons": 15.0,
+        "expected_width": 85.34,
+        "uncertainty_wider": 0.0,
+        "uncertainty_narrower": 13.84
+      },
+      "post_drop_slide_offset": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      }
+    },
+    {
+      "identifier": "asms-v1-b2-to-b1",
+      "labware_identifier": "elution-plate",
+      "is_lid": false,
+      "source": {
+        "identifier": "B2",
+        "kind": "DECK_SLOT",
+        "grip_point": {
+          "x": 228.0,
+          "y": 257.0,
+          "z": -2.675
+        }
+      },
+      "destination": {
+        "identifier": "B1",
+        "kind": "DECK_SLOT",
+        "grip_point": {
+          "x": 64.0,
+          "y": 257.0,
+          "z": 7.175
+        }
+      },
+      "grip": {
+        "force_newtons": 15.0,
+        "expected_width": 85.34,
+        "uncertainty_wider": 0.0,
+        "uncertainty_narrower": 13.84
+      },
+      "post_drop_slide_offset": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      }
+    }
+  ]
+}
