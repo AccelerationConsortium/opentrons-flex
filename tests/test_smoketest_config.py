@@ -28,7 +28,7 @@ def test_smoketest_config_never_targets_real_hardware() -> None:
     assert cfg["with_robot_server"] is True
     assert cfg["sila_server"]["hostname"] in {"127.0.0.1", "localhost"}
     assert cfg["cloud_server_endpoint"] is None
-    assert cfg["discovery"] is None
+    assert cfg["discovery"] == {"ip_version": "ipv4", "network_interfaces": []}
     assert cfg["run_mutation_required"] is True
 
 

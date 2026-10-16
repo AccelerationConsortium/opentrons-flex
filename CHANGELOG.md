@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Enabled IPv4 SiLA mDNS discovery in the local smoketest config so local
+  discovery clients can find `Opentrons Flex Smoketest`. The simulator gRPC
+  endpoint remains bound to loopback; cloud access remains disabled.
+
 - Fixed Windows deck-state persistence by retaining file flush and atomic replacement
   while applying directory fsync only on POSIX hosts. Embedded robot-server startup
   now initializes the native lazy run-orchestrator store before admitting requests,
