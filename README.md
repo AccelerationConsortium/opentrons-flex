@@ -420,7 +420,11 @@ bounded health failure with stock-service recovery, and atomic rollback
 activation.
 
 `config/smoketest_config.json` is the local no-hardware config. It keeps
-`use_simulator=true`, `with_robot_server=true`, and cloud/discovery disabled. The
+`use_simulator=true`, `with_robot_server=true`, and cloud access disabled. IPv4
+mDNS discovery is enabled, announcing `Opentrons Flex Smoketest` under
+`_sila._tcp.local.`. The gRPC endpoint remains on `127.0.0.1:50051` for local
+clients; the announcement does not make that loopback endpoint reachable from
+other computers. Set `discovery` to `null` to disable announcements. The
 deployment config in `config/flex_config.json` remains explicitly live-hardware
 (`use_simulator=false`) so simulator and robot runs do not blur together.
 

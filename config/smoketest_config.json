@@ -17,7 +17,10 @@
     "default_lifetime": 3600.0
   },
   "cloud_server_endpoint": null,
-  "discovery": null,
+  "discovery": {
+    "ip_version": "ipv4",
+    "network_interfaces": []
+  },
   "logging": {
     "version": 1,
     "disable_existing_loggers": false,
