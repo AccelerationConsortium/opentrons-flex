@@ -80,6 +80,25 @@ def load_robot_server_bindings() -> RobotServerBindings:
         raise RuntimeError(message) from exc
 
 
+async def initialize_run_store(bindings: RobotServerBindings, hardware_proxy: object) -> None:
+    """Create the native lazy singleton before admitting shared-hardware requests."""
+    from opentrons.protocol_engine import DeckType
+
+    dependencies = importlib.import_module("robot_server.runs.dependencies")
+    get_light_controller = _required_callable(dependencies, "get_light_controller", "robot_server.runs.dependencies")
+    get_store = _required_callable(dependencies, "get_run_orchestrator_store", "robot_server.runs.dependencies")
+    app_state = _required_attribute(bindings.app, "state", "robot_server.app.app")
+    light_controller = await get_light_controller(app_state=app_state)
+    await get_store(
+        app_state=app_state,
+        hardware_api=hardware_proxy,
+        robot_type="OT-3 Standard",
+        deck_type=DeckType.OT3_STANDARD,
+        light_controller=light_controller,
+    )
+    current_run_store(bindings, robot_server_ready=True)
+
+
 def current_run_store(
     bindings: RobotServerBindings,
     *,

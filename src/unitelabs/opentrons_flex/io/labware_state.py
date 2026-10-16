@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -160,12 +161,16 @@ class LabwareMovementState:
                 stream.flush()
                 os.fsync(stream.fileno())
             temporary.replace(self._path)
-            directory_flags = getattr(os, "O_DIRECTORY", 0) | os.O_RDONLY
-            directory_fd = os.open(self._path.parent, directory_flags)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            # Windows' CRT cannot open directories for fsync. Keep file flushing
+            # and atomic replacement there; retain directory durability on POSIX
+            # (including the Flex host), and propagate actual persistence errors.
+            if sys.platform != "win32":
+                directory_flags = getattr(os, "O_DIRECTORY", 0) | os.O_RDONLY
+                directory_fd = os.open(self._path.parent, directory_flags)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
         except OSError as exc:
             msg = f"Cannot persist durable labware state ledger {self._path}: {exc}"
             raise RuntimeError(msg) from exc

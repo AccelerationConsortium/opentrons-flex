@@ -283,3 +283,50 @@ def test_failed_completed_move_commit_keeps_in_memory_state_invalid(
 
     assert state.valid is False
     assert state.occupancy == {"D1": "plate-1"}
+
+
+def test_windows_persistence_does_not_open_directory(tmp_path, monkeypatch):
+    import os
+    import sys
+
+    def reject_directory(path, flags, *args, **kwargs):
+        raise PermissionError("Windows cannot open directories through os.open")
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(os, "open", reject_directory)
+    path = tmp_path / "windows-state.json"
+    state = LabwareMovementState(path, {"D1": "plate-1"})
+    state.begin_move()
+    state.complete_move("D1", "D2", "plate-1")
+    state.close()
+    restored = LabwareMovementState(path, {})
+    assert restored.valid is True
+    assert restored.occupancy == {"D2": "plate-1"}
+    restored.close()
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_file_sync_failure_is_not_suppressed(tmp_path, monkeypatch, platform):
+    import os
+    import sys
+
+    def fail_sync(fd):
+        raise OSError("file flush failed")
+
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(os, "fsync", fail_sync)
+    with pytest.raises(RuntimeError, match="file flush failed"):
+        LabwareMovementState(tmp_path / "flush-failure.json", {"D1": "plate-1"})
+
+
+def test_posix_directory_sync_failure_is_not_suppressed(tmp_path, monkeypatch):
+    import os
+    import sys
+
+    def reject_directory(path, flags, *args, **kwargs):
+        raise PermissionError("directory flush unavailable")
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(os, "open", reject_directory)
+    with pytest.raises(RuntimeError, match="directory flush unavailable"):
+        LabwareMovementState(tmp_path / "directory-failure.json", {"D1": "plate-1"})

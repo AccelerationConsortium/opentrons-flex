@@ -52,6 +52,7 @@ from .run_mutation import MUTATION_CHECKPOINT_PREFIX, MutationLedger, MutationLe
 from .runtime_identity_api import create_runtime_identity_router, process_runtime_identity
 from .robot_server_compat import (
     current_run_store,
+    initialize_run_store,
     include_robot_server_router,
     install_robot_server_app,
     load_robot_server_bindings,
@@ -356,6 +357,7 @@ def _shared_hardware_robot_server_lifespan(
         async with original_lifespan(app):
             await start_light_control_task(app.state, proxy)
             await mark_light_control_startup_finished(app.state, proxy)
+            await initialize_run_store(bindings, proxy)
             yield
 
     return lifespan

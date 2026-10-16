@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
 from unitelabs.opentrons_flex.robot_server_compat import (
     RobotServerBindings,
     current_run_store,
+    initialize_run_store,
     include_robot_server_router,
     install_robot_server_app,
     protocol_run_state,
@@ -267,3 +268,49 @@ def test_partial_app_installation_is_rolled_back_transactionally() -> None:
 
     assert state.hardware is original_hardware
     assert state.initialization_task is original_initialization_task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("creates_store", [True, False])
+async def test_initialize_native_lazy_store_before_serving(monkeypatch, creates_store):
+    import sys
+    from opentrons.protocol_engine import DeckType
+
+    state = SimpleNamespace()
+    store = object()
+    proxy = object()
+    light = object()
+
+    async def create_store(**kwargs):
+        if creates_store:
+            kwargs["app_state"].run_orchestrator_store = store
+        return store
+
+    dependencies = SimpleNamespace(
+        get_light_controller=AsyncMock(return_value=light),
+        get_run_orchestrator_store=AsyncMock(side_effect=create_store),
+    )
+    monkeypatch.setitem(sys.modules, "robot_server.runs.dependencies", dependencies)
+    bindings = RobotServerBindings(
+        app=SimpleNamespace(state=state),
+        hardware_accessor=MagicMock(),
+        initialization_task_accessor=MagicMock(),
+        get_deck_type=MagicMock(),
+        get_robot_type=MagicMock(),
+        get_robot_type_enum=MagicMock(),
+        mark_light_control_startup_finished=MagicMock(),
+        start_light_control_task=MagicMock(),
+    )
+    if creates_store:
+        await initialize_run_store(bindings, proxy)
+        assert current_run_store(bindings, robot_server_ready=True) is store
+    else:
+        with pytest.raises(RuntimeError, match="run_orchestrator_store"):
+            await initialize_run_store(bindings, proxy)
+    dependencies.get_run_orchestrator_store.assert_awaited_once_with(
+        app_state=state,
+        hardware_api=proxy,
+        robot_type="OT-3 Standard",
+        deck_type=DeckType.OT3_STANDARD,
+        light_controller=light,
+    )

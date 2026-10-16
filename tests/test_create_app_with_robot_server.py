@@ -228,18 +228,31 @@ async def test_shared_hardware_lifespan_runs_protocol_engine_callbacks():
     dependencies = MagicMock(
         start_light_control_task=start_light_control,
         mark_light_control_startup_finished=mark_startup_finished,
+        get_light_controller=AsyncMock(return_value=object()),
+        get_run_orchestrator_store=AsyncMock(side_effect=lambda **_: events.append("store-ready")),
     )
-    app = MagicMock()
+    app = sys.modules["robot_server.app"].app
     proxy = MagicMock(spec=HardwareProxy)
 
+    app.state.run_orchestrator_store = object()
     with patch.dict(sys.modules, {"robot_server.runs.dependencies": dependencies}):
         lifespan = _shared_hardware_robot_server_lifespan(original_lifespan, proxy)
         async with lifespan(app):
             events.append("serving")
 
-    assert events == ["native-started", "light-started", "light-ready", "serving", "native-stopped"]
+    assert events == ["native-started", "light-started", "light-ready", "store-ready", "serving", "native-stopped"]
     start_light_control.assert_awaited_once_with(app.state, proxy)
     mark_startup_finished.assert_awaited_once_with(app.state, proxy)
+    from opentrons.protocol_engine import DeckType
+
+    dependencies.get_run_orchestrator_store.assert_awaited_once_with(
+        app_state=app.state,
+        hardware_api=proxy,
+        robot_type="OT-3 Standard",
+        deck_type=DeckType.OT3_STANDARD,
+        light_controller=dependencies.get_light_controller.return_value,
+    )
+    del app.state.run_orchestrator_store
 
 
 # ── uvicorn startup ───────────────────────────────────────────────────────────

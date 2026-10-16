@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fixed Windows deck-state persistence by retaining file flush and atomic replacement
+  while applying directory fsync only on POSIX hosts. Embedded robot-server startup
+  now initializes the native lazy run-orchestrator store before admitting requests,
+  preserving fail-closed hardware ownership checks from the first HTTP request.
+
 - Aligned `HeaterShakerController` v3.2 with the pinned Opentrons 9.0 API:
   finite 0–95 °C targets are accepted while the documentation warns that
   below-ambient targets may be physically unreachable.
