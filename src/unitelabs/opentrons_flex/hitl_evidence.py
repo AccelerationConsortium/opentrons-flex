@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, UTC
 from pathlib import Path
 
 HITL_READINESS_SCHEMA_VERSION = 1
@@ -115,11 +115,11 @@ def load_hitl_readiness_evidence(
     )
 
     generated_at = _timestamp(payload["generatedAt"])
-    current_time = now or datetime.now(timezone.utc)
+    current_time = now or datetime.now(UTC)
     if current_time.tzinfo is None:
         message = "Readiness validation time must be timezone-aware."
         raise ValueError(message)
-    age = current_time.astimezone(timezone.utc) - generated_at
+    age = current_time.astimezone(UTC) - generated_at
     if age < -timedelta(minutes=5):
         message = "HITL readiness report timestamp is in the future."
         raise ValueError(message)
@@ -188,7 +188,7 @@ def _timestamp(value: object) -> datetime:
     if timestamp.tzinfo is None:
         message = "HITL readiness generatedAt must include a timezone."
         raise ValueError(message)
-    return timestamp.astimezone(timezone.utc)
+    return timestamp.astimezone(UTC)
 
 
 __all__ = [

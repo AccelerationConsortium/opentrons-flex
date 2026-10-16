@@ -49,7 +49,6 @@ _TIP_MOTION_ERRORS = [
 ]
 _TIP_STATE_ERRORS = [RunOwnershipError, PipetteNotAttachedError, TipStateError]
 _FEATURE_FQI = "ca.accelerationconsortium/robots/TipController/v1"
-_T = typing.TypeVar("_T")
 
 
 class TipPresence(enum.Enum):
@@ -125,14 +124,14 @@ def _report_progress(
     intermediate.send(TipOperationProgress(phase=phase, message=message))
 
 
-async def _run_observable(
+async def _run_observable[T](
     status: sila.Status,
     intermediate: sila.Intermediate[TipOperationProgress],
     start_message: str,
     complete_message: str,
     cancelled_message: str,
-    action: typing.Awaitable[_T],
-) -> _T:
+    action: typing.Awaitable[T],
+) -> T:
     _report_progress(status, intermediate, 0.0, OperationPhase.STARTING, start_message)
     try:
         result = await action

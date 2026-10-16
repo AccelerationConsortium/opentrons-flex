@@ -25,10 +25,9 @@ from ._errors import translate_module_errors, translate_public_async_methods
 from ._types import DeviceInfo
 
 log = logging.getLogger(__name__)
-_T = typing.TypeVar("_T")
 
 
-async def complete_before_cancellation(operation: typing.Awaitable[_T], description: str) -> _T:
+async def complete_before_cancellation[T](operation: typing.Awaitable[T], description: str) -> T:
     """Wait for native work to settle before propagating client cancellation."""
     task = asyncio.ensure_future(operation)
     try:
