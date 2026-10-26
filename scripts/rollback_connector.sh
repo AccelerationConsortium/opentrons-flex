@@ -33,7 +33,7 @@ wait_for_stock() {
     i=60
     while [ "$i" -gt 0 ]; do
         if systemctl is-active --quiet opentrons-robot-server 2>/dev/null &&
-            curl --fail --silent --connect-timeout 2 --max-time 5 \
+            curl --fail --silent -H 'Opentrons-Version: *' --connect-timeout 2 --max-time 5 \
                 http://127.0.0.1:31950/health >/dev/null 2>&1; then
             return 0
         fi

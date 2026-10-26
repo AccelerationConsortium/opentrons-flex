@@ -1,5 +1,6 @@
 """Durable, fail-closed deck state for allowlisted labware movement."""
 
+import datetime
 import json
 import os
 import sys
@@ -92,6 +93,50 @@ class LabwareMovementState:
             self._valid = False
             raise
         self._occupancy = candidate_occupancy
+        self._valid = True
+
+    @property
+    def path(self) -> Path:
+        """Location of the durable ledger file."""
+        return self._path
+
+    @property
+    def audit_path(self) -> Path:
+        """Append-only JSONL record of operator reconciliations for this ledger."""
+        return self._path.with_name(f"{self._path.stem}.reconciliations.jsonl")
+
+    def reconcile(self, occupancy: Mapping[str, str], *, operator: str, reason: str) -> None:
+        """
+        Replace the recorded deck with an operator-verified occupancy and mark it valid.
+
+        This is the only way to clear an invalid ledger. It must run while the
+        connector is stopped (see ``python -m unitelabs.opentrons_flex.deck_ledger``),
+        never from a remote SiLA call. The previous ledger and the new occupancy are
+        appended to an audit log before the ledger is replaced.
+        """
+        operator = operator.strip()
+        reason = reason.strip()
+        if not operator or not reason:
+            msg = "Deck reconciliation requires a non-empty operator identity and reason."
+            raise ValueError(msg)
+        validated = self._validate_occupancy(occupancy, "reconciled occupancy")
+        entry = {
+            "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
+            "operator": operator,
+            "reason": reason,
+            "previous": {"valid": self._valid, "occupancy": dict(self._occupancy)},
+            "reconciled_occupancy": validated,
+        }
+        try:
+            with self.audit_path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(entry, sort_keys=True) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError as exc:
+            msg = f"Cannot append the deck reconciliation audit record {self.audit_path}: {exc}"
+            raise RuntimeError(msg) from exc
+        self._persist_snapshot(valid=True, clean_shutdown=self._clean_shutdown, occupancy=validated)
+        self._occupancy = validated
         self._valid = True
 
     def close(self) -> None:

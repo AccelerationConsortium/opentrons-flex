@@ -34,14 +34,16 @@ from opentrons_shared_data.robot.types import RobotType
 from ._errors import (
     LiquidVolumeOutOfRangeError,
     MachineErrorStateError,
-    NotHomedError,
     NozzleConfigurationError,
     PipetteNotAttachedError,
+    RecoveryRequiredError,
     TipNotAttachedError,
     TipPickupError,
     TipStateError,
+    mark_task_halt_cancelled,
     translate_liquid_errors,
     translate_motion_errors,
+    translate_system_errors,
     translate_tip_errors,
 )
 from .hardware_proxy import _TimedLock
@@ -283,11 +285,13 @@ class FlexMotionController:
                 self._assert_machine_ok()
                 return result
 
+    @translate_system_errors
     async def gantry_position(self, mount: OT3Mount) -> Point:
         """Return the current position of ``mount``."""
         async with self._lock.observation():
             return await self._api.gantry_position(mount, refresh=True)
 
+    @translate_system_errors
     async def stop(self) -> None:
         """Halt all motion without waiting for the operation lock."""
         self._recovery_state.mark_halted()
@@ -321,6 +325,7 @@ class FlexMotionController:
 
     # --------------------------------------------------------------- pipettes
 
+    @translate_system_errors
     async def cache_instruments(self) -> None:
         """Re-scan the mounts for attached pipettes."""
         async with self._lock:
@@ -331,6 +336,7 @@ class FlexMotionController:
         """Mapping of mount -> attached pipette dict (empty dict when no pipette)."""
         return dict(self._api.attached_instruments)
 
+    @translate_system_errors
     async def configure_nozzle_layout(
         self,
         mount: OT3Mount,
@@ -496,11 +502,14 @@ class FlexMotionController:
     def _assert_operation_ready(self) -> None:
         if not self._recovery_state.operation_ready:
             msg = f"The robot is recovery-gated. {self._recovery_state.operator_guidance} before retrying."
-            raise NotHomedError(msg)
+            raise RecoveryRequiredError(msg)
 
     def _assert_operation_generation(self, generation: int) -> None:
         """Abort before the next actuation if a concurrent halt invalidated the operation."""
         if generation != self._recovery_state.generation:
+            task = asyncio.current_task()
+            if task is not None:
+                mark_task_halt_cancelled(task)
             raise asyncio.CancelledError
 
     @staticmethod
@@ -709,13 +718,59 @@ class FlexMotionController:
             self._assert_pipette_attached(mount)
             return await self._api.get_tip_presence_status(mount)
 
+    @translate_tip_errors
+    async def reconcile_tip_state(self, mount: OT3Mount, tip_length: float) -> TipStateType:
+        """
+        Read the tip sensor, align the software tip model with it, and lift the tip quarantine.
+
+        ``tip_length`` is used only when the sensor reports a tip that the
+        software model does not know about; otherwise the recorded length is kept.
+        Reconciliation never moves the robot, so it is permitted while recovery-gated.
+        """
+        if not math.isfinite(tip_length) or not 0.0 < tip_length <= MAX_SUPPORTED_TIP_LENGTH_MM:
+            msg = f"Tip length must be finite, greater than 0 mm, and at most {MAX_SUPPORTED_TIP_LENGTH_MM:g} mm."
+            raise TipStateError(msg)
+        async with self._lock:
+            self._assert_pipette_attached(mount)
+            state = await self._api.get_tip_presence_status(mount)
+            instrument = self._api.hardware_instruments[mount.to_mount()]
+            known_length = None if instrument.has_tip else tip_length
+            self._synchronize_tip_model(mount, state, known_length)
+            self._recovery_state.mark_tip_reconciled(mount.name)
+            log.info("%s tip state reconciled to %s by operator request", mount.name, state.name)
+            return state
+
+    async def cached_gantry_position(self, mount: OT3Mount) -> Point | None:
+        """
+        Return the last known position of ``mount`` without bus I/O or the hardware lock.
+
+        Returns ``None`` when the position is unknown (for example before homing).
+        Intended for status reporting while another operation holds the hardware.
+        """
+        try:
+            return await self._api.gantry_position(mount, refresh=False)
+        except Exception:  # noqa: BLE001 - an unknown position is reported, never raised
+            return None
+
+    @property
+    def recovery_state(self) -> HardwareRecoveryState:
+        """Shared halt/recovery gate for this robot API."""
+        return self._recovery_state
+
+    @property
+    def hardware_busy(self) -> bool:
+        """Whether an operation currently holds the shared hardware lock."""
+        return self._lock.locked()
+
     # ------------------------------------------------------------------ lights
 
+    @translate_system_errors
     async def set_lights(self, button: bool | None = None, rails: bool | None = None) -> None:
         """Set the status-bar (``button``) and/or deck (``rails``) lights."""
         async with self._lock:
             await self._api.set_lights(button=button, rails=rails)
 
+    @translate_system_errors
     async def get_lights(self) -> dict[str, bool]:
         """Return the current light state, e.g. ``{"button": bool, "rails": bool}``."""
         async with self._lock.observation():

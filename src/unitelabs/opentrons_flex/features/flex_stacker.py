@@ -233,7 +233,7 @@ class FlexStackerFeature(_FlexStackerCommands, sila.Feature):
             category="modules",
             identifier="FlexStackerController",
             name="Flex Stacker Controller",
-            version="2.0",
+            version="2.1",
         )
         self._controller = controller
 
@@ -304,7 +304,7 @@ class FlexStackerMaintenanceFeature(_FlexStackerCommands, sila.Feature):
             category="modules",
             identifier="FlexStackerMaintenanceController",
             name="Flex Stacker Maintenance Controller",
-            version="1.0",
+            version="1.1",
         )
         self._controller = controller
 

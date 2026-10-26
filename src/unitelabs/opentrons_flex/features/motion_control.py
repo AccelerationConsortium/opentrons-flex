@@ -10,7 +10,6 @@ mix, touch-tip, liquid tracking, transfer profiles, and verified liquid classes
 are separated into ``LiquidHandlingController``.
 """
 
-import asyncio
 import enum
 import typing
 from dataclasses import dataclass
@@ -21,6 +20,10 @@ from unitelabs.cdk import sila
 from unitelabs.cdk.sila import constraints
 
 from ..io import (
+    SYSTEM_ERRORS,
+    HardwareBusyError,
+    HardwareError,
+    RecoveryRequiredError,
     DirectGripperControlDisabledError,
     FlexMotionController,
     LiquidHandlingError,
@@ -33,7 +36,7 @@ from ..io import (
     StallDetectedError,
     TipNotAttachedError,
 )
-from ._progress import OperationPhase, OperationProgress, report_progress, run_observable
+from ._progress import OperationProgress, run_observable, observable_action
 
 # Expected failure modes for any commanded move; declared on the SiLA commands so
 # clients receive Defined Execution Errors (with recovery hints) rather than
@@ -42,6 +45,7 @@ from ._progress import OperationPhase, OperationProgress, report_progress, run_o
 _MOVE_ERRORS = [
     RunOwnershipError,
     NotHomedError,
+    *SYSTEM_ERRORS,
     MovementOutOfBoundsError,
     StallDetectedError,
     MachineErrorStateError,
@@ -139,6 +143,11 @@ def _to_position(point: Point) -> Position:
     return Position(x=point.x, y=point.y, z=point.z)
 
 
+async def _call(function: typing.Callable[[], None]) -> None:
+    """Adapt a synchronous controller call to the shared observable runner."""
+    function()
+
+
 class MotionControlFeature(sila.Feature):
     """
     SiLA2 feature for Opentrons Flex gantry and pipette motion.
@@ -154,13 +163,14 @@ class MotionControlFeature(sila.Feature):
             category="robots",
             identifier="MotionController",
             name="Motion Controller",
-            version="2.0",
+            version="2.1",
         )
         self._controller = controller
 
     # ------------------------------------------------------------------ homing
 
     @sila.ObservableCommand(errors=_MOVE_ERRORS)
+    @observable_action("Starting full robot home.", "Full robot home completed.", "Full robot home cancelled.")
     async def home(
         self,
         *,
@@ -173,15 +183,14 @@ class MotionControlFeature(sila.Feature):
         Yields:
             Update: Current homing progress update.
         """
-        report_progress(status, intermediate, 0.0, OperationPhase.STARTING, "Starting full robot home.")
-        try:
-            await self._controller.home()
-        except asyncio.CancelledError:
-            report_progress(status, intermediate, 1.0, OperationPhase.CANCELLED, "Full robot home cancelled.")
-            raise
-        report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, "Full robot home completed.")
+        await self._controller.home()
 
     @sila.ObservableCommand(errors=_MOVE_ERRORS)
+    @observable_action(
+        "Starting {mount.value} mount home.",
+        "{mount.value} mount home completed.",
+        "{mount.value} mount home cancelled.",
+    )
     async def home_mount(
         self,
         mount: Mount,
@@ -198,17 +207,16 @@ class MotionControlFeature(sila.Feature):
         Yields:
             Update: Current homing progress update.
         """
-        report_progress(status, intermediate, 0.0, OperationPhase.STARTING, f"Starting {mount.value} mount home.")
-        try:
-            await self._controller.home_mount(_ot3_mount(mount))
-        except asyncio.CancelledError:
-            report_progress(status, intermediate, 1.0, OperationPhase.CANCELLED, f"{mount.value} mount home cancelled.")
-            raise
-        report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, f"{mount.value} mount home completed.")
+        await self._controller.home_mount(_ot3_mount(mount))
 
     # ------------------------------------------------------------------ motion
 
     @sila.ObservableCommand(errors=_MOVE_ERRORS)
+    @observable_action(
+        "Starting {mount.value} absolute move.",
+        "{mount.value} absolute move completed.",
+        "{mount.value} absolute move cancelled.",
+    )
     async def move_to(
         self,
         mount: Mount,
@@ -236,23 +244,16 @@ class MotionControlFeature(sila.Feature):
         Returns:
             The mount position after the move.
         """
-        report_progress(status, intermediate, 0.0, OperationPhase.STARTING, f"Starting {mount.value} absolute move.")
         spd = speed if speed > 0 else None
-        try:
-            point = await self._controller.move_to(_ot3_mount(mount), Point(x=x, y=y, z=z), speed=spd)
-        except asyncio.CancelledError:
-            report_progress(
-                status,
-                intermediate,
-                1.0,
-                OperationPhase.CANCELLED,
-                f"{mount.value} absolute move cancelled.",
-            )
-            raise
-        report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, f"{mount.value} absolute move completed.")
+        point = await self._controller.move_to(_ot3_mount(mount), Point(x=x, y=y, z=z), speed=spd)
         return _to_position(point)
 
     @sila.ObservableCommand(errors=_MOVE_ERRORS)
+    @observable_action(
+        "Starting {mount.value} relative move.",
+        "{mount.value} relative move completed.",
+        "{mount.value} relative move cancelled.",
+    )
     async def move_relative(
         self,
         mount: Mount,
@@ -280,22 +281,8 @@ class MotionControlFeature(sila.Feature):
         Returns:
             The mount position after the move.
         """
-        report_progress(status, intermediate, 0.0, OperationPhase.STARTING, f"Starting {mount.value} relative move.")
         spd = speed if speed > 0 else None
-        try:
-            point = await self._controller.move_rel(
-                _ot3_mount(mount), Point(x=delta_x, y=delta_y, z=delta_z), speed=spd
-            )
-        except asyncio.CancelledError:
-            report_progress(
-                status,
-                intermediate,
-                1.0,
-                OperationPhase.CANCELLED,
-                f"{mount.value} relative move cancelled.",
-            )
-            raise
-        report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, f"{mount.value} relative move completed.")
+        point = await self._controller.move_rel(_ot3_mount(mount), Point(x=delta_x, y=delta_y, z=delta_z), speed=spd)
         return _to_position(point)
 
     @sila.ObservableCommand(errors=_MOVE_ERRORS)
@@ -325,6 +312,11 @@ class MotionControlFeature(sila.Feature):
     # ----------------------------------------------------- primitive liquid moves
 
     @sila.ObservableCommand(errors=_LIQUID_ERRORS)
+    @observable_action(
+        "Preparing {mount.value} to aspirate.",
+        "{mount.value} preparation completed.",
+        "{mount.value} preparation cancelled.",
+    )
     async def prepare_for_aspirate(
         self,
         mount: Mount,
@@ -338,21 +330,14 @@ class MotionControlFeature(sila.Feature):
         Yields:
             Update: Current pipette preparation progress update.
         """
-        report_progress(status, intermediate, 0.0, OperationPhase.STARTING, f"Preparing {mount.value} to aspirate.")
-        try:
-            await self._controller.prepare_for_aspirate(_ot3_mount(mount))
-        except asyncio.CancelledError:
-            report_progress(
-                status,
-                intermediate,
-                1.0,
-                OperationPhase.CANCELLED,
-                f"{mount.value} preparation cancelled.",
-            )
-            raise
-        report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, f"{mount.value} preparation completed.")
+        await self._controller.prepare_for_aspirate(_ot3_mount(mount))
 
     @sila.ObservableCommand(errors=_LIQUID_ERRORS)
+    @observable_action(
+        "Starting {mount.value} aspiration.",
+        "{mount.value} aspiration completed.",
+        "{mount.value} aspiration cancelled.",
+    )
     async def aspirate(
         self,
         mount: Mount,
@@ -373,15 +358,12 @@ class MotionControlFeature(sila.Feature):
         Yields:
             Update: Current aspiration progress update.
         """
-        report_progress(status, intermediate, 0.0, OperationPhase.STARTING, f"Starting {mount.value} aspiration.")
-        try:
-            await self._controller.aspirate(_ot3_mount(mount), volume=volume, rate=rate)
-        except asyncio.CancelledError:
-            report_progress(status, intermediate, 1.0, OperationPhase.CANCELLED, f"{mount.value} aspiration cancelled.")
-            raise
-        report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, f"{mount.value} aspiration completed.")
+        await self._controller.aspirate(_ot3_mount(mount), volume=volume, rate=rate)
 
     @sila.ObservableCommand(errors=_LIQUID_ERRORS)
+    @observable_action(
+        "Starting {mount.value} dispense.", "{mount.value} dispense completed.", "{mount.value} dispense cancelled."
+    )
     async def dispense(
         self,
         mount: Mount,
@@ -405,15 +387,12 @@ class MotionControlFeature(sila.Feature):
             Update: Current dispense progress update.
         """
         po = push_out if push_out > 0 else None
-        report_progress(status, intermediate, 0.0, OperationPhase.STARTING, f"Starting {mount.value} dispense.")
-        try:
-            await self._controller.dispense(_ot3_mount(mount), volume=volume, rate=rate, push_out=po)
-        except asyncio.CancelledError:
-            report_progress(status, intermediate, 1.0, OperationPhase.CANCELLED, f"{mount.value} dispense cancelled.")
-            raise
-        report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, f"{mount.value} dispense completed.")
+        await self._controller.dispense(_ot3_mount(mount), volume=volume, rate=rate, push_out=po)
 
     @sila.ObservableCommand(errors=_LIQUID_ERRORS)
+    @observable_action(
+        "Starting {mount.value} blow-out.", "{mount.value} blow-out completed.", "{mount.value} blow-out cancelled."
+    )
     async def blow_out(
         self,
         mount: Mount,
@@ -427,17 +406,11 @@ class MotionControlFeature(sila.Feature):
         Yields:
             Update: Current blow-out progress update.
         """
-        report_progress(status, intermediate, 0.0, OperationPhase.STARTING, f"Starting {mount.value} blow-out.")
-        try:
-            await self._controller.blow_out(_ot3_mount(mount))
-        except asyncio.CancelledError:
-            report_progress(status, intermediate, 1.0, OperationPhase.CANCELLED, f"{mount.value} blow-out cancelled.")
-            raise
-        report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, f"{mount.value} blow-out completed.")
+        await self._controller.blow_out(_ot3_mount(mount))
 
     # ------------------------------------------------------------ stop / pause
 
-    @sila.ObservableCommand()
+    @sila.ObservableCommand(errors=[HardwareError])
     async def emergency_stop(
         self,
         *,
@@ -460,7 +433,7 @@ class MotionControlFeature(sila.Feature):
         )
         return "Emergency stop executed. Re-home required before resuming."
 
-    @sila.ObservableCommand()
+    @sila.ObservableCommand(errors=[RunOwnershipError])
     async def pause(
         self,
         *,
@@ -473,12 +446,17 @@ class MotionControlFeature(sila.Feature):
         Yields:
             Update: Current pause progress update.
         """
-        report_progress(status, intermediate, 0.0, OperationPhase.STARTING, "Pausing motion execution.")
-        self._controller.pause()
-        report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, "Motion execution paused.")
+        await run_observable(
+            status,
+            intermediate,
+            "Pausing motion execution.",
+            "Motion execution paused.",
+            "Pause cancelled.",
+            _call(self._controller.pause),
+        )
         return "Motion paused"
 
-    @sila.ObservableCommand()
+    @sila.ObservableCommand(errors=[RunOwnershipError, NotHomedError, RecoveryRequiredError])
     async def resume(
         self,
         *,
@@ -491,14 +469,19 @@ class MotionControlFeature(sila.Feature):
         Yields:
             Update: Current resume progress update.
         """
-        report_progress(status, intermediate, 0.0, OperationPhase.STARTING, "Resuming motion execution.")
-        self._controller.resume()
-        report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, "Motion execution resumed.")
+        await run_observable(
+            status,
+            intermediate,
+            "Resuming motion execution.",
+            "Motion execution resumed.",
+            "Resume cancelled.",
+            _call(self._controller.resume),
+        )
         return "Motion resumed"
 
     # ------------------------------------------------------------------ lights
 
-    @sila.ObservableCommand()
+    @sila.ObservableCommand(errors=[RunOwnershipError, HardwareBusyError, HardwareError])
     async def set_lights(
         self,
         button: bool,
@@ -527,7 +510,7 @@ class MotionControlFeature(sila.Feature):
         )
         return await self._read_lights()
 
-    @sila.UnobservableProperty()
+    @sila.UnobservableProperty(errors=[HardwareBusyError, HardwareError])
     async def lights(self) -> Lights:
         """Return the current status-bar and deck light state."""
         return await self._read_lights()

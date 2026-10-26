@@ -102,7 +102,7 @@ def test_heater_shaker_definition_has_units_constraints_and_controller_name() ->
     feature.attach()
     fdl = Serializer.serialize(feature.serialize)
 
-    assert 'FeatureVersion="3.2"' in fdl
+    assert 'FeatureVersion="3.3"' in fdl
     assert "<Identifier>HeaterShakerController</Identifier>" in fdl
     assert "<DisplayName>Heater Shaker Controller</DisplayName>" in fdl
     assert "<Identifier>SetSpeed</Identifier>" in fdl
@@ -134,7 +134,7 @@ def test_thermocycler_definition_uses_controller_naming() -> None:
 
     assert "<Identifier>ThermocyclerController</Identifier>" in fdl
     assert "<DisplayName>Thermocycler Controller</DisplayName>" in fdl
-    assert 'FeatureVersion="2.1"' in fdl
+    assert 'FeatureVersion="2.2"' in fdl
     assert "<Identifier>TemperatureCelsius</Identifier>" not in fdl
     assert "<Identifier>HoldTimeSeconds</Identifier>" not in fdl
     assert "<Identifier>VolumeUl</Identifier>" not in fdl
@@ -156,7 +156,7 @@ def test_temperature_controller_definition_is_unit_annotated_and_has_no_success_
     feature.attach()
     fdl = Serializer.serialize(feature.serialize)
 
-    assert 'FeatureVersion="2.0"' in fdl
+    assert 'FeatureVersion="2.1"' in fdl
     assert "<Identifier>TemperatureController</Identifier>" in fdl
     assert "<DisplayName>Temperature Controller</DisplayName>" in fdl
     assert "<Identifier>SetTemperature</Identifier>" in fdl
@@ -182,7 +182,7 @@ def test_absorbance_reader_definition_is_typed_and_unit_annotated() -> None:
     feature.attach()
     fdl = Serializer.serialize(feature.serialize)
 
-    assert 'FeatureVersion="2.0"' in fdl
+    assert 'FeatureVersion="2.1"' in fdl
     assert "<Identifier>AbsorbanceReaderController</Identifier>" in fdl
     assert "<DisplayName>Absorbance Reader Controller</DisplayName>" in fdl
     assert "<Identifier>InitializeSingle</Identifier>" in fdl
@@ -206,7 +206,7 @@ def test_flex_stacker_definition_uses_units_and_structured_results() -> None:
     feature.attach()
     fdl = Serializer.serialize(feature.serialize)
 
-    assert 'FeatureVersion="2.0"' in fdl
+    assert 'FeatureVersion="2.1"' in fdl
     assert "<Identifier>FlexStackerController</Identifier>" in fdl
     assert "<DisplayName>Flex Stacker Controller</DisplayName>" in fdl
     assert "<Identifier>RetrieveLabware</Identifier>" in fdl
@@ -227,7 +227,7 @@ def test_flex_stacker_maintenance_definition_is_separate_and_constrained() -> No
     feature.attach()
     fdl = Serializer.serialize(feature.serialize)
 
-    assert 'FeatureVersion="1.0"' in fdl
+    assert 'FeatureVersion="1.1"' in fdl
     assert "<Identifier>FlexStackerMaintenanceController</Identifier>" in fdl
     assert "<Identifier>HomeAll</Identifier>" in fdl
     assert "<Identifier>MoveAxis</Identifier>" in fdl

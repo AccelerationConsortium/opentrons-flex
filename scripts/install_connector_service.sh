@@ -108,7 +108,7 @@ restore_stock() {
     i=60
     while [ "$i" -gt 0 ]; do
         if systemctl is-active --quiet opentrons-robot-server 2>/dev/null &&
-            curl --fail --silent --connect-timeout 2 --max-time 5 \
+            curl --fail --silent -H 'Opentrons-Version: *' --connect-timeout 2 --max-time 5 \
                 http://127.0.0.1:31950/health >/dev/null 2>&1; then
             echo "Stock Opentrons mode restored and healthy."
             return 0
@@ -156,7 +156,7 @@ READY=no
 i=60
 while [ "$i" -gt 0 ]; do
     if python3 -c "import socket; s=socket.create_connection(('127.0.0.1',50051),2); s.close()" 2>/dev/null &&
-        curl --fail --silent --show-error --connect-timeout 2 --max-time 5 \
+        curl --fail --silent -H 'Opentrons-Version: *' --show-error --connect-timeout 2 --max-time 5 \
             http://127.0.0.1:31950/health >/dev/null 2>&1 &&
         stock_services_stopped_and_disabled; then
         READY=yes
@@ -176,13 +176,13 @@ fi
 
 # These two read-only requests catch the exact failure mode where /health works
 # but robot-server state or connector-owned mutation routes were not initialized.
-if ! curl --fail --silent --show-error --connect-timeout 2 --max-time 10 \
+if ! curl --fail --silent -H 'Opentrons-Version: *' --show-error --connect-timeout 2 --max-time 10 \
     http://127.0.0.1:31950/deck_configuration >/dev/null; then
     echo "ERROR: embedded /deck_configuration did not answer within 10 seconds." >&2
     restore_stock
     exit 1
 fi
-if ! curl --fail --silent --show-error --connect-timeout 2 --max-time 10 \
+if ! curl --fail --silent -H 'Opentrons-Version: *' --show-error --connect-timeout 2 --max-time 10 \
     http://127.0.0.1:31950/openapi.json |
     python3 -c "import json,sys; paths=json.load(sys.stdin).get('paths',{}); assert '/unitelabs/runs/{run_id}/mutations' in paths"; then
     echo "ERROR: controlled mutation routes are absent from embedded robot-server." >&2

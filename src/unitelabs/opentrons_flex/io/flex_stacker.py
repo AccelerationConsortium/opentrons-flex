@@ -63,6 +63,11 @@ class FlexStackerController(ModuleControllerBase):
             stacker_recovery_state_for(module) if module is not None else None
         )
 
+    def _on_module_rebound(self, module: object) -> None:
+        # A reconnected Stacker has an unknown position until it is fully homed.
+        self._recovery_state = stacker_recovery_state_for(module)
+        self._recovery_state.require_full_home()
+
     @staticmethod
     def _module_only() -> ModuleOperationError:
         return ModuleOperationError(

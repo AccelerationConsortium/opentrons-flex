@@ -168,7 +168,7 @@ class HeaterShakerFeature(sila.Feature):
             category="modules",
             identifier="HeaterShakerController",
             name="Heater Shaker Controller",
-            version="3.2",
+            version="3.3",
         )
         self._controller = controller
 

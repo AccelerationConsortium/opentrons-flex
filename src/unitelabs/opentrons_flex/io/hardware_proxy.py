@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from opentrons.hardware_control import HardwareControlAPI
 from opentrons.hardware_control.types import Axis, OT3Mount
 
-from ._errors import NotHomedError
+from ._errors import HardwareBusyError, NotHomedError, RecoveryRequiredError
 from ._module_base import complete_before_cancellation
 from .recovery_state import (
     FlexStackerRecoveryState,
@@ -32,16 +32,31 @@ if typing.TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# Calls that never move an axis, so they stay available while recovery gates are
+# set. robot-server makes several of them during startup (event callbacks, the
+# status bar, nozzle bookkeeping); gating them made the embedded HTTP server fail
+# to start whenever a halt had been persisted before a restart.
 _RECOVERY_SAFE_CALLS = frozenset(
     {
         "add_tip",
+        "build_temporary_identity_calibration",
         "cache_instruments",
         "clean_up",
         "current_position",
+        "estop_acknowledge_and_clear",
         "gantry_position",
         "get_tip_presence_status",
         "pause",
+        "register_callback",
         "remove_tip",
+        "reset_instrument",
+        "set_lights",
+        "set_status_bar_enabled",
+        "set_status_bar_state",
+        "update_config",
+        "update_nozzle_configuration_for_mount",
+        "validate_calibration",
+        "wrapped",
     }
 )
 
@@ -72,11 +87,18 @@ class _TimedLock:
                 acquire = self._lock.acquire
             await asyncio.wait_for(acquire(), timeout=self._timeout_s)
         except TimeoutError:
-            msg = f"Hardware lock not acquired within {self._timeout_s}s — robot_server may be holding the hardware API"
-            raise TimeoutError(msg) from None
+            msg = (
+                f"Hardware lock not acquired within {self._timeout_s}s; another SiLA client, the HTTP "
+                "robot-server, or a long-running module action is holding the Flex. Retry when it finishes."
+            )
+            raise HardwareBusyError(msg) from None
 
     async def __aexit__(self, *args: object) -> None:
         self._lock.release()
+
+    def locked(self) -> bool:
+        """Return whether the underlying shared hardware lock is held."""
+        return bool(self._lock.locked())
 
     def assert_direct_control_allowed(self) -> None:
         """Apply a RunAwareLock ownership check to synchronous direct calls."""
@@ -580,7 +602,7 @@ def _allowed_during_recovery(
 
 def _recovery_error(state: HardwareRecoveryState) -> NotHomedError:
     msg = f"The robot is recovery-gated. {state.operator_guidance} before another hardware actuation."
-    return NotHomedError(msg)
+    return RecoveryRequiredError(msg)
 
 
 async def _recover_cancelled_proxy_action(

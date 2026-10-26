@@ -19,7 +19,16 @@ import typing
 from opentrons.hardware_control import HardwareControlAPI
 from opentrons.hardware_control.types import GripperProbe, OT3Mount
 
-from ._errors import CalibrationFailedError, CalibrationProbeNotAttachedError, NotHomedError
+from ._errors import (
+    CalibrationFailedError,
+    CalibrationProbeNotAttachedError,
+    HardwareBusyError,
+    NotHomedError,
+    OperationHaltedError,
+    RecoveryRequiredError,
+    mark_task_halt_cancelled,
+    translate_system_errors,
+)
 from .hardware_proxy import _TimedLock
 from .recovery_state import HardwareRecoveryState, recovery_state_for
 
@@ -57,7 +66,7 @@ class FlexCalibrationController:
     def _assert_operation_ready(self) -> None:
         if not self._recovery_state.operation_ready:
             msg = f"The robot is recovery-gated. {self._recovery_state.operator_guidance} before calibration."
-            raise NotHomedError(msg)
+            raise RecoveryRequiredError(msg)
 
     async def _recover_cancelled_calibration(self) -> None:
         """Finish a physical halt despite repeated client cancellation."""
@@ -82,17 +91,23 @@ class FlexCalibrationController:
             try:
                 result = await action()
                 if generation != self._recovery_state.generation:
+                    current = asyncio.current_task()
+                    if current is not None:
+                        mark_task_halt_cancelled(current)
                     raise asyncio.CancelledError
                 return result
             except asyncio.CancelledError:
                 self._recovery_state.unregister_operation(task)
                 await self._recover_cancelled_calibration()
                 raise
+            except (HardwareBusyError, OperationHaltedError):
+                raise
             except Exception as exc:
                 raise self._translate(exc) from exc
             finally:
                 self._recovery_state.unregister_operation(task)
 
+    @translate_system_errors
     async def calibrate_pipette(
         self, mount: OT3Mount, slot: int = DEFAULT_CALIBRATION_SLOT
     ) -> tuple[float, float, float]:
@@ -106,6 +121,7 @@ class FlexCalibrationController:
         offset = await self._execute(lambda: cal.calibrate_pipette(self._api, mount=mount, slot=slot))
         return (offset.x, offset.y, offset.z)
 
+    @translate_system_errors
     async def calibrate_gripper_jaw(
         self, probe: GripperProbe, slot: int = DEFAULT_CALIBRATION_SLOT
     ) -> tuple[float, float, float]:
@@ -120,6 +136,7 @@ class FlexCalibrationController:
         offset = await self._execute(lambda: cal.calibrate_gripper_jaw(self._api, probe=probe, slot=slot))
         return (offset.x, offset.y, offset.z)
 
+    @translate_system_errors
     async def calibrate_deck(self, mount: OT3Mount, pipette_id: str) -> None:
         """Run automatic deck (belt) calibration using the pipette on ``mount``."""
         from opentrons.hardware_control import ot3_calibration as cal

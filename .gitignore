@@ -242,6 +242,15 @@ config/ot2_config.local.json
 !README.md
 !CHANGELOG.md
 !docs/asms_flex_workflow_test.md
+!docs/quickstart.zh.md
+!docs/hardware_verification.md
+
+# flexctl local state
+.flex-sim/
+flex-verify-*.json
+dist_arm.download/
+dist_arm.build/
+dist_arm.old/
 plan/
 dev/tailscale setup/*.tgz
 .venv-introspect/

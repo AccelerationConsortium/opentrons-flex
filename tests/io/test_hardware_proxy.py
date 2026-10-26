@@ -15,15 +15,14 @@ from unittest.mock import MagicMock
 
 import pytest
 import pytest_asyncio
-
 from opentrons import types
+from opentrons.drivers.smoothie_drivers.simulator import SimulatingDriver
 from opentrons.hardware_control import API
 from opentrons.hardware_control.backends.simulator import Simulator
 from opentrons.hardware_control.errors import OutOfBoundsMove
 from opentrons.hardware_control.ot3api import OT3API
 from opentrons.hardware_control.types import Axis, MotionChecks, OT3Mount
 from opentrons_shared_data.errors.exceptions import PositionUnknownError
-from opentrons.drivers.smoothie_drivers.simulator import SimulatingDriver
 
 from unitelabs.opentrons_flex.io import (
     DirectGripperControlDisabledError,
@@ -31,6 +30,7 @@ from unitelabs.opentrons_flex.io import (
     LabwareMovementState,
     NotHomedError,
 )
+from unitelabs.opentrons_flex.io._errors import HardwareBusyError
 from unitelabs.opentrons_flex.io.hardware_proxy import HardwareProxy, _TimedLock
 from unitelabs.opentrons_flex.io.recovery_state import stacker_recovery_state_for
 from unitelabs.opentrons_flex.io.simulator_compat import OT3SimulatorCompatibilityAdapter
@@ -466,7 +466,7 @@ async def test_timed_lock_raises_on_timeout() -> None:
     await raw.acquire()  # simulate robot_server holding the lock
 
     tl = _TimedLock(raw, timeout_s=0.05)
-    with pytest.raises(TimeoutError, match="robot_server may be holding the hardware API"):
+    with pytest.raises(HardwareBusyError, match="holding the Flex"):
         async with tl:
             pass  # should not reach here
 
@@ -479,7 +479,7 @@ async def test_proxy_timeout_raises_on_held_lock(api: API) -> None:
     await shared_lock.acquire()  # simulate robot_server holding the lock
 
     proxy = HardwareProxy(api, lock=shared_lock, lock_timeout_s=0.05)
-    with pytest.raises(TimeoutError, match="robot_server may be holding the hardware API"):
+    with pytest.raises(HardwareBusyError, match="holding the Flex"):
         await proxy.home()
 
     shared_lock.release()
@@ -786,3 +786,33 @@ async def test_locked_gen_holds_lock_while_iterating(proxy: HardwareProxy) -> No
 
     assert results == [42]
     assert not lock.locked()
+
+
+async def test_robot_server_startup_calls_are_allowed_while_recovery_gated() -> None:
+    """A halt persisted before a restart must not stop the embedded robot-server from starting."""
+    from opentrons.hardware_control.types import StatusBarState
+    from opentrons.types import Point
+
+    from unitelabs.opentrons_flex.io import RecoveryRequiredError
+    from unitelabs.opentrons_flex.io.recovery_state import recovery_state_for
+
+    api = await OT3API.build_hardware_simulator()
+    try:
+        recovery_state_for(api).mark_halted()
+        proxy = HardwareProxy(api)
+
+        proxy.register_callback(lambda _event: None)
+        await proxy.set_status_bar_state(StatusBarState.IDLE)
+        await proxy.set_lights(rails=True)
+        await proxy.cache_instruments()
+        with pytest.raises(RecoveryRequiredError):
+            await proxy.move_rel(OT3Mount.LEFT, Point(1, 0, 0))
+
+        store_module = pytest.importorskip("robot_server.runs.run_orchestrator_store")
+        from opentrons.protocol_engine.types import DeckType
+
+        store_module.RunOrchestratorStore(
+            hardware_api=proxy, robot_type="OT-3 Standard", deck_type=DeckType.OT3_STANDARD
+        )
+    finally:
+        await api.clean_up()

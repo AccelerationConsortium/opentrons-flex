@@ -5,6 +5,53 @@ exclusive connector profiles: the full Protocol Engine profile also replaces the
 standard Opentrons robot-server HTTP API, while the unit-operation profile gives
 SiLA sole ownership of the hardware for guarded atomic commissioning.
 
+## Start here (5 minutes)
+
+You need a computer on the same network as the Flex. Nothing else has to be
+installed first: the bootstrap script installs [uv](https://docs.astral.sh/uv/),
+Python 3.12, the connector, and the `flexctl` tool, then starts a guided setup.
+中文版快速上手：[docs/quickstart.zh.md](docs/quickstart.zh.md).
+
+```sh
+git clone https://github.com/AccelerationConsortium/opentrons-flex.git
+cd opentrons-flex
+./bootstrap.sh                 # macOS / Linux
+# Windows PowerShell:  powershell -ExecutionPolicy Bypass -File .\bootstrap.ps1
+```
+
+The guided setup asks one question: **try the simulator, or set up a real Flex?**
+
+- **Simulator** starts a complete virtual Flex on this computer (SiLA on port
+  50051). In a second terminal, `uv run flexctl verify 127.0.0.1 --allow-simulator`
+  checks it. Add `--with-http` to `flexctl sim` for the Opentrons HTTP API too.
+- **Real Flex** finds the robot on the network, installs an SSH key (over a direct
+  Ethernet cable, or with a USB drive when you only have Wi-Fi), downloads the
+  matching robot software, deploys and starts the connector, and runs a smoke test.
+
+Then test the hardware with the robot in view (each step tells you what to do and
+what it expects; press `s` to skip a step):
+
+```sh
+uv run flexctl verify <robot-ip> --level motion   # ~2 min: homing and emergency stop
+uv run flexctl verify <robot-ip> --level all      # + tip reconciliation, restart, module unplug/plug
+```
+
+A JSON report (`flex-verify-<robot>-<time>.json`) is written next to you.
+See [docs/hardware_verification.md](docs/hardware_verification.md) for what each
+step checks.
+
+| Task | Command |
+|---|---|
+| Find robots | `uv run flexctl discover` |
+| SSH key only | `uv run flexctl ssh-setup <robot-ip> [--usb-drive /Volumes/USB]` |
+| Robot software bundle | `uv run flexctl build` (GitHub Actions artifact, or Docker) |
+| Deploy / update | `uv run flexctl up <robot-ip> --mode pe` (or `--mode unit`) |
+| What is running | `uv run flexctl status <robot-ip>` |
+| Logs | `uv run flexctl logs <robot-ip> --follow` |
+| Back to stock Opentrons | `uv run flexctl mode <robot-ip> opentrons` |
+| Previous release | `uv run flexctl rollback <robot-ip>` |
+| Tidy the checkout | `uv run flexctl clean --yes` |
+
 ## Architecture
 
 The deployed service has two selectable profiles:
@@ -32,7 +79,11 @@ and task management. After the connector injects the already-initialized shared
 hardware, it runs the native post-initialization callbacks that prepare Protocol
 Engine services, so `/runs`, `/protocols`, and `/commands` remain available without
 creating a second hardware controller. The connector remains the sole owner of
-the underlying asynchronous hardware cleanup.
+the underlying asynchronous hardware cleanup. The run-orchestrator store is
+created during startup, so SiLA commands are arbitrated correctly even before
+any HTTP client has called `/runs`. If the embedded HTTP server stops while the
+connector is running, `RobotStatusProvider` reports `HARDWARE_ERROR` and the
+connector exits with status 75 after a short grace period so systemd restarts it.
 
 In either connector profile, the standard `opentrons-robot-server` systemd
 service is disabled and `sila2-connector` owns the hardware. In `connector-pe`,
@@ -248,6 +299,37 @@ reconciliation before replacing the ledger and restarting.
 
 ## Getting Started
 
+### Quick start with `flexctl`
+
+`flexctl` is installed with the connector (`uv sync --python 3.12 --all-extras`)
+and wraps configuration, deployment, and day-to-day operation in single commands.
+Every remote action calls the reviewed scripts in this repository, so the
+fail-closed deployment behavior is unchanged; add `--dry-run` to print the
+commands without running them.
+
+```sh
+# Local simulator (add --with-http for the embedded Opentrons HTTP API)
+uv run flexctl sim
+
+# Mirror the modules attached to a real robot in a simulator config
+uv run flexctl config init --profile simulator --detect <robot-ip> --output config.json
+
+# Check the workstation and wheel bundle, then deploy and start on a Flex
+uv run flexctl doctor
+uv run flexctl up <robot-ip> --mode pe --operator <your-name>   # or --mode unit
+uv run flexctl status <robot-ip>
+uv run flexctl logs <robot-ip> --follow
+uv run flexctl mode <robot-ip> opentrons                          # hand back to stock
+uv run flexctl rollback <robot-ip>
+```
+
+`flexctl up` refuses to touch the robot when the wheel bundle is missing, has no
+`runtime-manifest.json`, or was built for a different connector version. It
+creates the controlled-mutation credential on first use (sent over SSH stdin and
+printed once), switches a running connector to stock mode before deployment,
+then runs `deploy.sh`, `install_connector_service.sh`, the requested mode switch,
+and `scripts/preflight_flex.py`.
+
 For a general introduction to connector development with the UniteLabs CDK, see the [connector development documentation](https://docs.unitelabs.io/connector-development).
 
 ### Prerequisites
@@ -330,20 +412,26 @@ To create a configuration file for the connector we run:
 
 Used as such this command will create a `config.json` in the current working directory. If you prefer yaml, or would like to save the file to a different location, add the `--path` argument. A ready-made template is provided in `config/flex_config.json`.
 
+`flexctl config init --profile simulator|simulator-full|connector-pe|connector-unit`
+writes a complete file for each supported deployment profile.
+
 Key values:
 
 - `use_simulator` — `true` runs the OT3 hardware simulator (no robot); `false` drives real Flex hardware.
-- `simulated_heater_shaker` — when `true`, explicitly attaches one simulated
-  Heater-Shaker to the OT3 simulator. It is rejected when `use_simulator=false`.
-- `simulated_flex_stacker` — explicitly attaches one simulated Flex Stacker.
-- `simulated_absorbance_reader` — explicitly attaches one simulated Absorbance
-  Plate Reader.
-- `simulated_temperature_module` — explicitly attaches one simulated Temperature
-  Module GEN2.
-- `simulated_gripper` — explicitly attaches a simulated Flex Gripper for
-  gripper-movement protocol execution. All simulated-hardware settings are rejected
-  in live-hardware mode.
+  The connector logs a warning at startup whenever it runs the simulator.
+- `simulated_modules` — accessories attached to the simulator: any of
+  `heater_shaker`, `flex_stacker`, `absorbance_reader`, `temperature_module`,
+  `thermocycler`, `gripper`. Rejected when `use_simulator=false`. The older
+  `simulated_<name>: true` flags are still accepted.
 - `with_robot_server` — `true` additionally starts the in-process opentrons HTTP robot-server.
+- `recovery_state_path` — durable file for recovery gates (tip quarantine, jaw
+  home). With it, restarting the connector cannot silently clear a gate.
+- `module_hot_plug` — `auto` (default), `restart`, or `report`; see
+  "Modules plugged or unplugged while running".
+- `robot_server_startup_timeout_s` — startup fails if the embedded robot-server
+  is not serving within this time (default 120 s).
+- `sila_server.version` — omit it; the connector reports its installed package
+  version. A stale explicit value is rejected by the deployment preflight.
 
 Note: The `cloud_server_endpoint` values are only necessary if you want to use the connector with the UniteLabs platform.
 
@@ -360,6 +448,83 @@ If you created your configuration file at a non-default location, specify it wit
 ```sh
 connector start --app unitelabs.opentrons_flex:create_app -cfg <path to config> -vvv
 ```
+
+## Status, recovery, and errors
+
+### `RobotStatusProvider`
+
+Subscribe to the observable `Status` property to see, in one stream, whether the
+Flex can accept a command. It is read from cached state and never waits for a
+running operation.
+
+| `State` | Meaning |
+|---|---|
+| `READY` | Commands are accepted. |
+| `BUSY` | Another operation holds the hardware; queued commands wait (up to `lock_timeout_s`). |
+| `PROTOCOL_RUN_ACTIVE` | A Protocol Engine run owns the Flex; direct SiLA actuation is refused. |
+| `RECOVERY_REQUIRED` | Follow `RecoveryGuidance` (re-home, `ReconcileTipState`, `HomeJaw`, or deck reconciliation). |
+| `HARDWARE_ERROR` | E-stop engaged, a registered module disconnected, or the embedded HTTP server stopped. |
+| `INITIALIZING` | The embedded robot-server is still starting. |
+
+The structure also reports E-stop and door state, each recovery gate, Protocol
+Engine run ownership, deck-ledger validity, per-module connection state, modules
+attached after startup (restart to use them), and the embedded web-server state.
+
+### Modules plugged or unplugged while running
+
+- **Unplug and replug the same module:** nothing to do. The feature reports
+  `ModuleNotRespondingError` while the module is absent and resumes automatically,
+  following the module by serial number. A *different* unit of the same type
+  (another serial) is never adopted silently, since it may hold other samples or
+  temperatures: the error names both serials; restart the connector to switch.
+  `Status.Modules[].Connected` shows the current state. A reconnected Flex Stacker
+  must be fully homed before it moves labware again.
+- **Plug in a module type that had no feature at startup:** with
+  `module_hot_plug: auto` (default on a real Flex) the connector waits until the
+  module has been present for 5 s and the robot is fully idle (status `READY`, no
+  active Protocol Engine run, no SiLA command in flight, no module temperature
+  wait or thermocycler profile, no recovery gate pending), sets
+  `Status.RestartPending`, and restarts itself (exit status 75, restarted by
+  systemd) so the new feature is registered. In the simulator, or with
+  `module_hot_plug: report`, it is only listed in `Status.UnregisteredModules`.
+  Two modules of the same type never trigger a restart.
+
+### Recovery workflow
+
+1. A halt, emergency stop, or interrupted action sets recovery gates. Every
+   actuation then fails with `RecoveryRequiredError`, whose message lists the
+   ordered actions (also in `Status.RecoveryGuidance`).
+2. `MotionController.Home` clears the re-home gate.
+3. `TipController.ReconcileTipState(Mount, TipLength)` reads the tip sensor,
+   aligns the software tip model with it, and lifts that mount's quarantine
+   without moving the robot. `TipLength` is used only if the sensor finds a tip
+   the software did not know about.
+4. `GripperController.HomeJaw` clears the jaw gate.
+5. An invalid deck ledger (after an interrupted gripper move or an unclean
+   shutdown) is reconciled only locally by an operator, never by a SiLA client:
+
+   ```sh
+   uv run flexctl mode <robot-ip> opentrons
+   uv run flexctl deck <robot-ip> show
+   uv run flexctl deck <robot-ip> reconcile --operator <name> --reason "<why>" \
+       --set A1=asms-plate --set B1=elution-plate --confirm      # or --empty / --initial
+   ```
+
+   Every reconciliation is appended to `<ledger>.reconciliations.jsonl`.
+
+### System-wide defined errors
+
+In addition to their own errors, hardware commands declare:
+
+| Error | When |
+|---|---|
+| `HardwareBusyError` | The shared hardware stayed busy longer than `lock_timeout_s`. |
+| `OperationHaltedError` | Another client's emergency stop or a halt interrupted this command. Client-initiated cancellation still ends as a normal cancellation. |
+| `RecoveryRequiredError` | A recovery gate is set; the message lists the required actions. |
+| `HardwareError` | Opentrons reported an error without a more specific mapping; the Opentrons error code, name, and detail are preserved. |
+
+Every observable command ends with exactly one terminal intermediate response:
+`COMPLETED`, `CANCELLED`, or `FAILED` (with the error type and message).
 
 ## Testing
 
@@ -647,6 +812,10 @@ the declared target is Python 3.12 on aarch64. Every platform-specific wheel
 must also carry a compatible `cp312`/`abi3` tag and an aarch64 platform tag.
 
 ### Installing on the Flex
+
+`uv run flexctl up <robot-ip> --mode pe --operator <name>` performs every step
+below in order (including credential provisioning). The manual steps remain
+available for review and recovery.
 
 Provision the mutation credential outside any replaceable release directory:
 

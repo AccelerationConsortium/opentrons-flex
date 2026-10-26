@@ -1,6 +1,5 @@
 """SiLA 2 controller for the sensor-verified Flex tip lifecycle."""
 
-import asyncio
 import enum
 import math
 import typing
@@ -11,6 +10,9 @@ from unitelabs.cdk import sila
 from unitelabs.cdk.sila import constraints
 
 from ..io import (
+    SYSTEM_ERRORS,
+    HardwareBusyError,
+    HardwareError,
     FlexMotionController,
     MachineErrorStateError,
     MovementOutOfBoundsError,
@@ -25,7 +27,7 @@ from ..io import (
     TipStateError,
 )
 from ._pipette_types import PIPETTE_MOUNTS, PipetteMount
-from ._progress import OperationPhase
+from ._progress import OperationPhase, run_observable
 
 MAX_SUPPORTED_TIP_LENGTH_MM = 100.0
 _MILLIMETRE = constraints.Unit(
@@ -43,11 +45,12 @@ TipLength = typing.Annotated[
 
 _TIP_MOTION_ERRORS = [
     NotHomedError,
+    *SYSTEM_ERRORS,
     MovementOutOfBoundsError,
     StallDetectedError,
     MachineErrorStateError,
 ]
-_TIP_STATE_ERRORS = [RunOwnershipError, PipetteNotAttachedError, TipStateError]
+_TIP_STATE_ERRORS = [RunOwnershipError, PipetteNotAttachedError, TipStateError, HardwareBusyError, HardwareError]
 _FEATURE_FQI = "ca.accelerationconsortium/robots/TipController/v1"
 
 
@@ -96,12 +99,12 @@ def _parameter_fqi(command: str, parameter: str) -> str:
     return f"{_FEATURE_FQI}/Command/{command}/Parameter/{parameter}"
 
 
-def _validate_tip_length(tip_length: float) -> None:
+def _validate_tip_length(tip_length: float, *, command: str = "PickUpTip") -> None:
     """Reject non-finite values not caught by numeric FDL constraints."""
     if not math.isfinite(tip_length) or not 0.0 < tip_length <= MAX_SUPPORTED_TIP_LENGTH_MM:
         raise sila.errors.ValidationError(
             f"Tip length must be finite and greater than 0 mm and at most {MAX_SUPPORTED_TIP_LENGTH_MM:g} mm.",
-            _parameter_fqi("PickUpTip", "TipLength"),
+            _parameter_fqi(command, "TipLength"),
         )
 
 
@@ -113,17 +116,6 @@ def _validate_location(command: str, location: TipLocation) -> None:
         )
 
 
-def _report_progress(
-    status: sila.Status,
-    intermediate: sila.Intermediate[TipOperationProgress],
-    progress: float,
-    phase: OperationPhase,
-    message: str,
-) -> None:
-    status.update(progress=progress)
-    intermediate.send(TipOperationProgress(phase=phase, message=message))
-
-
 async def _run_observable[T](
     status: sila.Status,
     intermediate: sila.Intermediate[TipOperationProgress],
@@ -132,14 +124,15 @@ async def _run_observable[T](
     cancelled_message: str,
     action: typing.Awaitable[T],
 ) -> T:
-    _report_progress(status, intermediate, 0.0, OperationPhase.STARTING, start_message)
-    try:
-        result = await action
-    except asyncio.CancelledError:
-        _report_progress(status, intermediate, 1.0, OperationPhase.CANCELLED, cancelled_message)
-        raise
-    _report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, complete_message)
-    return result
+    return await run_observable(
+        status,
+        intermediate,
+        start_message,
+        complete_message,
+        cancelled_message,
+        action,
+        progress_type=TipOperationProgress,
+    )
 
 
 class TipController(sila.Feature):
@@ -149,7 +142,7 @@ class TipController(sila.Feature):
         super().__init__(
             originator="ca.accelerationconsortium",
             category="robots",
-            version="1.0",
+            version="1.1",
         )
         self._controller = controller
 
@@ -254,4 +247,25 @@ class TipController(sila.Feature):
             TipPresence: PRESENT when a tip is attached; otherwise ABSENT.
         """
         state = await self._controller.get_tip_presence(PIPETTE_MOUNTS[mount])
+        return _tip_presence(state)
+
+    @sila.UnobservableCommand(errors=_TIP_STATE_ERRORS)
+    async def reconcile_tip_state(self, mount: PipetteMount, tip_length: TipLength) -> TipPresence:
+        """
+        Align the software tip model with the tip sensor and lift the tip quarantine for one mount.
+
+        Run this after physically inspecting the pipette when RobotStatusProvider
+        reports TipReconciliationRequired. The robot does not move. TipLength is
+        used only when the sensor reports a tip that the software model does not
+        know about; otherwise the recorded tip length is kept.
+
+        Args:
+            Mount: Pipette mount to reconcile (LEFT or RIGHT).
+            TipLength: Physical length of a tip that may be attached, in millimetres.
+
+        Returns:
+            TipPresence: The sensor state the software model now matches.
+        """
+        _validate_tip_length(tip_length, command="ReconcileTipState")
+        state = await self._controller.reconcile_tip_state(PIPETTE_MOUNTS[mount], tip_length)
         return _tip_presence(state)

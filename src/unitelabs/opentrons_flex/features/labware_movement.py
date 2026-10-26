@@ -1,6 +1,5 @@
 """SiLA 2 controller for locally allowlisted Flex gripper movement plans."""
 
-import asyncio
 import enum
 import typing
 from dataclasses import dataclass
@@ -9,6 +8,7 @@ from unitelabs.cdk import sila
 from unitelabs.cdk.sila import constraints
 
 from ..io import (
+    SYSTEM_ERRORS,
     DestinationOccupiedError,
     FlexLabwareMovementController,
     GripActionError,
@@ -22,7 +22,7 @@ from ..io import (
     RunOwnershipError,
     StallDetectedError,
 )
-from ._progress import OperationPhase, OperationProgress, report_progress
+from ._progress import OperationProgress, observable_action
 
 _MILLIMETRE = constraints.Unit(
     "mm",
@@ -36,6 +36,7 @@ LocationIdentifier = typing.Annotated[str, constraints.Pattern(r"^\S(?:.*\S)?$")
 _LABWARE_ERRORS = [
     RunOwnershipError,
     NotHomedError,
+    *SYSTEM_ERRORS,
     MovementOutOfBoundsError,
     StallDetectedError,
     MachineErrorStateError,
@@ -113,10 +114,16 @@ class LabwareMovementController(sila.Feature):
     """Execute server-provisioned labware and lid plans with pickup verification."""
 
     def __init__(self, controller: FlexLabwareMovementController) -> None:
-        super().__init__(originator="ca.accelerationconsortium", category="robots", version="1.1")
+        super().__init__(originator="ca.accelerationconsortium", category="robots", version="1.2")
         self._controller = controller
 
     @sila.ObservableCommand(errors=_LABWARE_ERRORS)
+    @observable_action(
+        "Validating allowlisted movement plan {plan_identifier}.",
+        "Labware movement command completed.",
+        "Labware movement cancelled; reconcile the deck, fully home, then run HomeJaw.",
+        running="Picking and placing with the gripper.",
+    )
     async def move_labware(
         self,
         plan_identifier: PlanIdentifier,
@@ -125,9 +132,15 @@ class LabwareMovementController(sila.Feature):
         intermediate: sila.Intermediate[OperationProgress],
     ) -> LabwareMovementResult:
         """Execute one locally provisioned non-lid movement plan."""
-        return await self._move(plan_identifier, expect_lid=False, status=status, intermediate=intermediate)
+        return await self._move(plan_identifier, expect_lid=False)
 
     @sila.ObservableCommand(errors=_LABWARE_ERRORS)
+    @observable_action(
+        "Validating allowlisted movement plan {plan_identifier}.",
+        "Labware movement command completed.",
+        "Labware movement cancelled; reconcile the deck, fully home, then run HomeJaw.",
+        running="Picking and placing with the gripper.",
+    )
     async def move_lid(
         self,
         plan_identifier: PlanIdentifier,
@@ -136,7 +149,7 @@ class LabwareMovementController(sila.Feature):
         intermediate: sila.Intermediate[OperationProgress],
     ) -> LabwareMovementResult:
         """Execute one locally provisioned lid movement plan."""
-        return await self._move(plan_identifier, expect_lid=True, status=status, intermediate=intermediate)
+        return await self._move(plan_identifier, expect_lid=True)
 
     @sila.UnobservableProperty()
     def available_plans(self) -> list[LabwarePlanSummary]:
@@ -169,28 +182,8 @@ class LabwareMovementController(sila.Feature):
         """Return the SHA-256 identity of all server-loaded routes and geometry."""
         return LabwareMovementProfile(sha256=self._controller.profile_sha256)
 
-    async def _move(
-        self,
-        plan_identifier: str,
-        *,
-        expect_lid: bool,
-        status: sila.Status,
-        intermediate: sila.Intermediate[OperationProgress],
-    ) -> LabwareMovementResult:
-        report_progress(status, intermediate, 0.0, OperationPhase.STARTING, "Validating allowlisted movement plan.")
-        report_progress(status, intermediate, 0.1, OperationPhase.RUNNING, "Picking and placing with the gripper.")
-        try:
-            plan, result = await self._controller.move_labware(plan_identifier, expect_lid=expect_lid)
-        except asyncio.CancelledError:
-            report_progress(
-                status,
-                intermediate,
-                1.0,
-                OperationPhase.CANCELLED,
-                "Labware movement cancelled; reconcile the deck, fully home, then run HomeJaw.",
-            )
-            raise
-        report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, "Labware movement command completed.")
+    async def _move(self, plan_identifier: str, *, expect_lid: bool) -> LabwareMovementResult:
+        plan, result = await self._controller.move_labware(plan_identifier, expect_lid=expect_lid)
         return LabwareMovementResult(
             plan_identifier=plan.identifier,
             labware_identifier=plan.labware_identifier,

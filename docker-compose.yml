@@ -1,12 +1,11 @@
 services:
   opentrons-flex:
     build: .
-    restart: always
-    privileged: true
-    network_mode: host
-    group_add:
-      - dialout
+    restart: unless-stopped
+    ports:
+      - "50051:50051"
     volumes:
       - type: bind
-        source: /dev/
-        target: /dev/
+        source: ./config/docker_simulator.json
+        target: /app/config.json
+        read_only: true

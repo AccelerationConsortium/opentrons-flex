@@ -24,6 +24,7 @@ from unitelabs.opentrons_flex.features import (
     MotionControlFeature,
     PipetteFeature,
     HeaterShakerFeature,
+    RobotStatusProvider,
     LabwareMovementController,
     LiquidHandlingController,
     TemperatureModuleFeature,
@@ -61,6 +62,7 @@ async def test_simulate_registers_core_features():
             TipController,
             GripperFeature,
             CalibrationFeature,
+            RobotStatusProvider,
         ]
 
 
@@ -74,10 +76,10 @@ async def test_no_magnetic_feature_registered():
 
 @pytest.mark.asyncio
 async def test_bare_simulator_registers_no_module_features():
-    """With no attached modules, only the core features register."""
+    """With no attached modules, only the core features and the status provider register."""
     config = OpentronsFlexConfig(use_simulator=True)
     async with _run_app(config) as registered:
-        assert len(registered) == 7
+        assert len(registered) == 8
 
 
 @pytest.mark.asyncio

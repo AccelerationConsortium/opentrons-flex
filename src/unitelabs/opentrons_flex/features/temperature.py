@@ -80,7 +80,7 @@ class TemperatureModuleFeature(sila.Feature):
             category="modules",
             identifier="TemperatureController",
             name="Temperature Controller",
-            version="2.0",
+            version="2.1",
         )
         self._controller = controller
 

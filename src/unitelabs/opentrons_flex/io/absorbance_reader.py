@@ -32,6 +32,9 @@ class AbsorbanceReaderController(ModuleControllerBase):
             build_absorbance_reader_backend(module) if module is not None else None
         )
 
+    def _on_module_rebound(self, module: object) -> None:
+        self._backend = build_absorbance_reader_backend(module)
+
     @staticmethod
     def _module_only() -> ModuleOperationError:
         return ModuleOperationError(

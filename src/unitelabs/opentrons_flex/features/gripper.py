@@ -8,7 +8,6 @@ Grip and release actions are mechanical movements, so they are observable
 commands with status updates and intermediate progress responses.
 """
 
-import asyncio
 import typing
 from dataclasses import dataclass
 
@@ -16,6 +15,7 @@ from unitelabs.cdk import sila
 from unitelabs.cdk.sila import constraints
 
 from ..io import (
+    SYSTEM_ERRORS,
     DirectGripperControlDisabledError,
     FlexGripperController,
     GripActionError,
@@ -23,7 +23,7 @@ from ..io import (
     NotHomedError,
     RunOwnershipError,
 )
-from ._progress import OperationPhase, OperationProgress, report_progress
+from ._progress import OperationProgress, observable_action
 
 # Flex gripper grip force range in Newtons (documented operating envelope).
 _MIN_FORCE_N = 5.0
@@ -71,7 +71,7 @@ class GripperFeature(sila.Feature):
             category="robots",
             identifier="GripperController",
             name="Gripper Controller",
-            version="1.2",
+            version="1.3",
         )
         self._controller = controller
 
@@ -81,9 +81,11 @@ class GripperFeature(sila.Feature):
             GripperNotAttachedError,
             GripActionError,
             NotHomedError,
+            *SYSTEM_ERRORS,
             DirectGripperControlDisabledError,
         ]
     )
+    @observable_action("Starting gripper grip.", "Gripper grip completed.", "Gripper grip cancelled.")
     async def grip(
         self,
         force: _GripForce,
@@ -100,13 +102,7 @@ class GripperFeature(sila.Feature):
         Yields:
             Update: Current gripper progress update.
         """
-        report_progress(status, intermediate, 0.0, OperationPhase.STARTING, "Starting gripper grip.")
-        try:
-            await self._controller.grip(force_newtons=force)
-        except asyncio.CancelledError:
-            report_progress(status, intermediate, 1.0, OperationPhase.CANCELLED, "Gripper grip cancelled.")
-            raise
-        report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, "Gripper grip completed.")
+        await self._controller.grip(force_newtons=force)
 
     @sila.ObservableCommand(
         errors=[
@@ -114,9 +110,11 @@ class GripperFeature(sila.Feature):
             GripperNotAttachedError,
             GripActionError,
             NotHomedError,
+            *SYSTEM_ERRORS,
             DirectGripperControlDisabledError,
         ]
     )
+    @observable_action("Starting gripper release.", "Gripper release completed.", "Gripper release cancelled.")
     async def ungrip(
         self,
         force: _GripForce,
@@ -133,15 +131,12 @@ class GripperFeature(sila.Feature):
         Yields:
             Update: Current gripper progress update.
         """
-        report_progress(status, intermediate, 0.0, OperationPhase.STARTING, "Starting gripper release.")
-        try:
-            await self._controller.ungrip(force_newtons=force)
-        except asyncio.CancelledError:
-            report_progress(status, intermediate, 1.0, OperationPhase.CANCELLED, "Gripper release cancelled.")
-            raise
-        report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, "Gripper release completed.")
+        await self._controller.ungrip(force_newtons=force)
 
-    @sila.ObservableCommand(errors=[RunOwnershipError, GripperNotAttachedError, GripActionError, NotHomedError])
+    @sila.ObservableCommand(
+        errors=[RunOwnershipError, GripperNotAttachedError, GripActionError, NotHomedError, *SYSTEM_ERRORS]
+    )
+    @observable_action("Starting gripper jaw home.", "Gripper jaw home completed.", "Gripper jaw home cancelled.")
     async def home_jaw(
         self,
         *,
@@ -154,13 +149,7 @@ class GripperFeature(sila.Feature):
         Yields:
             Update: Current gripper progress update.
         """
-        report_progress(status, intermediate, 0.0, OperationPhase.STARTING, "Starting gripper jaw home.")
-        try:
-            await self._controller.home_jaw()
-        except asyncio.CancelledError:
-            report_progress(status, intermediate, 1.0, OperationPhase.CANCELLED, "Gripper jaw home cancelled.")
-            raise
-        report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, "Gripper jaw home completed.")
+        await self._controller.home_jaw()
 
     @sila.UnobservableProperty()
     def status(self) -> GripperStatus:

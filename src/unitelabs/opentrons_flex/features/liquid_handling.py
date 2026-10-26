@@ -1,6 +1,5 @@
 """SiLA 2 advanced liquid-handling feature for Opentrons Flex pipettes."""
 
-import asyncio
 import enum
 import typing
 from dataclasses import dataclass
@@ -10,6 +9,7 @@ from unitelabs.cdk import sila
 from unitelabs.cdk.sila import constraints
 
 from ..io import (
+    SYSTEM_ERRORS,
     FlexLiquidHandlingController,
     LiquidClassNotSupportedError,
     LiquidHandlingError,
@@ -26,7 +26,7 @@ from ..io import (
     TipNotAttachedError,
 )
 from ._pipette_types import PIPETTE_MOUNTS, PipetteMount
-from ._progress import OperationPhase, OperationProgress, report_progress
+from ._progress import OperationProgress, observable_action
 
 _MILLIMETRE = constraints.Unit(
     "mm",
@@ -64,6 +64,7 @@ TrackingDelay = typing.Annotated[float, constraints.MinimalInclusive(0.0), _SECO
 _LIQUID_ERRORS = [
     RunOwnershipError,
     NotHomedError,
+    *SYSTEM_ERRORS,
     MovementOutOfBoundsError,
     StallDetectedError,
     MachineErrorStateError,
@@ -172,10 +173,16 @@ class LiquidHandlingController(sila.Feature):
     """Advanced Flex pipetting: mix, touch-tip, probing, profiles, and liquid classes."""
 
     def __init__(self, controller: FlexLiquidHandlingController) -> None:
-        super().__init__(originator="ca.accelerationconsortium", category="robots", version="1.0")
+        super().__init__(originator="ca.accelerationconsortium", category="robots", version="1.1")
         self._controller = controller
 
     @sila.ObservableCommand(errors=_LIQUID_ERRORS)
+    @observable_action(
+        "Starting liquid mixing.",
+        "Liquid mixing completed.",
+        "Liquid mixing cancelled; re-home.",
+        running="Executing repeated liquid cycles.",
+    )
     async def mix(
         self,
         mount: PipetteMount,
@@ -188,16 +195,15 @@ class LiquidHandlingController(sila.Feature):
         intermediate: sila.Intermediate[OperationProgress],
     ) -> None:
         """Mix liquid at the current tip position."""
-        report_progress(status, intermediate, 0.0, OperationPhase.STARTING, "Starting liquid mixing.")
-        report_progress(status, intermediate, 0.1, OperationPhase.RUNNING, "Executing repeated liquid cycles.")
-        try:
-            await self._controller.mix(PIPETTE_MOUNTS[mount], cycles, volume, aspirate_rate, dispense_rate)
-        except asyncio.CancelledError:
-            report_progress(status, intermediate, 1.0, OperationPhase.CANCELLED, "Liquid mixing cancelled; re-home.")
-            raise
-        report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, "Liquid mixing completed.")
+        await self._controller.mix(PIPETTE_MOUNTS[mount], cycles, volume, aspirate_rate, dispense_rate)
 
     @sila.ObservableCommand(errors=_LIQUID_ERRORS)
+    @observable_action(
+        "Starting touch-tip movement.",
+        "Touch-tip completed.",
+        "Touch-tip cancelled; re-home.",
+        running="Tracing the well wall.",
+    )
     async def touch_tip(
         self,
         mount: PipetteMount,
@@ -210,19 +216,18 @@ class LiquidHandlingController(sila.Feature):
         intermediate: sila.Intermediate[OperationProgress],
     ) -> LiquidPosition:
         """Touch the attached tip against four inner well walls."""
-        report_progress(status, intermediate, 0.0, OperationPhase.STARTING, "Starting touch-tip movement.")
-        report_progress(status, intermediate, 0.1, OperationPhase.RUNNING, "Tracing the well wall.")
-        try:
-            result = await self._controller.touch_tip(
-                PIPETTE_MOUNTS[mount], _well(well), z_offset, distance_from_edge, speed
-            )
-        except asyncio.CancelledError:
-            report_progress(status, intermediate, 1.0, OperationPhase.CANCELLED, "Touch-tip cancelled; re-home.")
-            raise
-        report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, "Touch-tip completed.")
+        result = await self._controller.touch_tip(
+            PIPETTE_MOUNTS[mount], _well(well), z_offset, distance_from_edge, speed
+        )
         return LiquidPosition(result.x, result.y, result.z)
 
     @sila.ObservableCommand(errors=_LIQUID_ERRORS)
+    @observable_action(
+        "Starting liquid-level probing.",
+        "Liquid level detected.",
+        "Liquid probing cancelled; re-home.",
+        running="Probing for liquid.",
+    )
     async def probe_liquid_level(
         self,
         mount: PipetteMount,
@@ -232,17 +237,16 @@ class LiquidHandlingController(sila.Feature):
         intermediate: sila.Intermediate[OperationProgress],
     ) -> LiquidLevel:
         """Probe downward with the pipette sensors and report the detected liquid height."""
-        report_progress(status, intermediate, 0.0, OperationPhase.STARTING, "Starting liquid-level probing.")
-        report_progress(status, intermediate, 0.1, OperationPhase.RUNNING, "Probing for liquid.")
-        try:
-            height = await self._controller.probe_liquid_level(PIPETTE_MOUNTS[mount], maximum_distance)
-        except asyncio.CancelledError:
-            report_progress(status, intermediate, 1.0, OperationPhase.CANCELLED, "Liquid probing cancelled; re-home.")
-            raise
-        report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, "Liquid level detected.")
+        height = await self._controller.probe_liquid_level(PIPETTE_MOUNTS[mount], maximum_distance)
         return LiquidLevel(detected_height=height)
 
     @sila.ObservableCommand(errors=_LIQUID_ERRORS)
+    @observable_action(
+        "Starting tracked aspiration.",
+        "Tracked aspiration completed.",
+        "Tracked aspiration cancelled.",
+        running="Tracking the liquid surface.",
+    )
     async def aspirate_while_tracking(
         self,
         mount: PipetteMount,
@@ -255,19 +259,18 @@ class LiquidHandlingController(sila.Feature):
         intermediate: sila.Intermediate[OperationProgress],
     ) -> LiquidPosition:
         """Aspirate while moving to follow a changing liquid height."""
-        report_progress(status, intermediate, 0.0, OperationPhase.STARTING, "Starting tracked aspiration.")
-        report_progress(status, intermediate, 0.1, OperationPhase.RUNNING, "Tracking the liquid surface.")
-        try:
-            result = await self._controller.aspirate_while_tracking(
-                PIPETTE_MOUNTS[mount], _point(end_position), volume, rate, movement_delay
-            )
-        except asyncio.CancelledError:
-            report_progress(status, intermediate, 1.0, OperationPhase.CANCELLED, "Tracked aspiration cancelled.")
-            raise
-        report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, "Tracked aspiration completed.")
+        result = await self._controller.aspirate_while_tracking(
+            PIPETTE_MOUNTS[mount], _point(end_position), volume, rate, movement_delay
+        )
         return LiquidPosition(result.x, result.y, result.z)
 
     @sila.ObservableCommand(errors=_LIQUID_ERRORS)
+    @observable_action(
+        "Starting tracked dispense.",
+        "Tracked dispense completed.",
+        "Tracked dispense cancelled.",
+        running="Tracking the liquid surface.",
+    )
     async def dispense_while_tracking(
         self,
         mount: PipetteMount,
@@ -281,19 +284,18 @@ class LiquidHandlingController(sila.Feature):
         intermediate: sila.Intermediate[OperationProgress],
     ) -> LiquidPosition:
         """Dispense while moving to follow a changing liquid height."""
-        report_progress(status, intermediate, 0.0, OperationPhase.STARTING, "Starting tracked dispense.")
-        report_progress(status, intermediate, 0.1, OperationPhase.RUNNING, "Tracking the liquid surface.")
-        try:
-            result = await self._controller.dispense_while_tracking(
-                PIPETTE_MOUNTS[mount], _point(end_position), volume, rate, push_out, movement_delay
-            )
-        except asyncio.CancelledError:
-            report_progress(status, intermediate, 1.0, OperationPhase.CANCELLED, "Tracked dispense cancelled.")
-            raise
-        report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, "Tracked dispense completed.")
+        result = await self._controller.dispense_while_tracking(
+            PIPETTE_MOUNTS[mount], _point(end_position), volume, rate, push_out, movement_delay
+        )
         return LiquidPosition(result.x, result.y, result.z)
 
     @sila.ObservableCommand(errors=_LIQUID_ERRORS)
+    @observable_action(
+        "Starting liquid transfer.",
+        "Liquid transfer completed.",
+        "Transfer cancelled; re-home.",
+        running="Executing the transfer profile.",
+    )
     async def transfer(
         self,
         mount: PipetteMount,
@@ -308,24 +310,23 @@ class LiquidHandlingController(sila.Feature):
         intermediate: sila.Intermediate[OperationProgress],
     ) -> None:
         """Run an atomic source-to-destination transfer using an explicit profile."""
-        report_progress(status, intermediate, 0.0, OperationPhase.STARTING, "Starting liquid transfer.")
-        report_progress(status, intermediate, 0.1, OperationPhase.RUNNING, "Executing the transfer profile.")
-        try:
-            await self._controller.transfer(
-                PIPETTE_MOUNTS[mount],
-                _point(source),
-                _point(source_retract),
-                _point(destination),
-                _point(destination_retract),
-                volume,
-                _profile(profile),
-            )
-        except asyncio.CancelledError:
-            report_progress(status, intermediate, 1.0, OperationPhase.CANCELLED, "Transfer cancelled; re-home.")
-            raise
-        report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, "Liquid transfer completed.")
+        await self._controller.transfer(
+            PIPETTE_MOUNTS[mount],
+            _point(source),
+            _point(source_retract),
+            _point(destination),
+            _point(destination_retract),
+            volume,
+            _profile(profile),
+        )
 
     @sila.ObservableCommand(errors=[*_LIQUID_ERRORS, LiquidClassNotSupportedError])
+    @observable_action(
+        "Resolving verified liquid class.",
+        "Verified liquid transfer completed.",
+        "Verified transfer cancelled; reconcile liquid state and re-home.",
+        running="Executing verified liquid transfer.",
+    )
     async def transfer_with_verified_liquid_class(
         self,
         mount: PipetteMount,
@@ -339,27 +340,14 @@ class LiquidHandlingController(sila.Feature):
         intermediate: sila.Intermediate[OperationProgress],
     ) -> VerifiedTransferResult:
         """Transfer using the installed Opentrons verified liquid-class definition version 2."""
-        report_progress(status, intermediate, 0.0, OperationPhase.STARTING, "Resolving verified liquid class.")
-        report_progress(status, intermediate, 0.1, OperationPhase.RUNNING, "Executing verified liquid transfer.")
-        try:
-            result = await self._controller.transfer_with_verified_liquid_class(
-                PIPETTE_MOUNTS[mount],
-                _well(source_well),
-                _well(destination_well),
-                volume,
-                liquid_class.value,
-                tiprack_uri,
-            )
-        except asyncio.CancelledError:
-            report_progress(
-                status,
-                intermediate,
-                1.0,
-                OperationPhase.CANCELLED,
-                "Verified transfer cancelled; reconcile liquid state and re-home.",
-            )
-            raise
-        report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, "Verified liquid transfer completed.")
+        result = await self._controller.transfer_with_verified_liquid_class(
+            PIPETTE_MOUNTS[mount],
+            _well(source_well),
+            _well(destination_well),
+            volume,
+            liquid_class.value,
+            tiprack_uri,
+        )
         return VerifiedTransferResult(
             liquid_class=VerifiedLiquidClass(result.liquid_class),
             pipette_model=result.pipette_model,

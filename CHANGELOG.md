@@ -2,6 +2,69 @@
 
 ## Unreleased
 
+- Zero-to-use setup: `bootstrap.sh` / `bootstrap.ps1` install uv, Python 3.12,
+  the connector and `flexctl`, then run `flexctl setup`, which either starts the
+  simulator or finds a Flex (mDNS), installs an SSH key (direct cable, or USB
+  drive over Wi-Fi via `/server/ssh_keys/from_local`), obtains the matching ARM
+  wheel bundle (GitHub Actions artifact or Docker), deploys, and smoke-tests.
+  New `flexctl discover`, `ssh-setup`, `build`, `clean`, `sim [--with-http]`.
+  `flexctl up` fetches a missing or stale wheel bundle automatically.
+- `flexctl verify <robot> --level smoke|motion|recovery|modules|all`: guided
+  hardware verification with operator prompts and a JSON report, including an
+  automatic emergency-stop test, restart persistence, and module unplug/hot-plug.
+  It opens an SSH tunnel automatically in connector-unit mode.
+- Module hot-plug: module controllers follow a reconnected module by serial
+  number, so unplug/replug needs no restart. A different unit of the same type is
+  never adopted (only a module that reported no serial may adopt the single
+  unclaimed unit), and a module owned by another controller is never taken. The
+  binding changes only under the module's operation lock; status reads are
+  read-only. A newly attached module type triggers an automatic restart only when
+  the robot is fully idle (`READY`, no active run, no observable command in
+  flight, no module wait or thermocycler profile)
+  (`module_hot_plug: auto|restart|report`); `Status.RestartPending` reports it.
+- `flexctl setup` always asks the operator to confirm the discovered robot and
+  requires `--host` with `--non-interactive`; the USB key path refuses drives that
+  already hold other `.pub` files. `verify --move-speed` accepts 1-50 mm/s.
+- `@observable_action` decorator replaces the hand-written progress boilerplate in
+  the motion, liquid-handling, gripper, calibration, and labware-movement features.
+- `unitelabs.opentrons_flex.client.FlexClient`: a small async SiLA client that
+  builds its codec locally.
+
+- Added `flexctl`, a single command for configuration (`config init` profiles,
+  optional hardware detection), workstation checks (`doctor`), one-step
+  deployment (`up`), and operation (`status`, `mode`, `rollback`, `logs`,
+  `deck`). It orchestrates the existing reviewed deployment scripts.
+- Added `RobotStatusProvider` with one observable `Status` covering readiness,
+  E-stop/door, recovery gates and guidance, Protocol Engine ownership, deck-ledger
+  validity, module connection state, and the embedded web-server state.
+- Added `TipController.ReconcileTipState` (TipController 1.1) so tip quarantine is
+  cleared by a sensor-verified command instead of a connector restart; recovery
+  gates can now persist across restarts via `recovery_state_path`.
+- Added an audited local deck-ledger reconciliation tool
+  (`python -m unitelabs.opentrons_flex.deck_ledger`, `flexctl deck`).
+- Added system-wide defined errors `HardwareBusyError`, `OperationHaltedError`,
+  `RecoveryRequiredError` (a `NotHomedError` subtype), and `HardwareError`, which
+  preserves unmapped Opentrons error codes. Observable commands now always send a
+  terminal `FAILED` progress update on error. Every feature's minor version was
+  incremented for the additive error and enum changes.
+- Fixed: shared-module `IsConnected` always returned true; it now follows the
+  robot's live module inventory.
+- The embedded robot-server is supervised after startup and has a startup
+  timeout (`robot_server_startup_timeout_s`).
+- `sila_server.version` is no longer required in configuration files; the
+  installed package version is used. `deploy.sh` reads the connector version from
+  `pyproject.toml` and rejects a wheel bundle built for another version before
+  connecting to the robot. Configuration accepts `simulated_modules: [...]`
+  in place of the individual `simulated_*` flags.
+- The Docker image now runs an explicit simulator configuration instead of
+  silently defaulting to the simulator in a privileged container.
+- Fixed: the embedded robot-server failed to start when a halt had been persisted
+  before a restart, because non-motion calls (status bar, event callbacks) were
+  recovery-gated. On a real Flex, a halt-cancelled move is now reported as
+  `OperationHaltedError` even when the hardware layer wraps the cancellation.
+- Deployment health checks and `preflight_flex.py` send the `Opentrons-Version`
+  header the stock robot-server requires.
+
 - Enabled IPv4 SiLA mDNS discovery in the local smoketest config so local
   discovery clients can find `Opentrons Flex Smoketest`. The simulator gRPC
   endpoint remains bound to loopback; cloud access remains disabled.
