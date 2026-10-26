@@ -108,7 +108,7 @@ class PipetteFeature(sila.Feature):
 
         results: list[PipetteInfo] = []
         for mount, ot3_mount in PIPETTE_MOUNTS.items():
-            info = instruments.get(ot3_mount) or {}
+            info = instruments.get(ot3_mount.to_mount()) or instruments.get(ot3_mount) or {}
             model = info.get("model") or ""
             results.append(
                 PipetteInfo(

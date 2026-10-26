@@ -218,6 +218,16 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=None,
         help="runtime-manifest.json from the exact verified wheel artifact deployed to the target Flex.",
     )
+    parser.addoption(
+        "--induced-failure-actuation",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable induced-failure hardware tests. The operator must supervise: the tip-pickup-failure "
+            "case requires the declared tip position to be EMPTY (remove the tip before the run) and "
+            "leaves that mount quarantined until an operator reconciles and restarts the connector."
+        ),
+    )
 
 
 def _is_hardware_run(config: pytest.Config) -> bool:
@@ -269,6 +279,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     has_temperature_module_actuation = bool(config.getoption("--temperature-module-actuation"))
     has_gripper_labware_actuation = bool(config.getoption("--gripper-labware-actuation"))
     has_acceptance_workflow_actuation = bool(config.getoption("--acceptance-workflow-actuation"))
+    has_induced_failure_actuation = bool(config.getoption("--induced-failure-actuation"))
 
     skip_sim = pytest.mark.skip(reason="simulator-only test, skipped when --robot is set")
     skip_http = pytest.mark.skip(reason="robot_http_only test, requires --robot-http, --robot, or --with-http-server")
@@ -301,6 +312,12 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             "--acceptance-manifest"
         )
     )
+    skip_induced_failure_actuation = pytest.mark.skip(
+        reason=(
+            "Induced-failure tests require the explicit --induced-failure-actuation safety gate "
+            "and an operator-prepared deck"
+        )
+    )
 
     for item in items:
         if has_robot and item.get_closest_marker("simulator_only"):
@@ -325,6 +342,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip_gripper_labware_actuation)
         if not has_acceptance_workflow_actuation and item.get_closest_marker("acceptance_workflow_actuation"):
             item.add_marker(skip_acceptance_workflow_actuation)
+        if not has_induced_failure_actuation and item.get_closest_marker("induced_failure_actuation"):
+            item.add_marker(skip_induced_failure_actuation)
 
 
 @pytest.fixture(scope="session")
