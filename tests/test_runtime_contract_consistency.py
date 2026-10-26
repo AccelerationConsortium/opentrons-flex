@@ -39,10 +39,11 @@ def test_runtime_version_and_source_pin_are_consistent_across_release_surfaces()
             f"ARG OPENTRONS_COMMIT={source_commit}",
         ),
         "deploy.sh": (
-            f"--opentrons-version {opentrons_version}",
-            f"--robot-server-version {opentrons_version}",
-            f"--opentrons-source-commit {source_commit}",
-            f"--python-version {python_version}",
+            f"OPENTRONS_VERSION={opentrons_version}\n",
+            f"OPENTRONS_SOURCE_COMMIT={source_commit}\n",
+            f"PYTHON_VERSION={python_version}\n",
+            '--robot-server-version "$OPENTRONS_VERSION"',
+            '--connector-version "$CONNECTOR_VERSION"',
         ),
         ".github/workflows/test.yml": (
             f'opentrons-version: "{opentrons_version}"',

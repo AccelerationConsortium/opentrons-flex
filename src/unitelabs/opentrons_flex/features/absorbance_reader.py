@@ -197,7 +197,7 @@ class AbsorbanceReaderFeature(sila.Feature):
             category="modules",
             identifier="AbsorbanceReaderController",
             name="Absorbance Reader Controller",
-            version="2.0",
+            version="2.1",
         )
         self._controller = controller
 

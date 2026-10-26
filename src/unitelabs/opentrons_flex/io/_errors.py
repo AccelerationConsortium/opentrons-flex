@@ -17,9 +17,12 @@ while any failure outside the translated classes remains an undefined error.
 Revisit this once dedicated heater-shaker exceptions are observed on hardware.
 """
 
+import asyncio
+import contextvars
 import functools
 import inspect
 import typing
+import weakref
 
 from opentrons.drivers.asyncio.communication.errors import FailedCommand, SerialException
 from opentrons.drivers.temp_deck.driver import TempDeckError
@@ -148,9 +151,132 @@ class InvalidStackerConfigurationError(Exception):
     """
 
 
+class HardwareBusyError(TimeoutError):
+    """
+    The shared Flex hardware stayed busy longer than the configured lock timeout.
+
+    Another SiLA client, an HTTP/Protocol Engine operation, or a long-running module
+    action currently holds the hardware. Wait for that operation to finish (watch the
+    RobotStatusProvider Status property) and retry, or raise lock_timeout_s in the
+    connector configuration.
+    """
+
+
+class OperationHaltedError(Exception):
+    """
+    The operation was aborted because an emergency stop or halt was issued while it ran.
+
+    The robot position is no longer trusted. Clear the cause of the halt, fully
+    re-home the robot, follow the RecoveryGuidance reported by RobotStatusProvider,
+    and then re-issue the operation.
+    """
+
+
+class HardwareError(Exception):
+    """
+    The Flex hardware reported an error that has no more specific defined error.
+
+    The message preserves the Opentrons error code, name, and detail so the cause
+    can be diagnosed or reported to vendor support. Inspect the robot, resolve the
+    reported condition, re-home, and retry.
+    """
+
+
+# Tasks cancelled by an emergency stop/halt rather than by their own client. A
+# cancellation recorded here is converted into ``OperationHaltedError`` so the
+# interrupted client learns *why* its command ended instead of seeing "cancelled".
+_HALT_CANCELLED_TASKS: "weakref.WeakSet[asyncio.Task[object]]" = weakref.WeakSet()
+_TRANSLATION_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar("flex_error_translation_depth", default=0)
+
+
+def mark_task_halt_cancelled(task: "asyncio.Task[object]") -> None:
+    """Record that ``task`` is being cancelled by a halt, not by its own client."""
+    _HALT_CANCELLED_TASKS.add(task)
+
+
+def consume_halt_cancellation() -> bool:
+    """Return True (once) when the current task's cancellation came from a halt."""
+    task = asyncio.current_task()
+    if task is None or task not in _HALT_CANCELLED_TASKS:
+        return False
+    _HALT_CANCELLED_TASKS.discard(task)
+    if task.cancelling():
+        task.uncancel()
+    return True
+
+
+def _halted_error() -> OperationHaltedError:
+    return OperationHaltedError(
+        "The operation was interrupted by an emergency stop or halt. "
+        "Fully re-home the robot and follow the reported recovery guidance before retrying."
+    )
+
+
+def _hardware_error(exc: BaseException) -> HardwareError:
+    detail = getattr(exc, "detail", None)
+    suffix = f" Detail: {detail}." if detail else ""
+    return HardwareError(f"{exc}.{suffix} Inspect the robot, resolve the reported condition, re-home, and retry.")
+
+
+def _translation_boundary(
+    fn: typing.Callable[..., typing.Awaitable[object]],
+    translate: typing.Callable[[Exception], Exception | None],
+) -> typing.Callable[..., typing.Awaitable[object]]:
+    """
+    Wrap ``fn`` with ``translate`` plus shared halt and fallback handling.
+
+    Translators may be stacked. Only the outermost one converts halt
+    cancellations and still-unmapped Opentrons ``EnumeratedError`` values, so an
+    inner translator never pre-empts a more specific outer mapping.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args: object, **kwargs: object) -> object:
+        from opentrons_shared_data.errors.exceptions import EnumeratedError
+
+        token = _TRANSLATION_DEPTH.set(_TRANSLATION_DEPTH.get() + 1)
+        outermost = token.old_value in (0, contextvars.Token.MISSING)
+        try:
+            return await fn(*args, **kwargs)
+        except asyncio.CancelledError:
+            if outermost and consume_halt_cancellation():
+                raise _halted_error() from None
+            raise
+        except Exception as exc:
+            # On real hardware the cancellation from a halt does not surface as
+            # CancelledError: opentrons_hardware wraps it (PythonException, code
+            # 4000) or a driver raises its own error while unwinding. Any error in
+            # a task the halt cancelled is a consequence of that halt.
+            if outermost and consume_halt_cancellation():
+                raise _halted_error() from exc
+            translated = translate(exc)
+            if translated is not None:
+                raise translated from exc
+            if outermost and isinstance(exc, EnumeratedError):
+                raise _hardware_error(exc) from exc
+            raise
+        finally:
+            _TRANSLATION_DEPTH.reset(token)
+
+    return wrapper
+
+
+def translate_system_errors(
+    fn: typing.Callable[..., typing.Awaitable[object]],
+) -> typing.Callable[..., typing.Awaitable[object]]:
+    """Convert halt cancellations and unmapped Opentrons errors without other translation."""
+    return _translation_boundary(fn, lambda _exc: None)
+
+
 # Defined errors every module command can raise; the features pass this to their
 # SiLA command declarations (plus any command-specific errors).
-COMMON_MODULE_ERRORS = (ModuleNotRespondingError, ModuleOperationError, RunOwnershipError)
+COMMON_MODULE_ERRORS = (
+    ModuleNotRespondingError,
+    ModuleOperationError,
+    RunOwnershipError,
+    HardwareBusyError,
+    HardwareError,
+)
 
 
 def translate_module_errors(
@@ -158,22 +284,18 @@ def translate_module_errors(
 ) -> typing.Callable[..., typing.Awaitable[object]]:
     """Wrap an async controller method, translating opentrons exceptions to defined errors."""
 
-    @functools.wraps(fn)
-    async def wrapper(*args: object, **kwargs: object) -> object:
-        try:
-            return await fn(*args, **kwargs)
-        except FailedCommand as e:
+    def translate(exc: Exception) -> Exception | None:
+        if isinstance(exc, FailedCommand):
             # The device did respond, but rejected the operation. Preserve the
             # firmware response (including its error code) for operator recovery.
-            raise ModuleOperationError(str(e)) from e
-        except SerialException as e:
-            raise ModuleNotRespondingError(str(e)) from e
-        except AbsorbanceReaderDisconnectedError as e:
-            raise ModuleNotRespondingError(str(e)) from e
-        except _OPERATION_ERRORS as e:
-            raise ModuleOperationError(str(e)) from e
+            return ModuleOperationError(str(exc))
+        if isinstance(exc, (SerialException, AbsorbanceReaderDisconnectedError)):
+            return ModuleNotRespondingError(str(exc))
+        if isinstance(exc, _OPERATION_ERRORS):
+            return ModuleOperationError(str(exc))
+        return None
 
-    return wrapper
+    return _translation_boundary(fn, translate)
 
 
 def translate_public_async_methods(cls: type) -> None:
@@ -201,6 +323,16 @@ class NotHomedError(Exception):
     Home the robot (or the affected mount) before requesting a move. If a halt
     interrupted gripper motion, fully home the robot and then run HomeJaw before
     resuming other hardware actuation.
+    """
+
+
+class RecoveryRequiredError(NotHomedError):
+    """
+    The connector refused the operation because an earlier failure left the robot recovery-gated.
+
+    The error message lists the ordered recovery actions (for example a full re-home,
+    TipController.ReconcileTipState, or GripperController.HomeJaw). The same guidance
+    is available at any time from the RobotStatusProvider Status property.
     """
 
 
@@ -333,23 +465,20 @@ def translate_liquid_errors(
 ) -> typing.Callable[..., typing.Awaitable[object]]:
     """Wrap an async liquid method, translating expected OT3API failures."""
 
-    @functools.wraps(fn)
-    async def wrapper(*args: object, **kwargs: object) -> object:
+    def translate(exc: Exception) -> Exception | None:
         from opentrons.types import PipetteNotAttachedError as OpentronsPipetteNotAttachedError
         from opentrons_shared_data.errors.exceptions import PipetteLiquidNotFoundError, PipetteOverpressureError
 
-        try:
-            return await fn(*args, **kwargs)
-        except OpentronsPipetteNotAttachedError as exc:
-            msg = f"{exc} Attach a Flex pipette, re-scan instruments, and retry."
-            raise PipetteNotAttachedError(msg) from exc
-        except PipetteLiquidNotFoundError as exc:
-            raise LiquidNotFoundError(str(exc)) from exc
-        except PipetteOverpressureError as exc:
+        if isinstance(exc, OpentronsPipetteNotAttachedError):
+            return PipetteNotAttachedError(f"{exc} Attach a Flex pipette, re-scan instruments, and retry.")
+        if isinstance(exc, PipetteLiquidNotFoundError):
+            return LiquidNotFoundError(str(exc))
+        if isinstance(exc, PipetteOverpressureError):
             msg = f"{exc} Clear the obstruction or overpressure condition, then reconcile the liquid state."
-            raise LiquidHandlingError(msg) from exc
+            return LiquidHandlingError(msg)
+        return None
 
-    return wrapper
+    return _translation_boundary(fn, translate)
 
 
 def translate_tip_errors(
@@ -357,8 +486,7 @@ def translate_tip_errors(
 ) -> typing.Callable[..., typing.Awaitable[object]]:
     """Wrap an async tip method, translating OT3API exceptions to defined errors."""
 
-    @functools.wraps(fn)
-    async def wrapper(*args: object, **kwargs: object) -> object:
+    def translate(exc: Exception) -> Exception | None:
         from opentrons.hardware_control.types import FailedTipStateCheck
         from opentrons.types import PipetteNotAttachedError as OpentronsPipetteNotAttachedError
         from opentrons_shared_data.errors.exceptions import (
@@ -369,22 +497,19 @@ def translate_tip_errors(
             UnmatchedTipPresenceStates,
         )
 
-        try:
-            return await fn(*args, **kwargs)
-        except OpentronsPipetteNotAttachedError as e:
-            msg = f"{e} Attach a Flex pipette, re-scan instruments, and retry."
-            raise PipetteNotAttachedError(msg) from e
-        except (TipPickupFailedError, UnexpectedTipAttachError) as e:
-            msg = f"{e} Check alignment, tip compatibility, and tip-rack seating before retrying."
-            raise TipPickupError(msg) from e
-        except (TipDropFailedError, UnexpectedTipRemovalError) as e:
-            msg = f"{e} Check the drop location and clear any jam before retrying from a safe position."
-            raise TipDropError(msg) from e
-        except (UnmatchedTipPresenceStates, FailedTipStateCheck) as e:
-            msg = f"{e} Inspect the pipette and reconcile the physical tip state before retrying."
-            raise TipStateError(msg) from e
+        if isinstance(exc, OpentronsPipetteNotAttachedError):
+            return PipetteNotAttachedError(f"{exc} Attach a Flex pipette, re-scan instruments, and retry.")
+        if isinstance(exc, (TipPickupFailedError, UnexpectedTipAttachError)):
+            return TipPickupError(f"{exc} Check alignment, tip compatibility, and tip-rack seating before retrying.")
+        if isinstance(exc, (TipDropFailedError, UnexpectedTipRemovalError)):
+            return TipDropError(
+                f"{exc} Check the drop location and clear any jam before retrying from a safe position."
+            )
+        if isinstance(exc, (UnmatchedTipPresenceStates, FailedTipStateCheck)):
+            return TipStateError(f"{exc} Inspect the pipette and reconcile the physical tip state before retrying.")
+        return None
 
-    return wrapper
+    return _translation_boundary(fn, translate)
 
 
 def translate_motion_errors(
@@ -392,8 +517,7 @@ def translate_motion_errors(
 ) -> typing.Callable[..., typing.Awaitable[object]]:
     """Wrap an async motion method, translating OT3API exceptions to defined errors."""
 
-    @functools.wraps(fn)
-    async def wrapper(*args: object, **kwargs: object) -> object:
+    def translate(exc: Exception) -> Exception | None:
         # Imported lazily: these live in opentrons/opentrons_shared_data and are
         # only needed when a motion call actually fails.
         from opentrons.hardware_control.errors import OutOfBoundsMove
@@ -403,16 +527,15 @@ def translate_motion_errors(
             StallOrCollisionDetectedError,
         )
 
-        try:
-            return await fn(*args, **kwargs)
-        except (PositionUnknownError, PositionEstimationInvalidError) as e:
-            raise NotHomedError(str(e)) from e
-        except OutOfBoundsMove as e:
-            raise MovementOutOfBoundsError(str(e)) from e
-        except StallOrCollisionDetectedError as e:
-            raise StallDetectedError(str(e)) from e
+        if isinstance(exc, (PositionUnknownError, PositionEstimationInvalidError)):
+            return NotHomedError(str(exc))
+        if isinstance(exc, OutOfBoundsMove):
+            return MovementOutOfBoundsError(str(exc))
+        if isinstance(exc, StallOrCollisionDetectedError):
+            return StallDetectedError(str(exc))
+        return None
 
-    return wrapper
+    return _translation_boundary(fn, translate)
 
 
 # ---------------------------------------------------------------------------
@@ -502,3 +625,7 @@ class CalibrationFailedError(Exception):
     The underlying hardware/geometry message is preserved so the measured
     deviation and probe coordinates are available for troubleshooting.
     """
+
+
+# Errors any hardware-touching command can raise in addition to its own set.
+SYSTEM_ERRORS = (HardwareBusyError, OperationHaltedError, RecoveryRequiredError, HardwareError)

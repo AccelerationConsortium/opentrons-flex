@@ -7,6 +7,9 @@ from unitelabs.cdk import sila
 from unitelabs.cdk.sila import constraints
 
 from ..io import (
+    SYSTEM_ERRORS,
+    HardwareBusyError,
+    HardwareError,
     FlexMotionController,
     NozzleConfigurationError,
     NotHomedError,
@@ -74,11 +77,11 @@ class PipetteFeature(sila.Feature):
             category="robots",
             identifier="PipetteController",
             name="Pipette Controller",
-            version="1.1",
+            version="1.2",
         )
         self._controller = controller
 
-    @sila.ObservableCommand()
+    @sila.ObservableCommand(errors=[RunOwnershipError, HardwareBusyError, HardwareError])
     async def get_attached_pipettes(
         self,
         *,
@@ -123,7 +126,7 @@ class PipetteFeature(sila.Feature):
         return results
 
     @sila.UnobservableCommand(
-        errors=[RunOwnershipError, PipetteNotAttachedError, NotHomedError, NozzleConfigurationError]
+        errors=[RunOwnershipError, PipetteNotAttachedError, NotHomedError, *SYSTEM_ERRORS, NozzleConfigurationError]
     )
     async def configure_full_nozzle_layout(
         self,
@@ -141,7 +144,7 @@ class PipetteFeature(sila.Feature):
         return self._nozzle_result(mount, state)
 
     @sila.UnobservableCommand(
-        errors=[RunOwnershipError, PipetteNotAttachedError, NotHomedError, NozzleConfigurationError]
+        errors=[RunOwnershipError, PipetteNotAttachedError, NotHomedError, *SYSTEM_ERRORS, NozzleConfigurationError]
     )
     async def configure_single_nozzle_layout(
         self,
@@ -160,7 +163,7 @@ class PipetteFeature(sila.Feature):
         return self._nozzle_result(mount, state)
 
     @sila.UnobservableCommand(
-        errors=[RunOwnershipError, PipetteNotAttachedError, NotHomedError, NozzleConfigurationError]
+        errors=[RunOwnershipError, PipetteNotAttachedError, NotHomedError, *SYSTEM_ERRORS, NozzleConfigurationError]
     )
     async def configure_rectangular_nozzle_layout(
         self,

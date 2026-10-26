@@ -12,6 +12,7 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from importlib.metadata import PackageNotFoundError, version
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,6 +42,13 @@ class Check:
     detail: str
 
 
+
+def _tool_version() -> str:
+    try:
+        return version("unitelabs-opentrons-flex")
+    except PackageNotFoundError:
+        return "unknown"
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("host", type=_host, help="Flex hostname or IP address.")
@@ -48,6 +56,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--http-port", type=_port, default=31950)
     parser.add_argument("--grpc-port", type=_port, default=50051)
     parser.add_argument("--timeout", type=_positive_float, default=8.0)
+    parser.add_argument(
+        "--remote-timeout",
+        type=_positive_float,
+        default=90.0,
+        help="Budget (s) for the on-robot readiness command, which imports the full connector.",
+    )
     parser.add_argument("--runtime-only", action="store_true", help="Skip live HTTP and gRPC checks.")
     parser.add_argument(
         "--allow-base-only",
@@ -77,13 +91,17 @@ def _remote_runtime(
 ) -> tuple[Check, dict[str, Any] | None, dict[str, Any]]:
     mutation_flag = "" if args.allow_base_only else "--require-mutation"
     runtime_only_flag = "--runtime-only" if args.runtime_only else ""
+    # The on-robot readiness step starts its own Python subprocess that imports the
+    # whole connector (opentrons, robot-server); on the Flex that takes 10-30 s.
+    remote_budget = max(args.remote_timeout, args.timeout + 5)
+    remote_step_timeout = max(args.timeout, remote_budget - 15)
     remote_command = (
         "set -eu; "
         "test -x /var/sila2_flex/bin/python; "
         "if test -f /var/lib/unitelabs-opentrons-flex/run-mutation.env; then "
         "set -a; . /var/lib/unitelabs-opentrons-flex/run-mutation.env; set +a; fi; "
         "exec /var/sila2_flex/bin/python -m unitelabs.opentrons_flex.robot_readiness "
-        f"--config /var/sila2_flex/config.json --http-port {args.http_port} --timeout {args.timeout:g} "
+        f"--config /var/sila2_flex/config.json --http-port {args.http_port} --timeout {remote_step_timeout:g} "
         f"{mutation_flag} {runtime_only_flag}"
     )
     try:
@@ -100,7 +118,7 @@ def _remote_runtime(
             check=False,
             capture_output=True,
             text=True,
-            timeout=args.timeout + 5,
+            timeout=remote_budget,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return Check("remote-runtime", False, str(exc)), None, {}
@@ -134,7 +152,14 @@ def _tcp_check(host: str, port: int, timeout: float) -> Check:
 
 def _http_json(host: str, port: int, path: str, timeout: float) -> tuple[Check, Any | None]:
     url = f"http://{_url_host(host)}:{port}{path}"
-    request = urllib.request.Request(url, headers={"User-Agent": "unitelabs-flex-preflight/0.9.1"})
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": f"unitelabs-flex-preflight/{_tool_version()}",
+            # robot-server rejects requests without this header (422, or 500 on /modules).
+            "Opentrons-Version": "*",
+        },
+    )
     try:
         with open_no_redirect(request, timeout=timeout) as response:
             if response.geturl() != url:

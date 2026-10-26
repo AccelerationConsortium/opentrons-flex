@@ -42,6 +42,8 @@ _ROBOT_SERVER_SYMBOLS = (
     ("robot_server.hardware", "get_robot_type_enum"),
     ("robot_server.runs.dependencies", "mark_light_control_startup_finished"),
     ("robot_server.runs.dependencies", "start_light_control_task"),
+    ("robot_server.runs.dependencies", "get_light_controller"),
+    ("robot_server.runs.dependencies", "get_run_orchestrator_store"),
 )
 
 _ROBOT_SERVER_SHAPE_REQUIREMENTS = (
@@ -54,6 +56,8 @@ _ROBOT_SERVER_SHAPE_REQUIREMENTS = (
     ("robot_server.hardware", "get_robot_type_enum", "callable"),
     ("robot_server.runs.dependencies", "mark_light_control_startup_finished", "callable"),
     ("robot_server.runs.dependencies", "start_light_control_task", "callable"),
+    ("robot_server.runs.dependencies", "get_light_controller", "callable"),
+    ("robot_server.runs.dependencies", "get_run_orchestrator_store", "callable"),
     ("robot_server.app", "app.state", "attribute"),
     ("robot_server.app", "app.dependency_overrides", "mutable-mapping"),
     ("robot_server.app", "app.router.lifespan_context", "callable"),

@@ -14,6 +14,7 @@ from unitelabs.opentrons_flex.io import (
     FlexMotionController,
     NotHomedError,
 )
+from unitelabs.opentrons_flex.io._errors import OperationHaltedError
 
 
 @pytest_asyncio.fixture
@@ -70,7 +71,7 @@ async def test_halt_during_grip_requires_full_home_then_jaw_home(
     await grip_started.wait()
     await motion.stop()
 
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(OperationHaltedError):
         await grip_task
     assert gripper._recovery_state.gripper_home_required
 
@@ -98,6 +99,6 @@ async def test_halt_cancels_active_multi_step_calibration(
     await calibration_started.wait()
     await motion.stop()
 
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(OperationHaltedError):
         await calibration_task
     assert calibration._recovery_state.rehome_required

@@ -21,6 +21,8 @@ class RobotServerBindings:
     get_robot_type_enum: object
     mark_light_control_startup_finished: object
     start_light_control_task: object
+    get_light_controller: object | None = None
+    get_run_orchestrator_store: object | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,16 @@ def load_robot_server_bindings() -> RobotServerBindings:
             start_light_control_task=_required_callable(
                 run_dependencies,
                 "start_light_control_task",
+                "robot_server.runs.dependencies",
+            ),
+            get_light_controller=_required_callable(
+                run_dependencies,
+                "get_light_controller",
+                "robot_server.runs.dependencies",
+            ),
+            get_run_orchestrator_store=_required_callable(
+                run_dependencies,
+                "get_run_orchestrator_store",
                 "robot_server.runs.dependencies",
             ),
         )

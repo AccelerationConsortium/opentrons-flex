@@ -75,7 +75,7 @@ async def test_core_features_generate_sila_definitions():
     pipette_fdl = Serializer.serialize(pipette.serialize)
     tip_fdl = Serializer.serialize(tip.serialize)
 
-    assert '<Feature SiLA2Version="1.1" FeatureVersion="1.0"' in tip_fdl
+    assert '<Feature SiLA2Version="1.1" FeatureVersion="1.1"' in tip_fdl
     assert "<Identifier>TipController</Identifier>" in tip_fdl
     assert "<Identifier>PickUpTip</Identifier>" in tip_fdl
     assert "<Identifier>DropTip</Identifier>" in tip_fdl
@@ -90,7 +90,7 @@ async def test_core_features_generate_sila_definitions():
     assert "Current lifecycle phase of the operation." in tip_fdl
     assert "Operator-facing progress or recovery message." in tip_fdl
     assert "PickUpTip" not in pipette_fdl
-    assert 'FeatureVersion="1.1"' in pipette_fdl
+    assert 'FeatureVersion="1.2"' in pipette_fdl
     assert "<Identifier>ConfigureFullNozzleLayout</Identifier>" in pipette_fdl
     assert "<Identifier>ConfigureSingleNozzleLayout</Identifier>" in pipette_fdl
     assert "<Identifier>ConfigureRectangularNozzleLayout</Identifier>" in pipette_fdl
@@ -111,9 +111,9 @@ async def test_core_features_generate_sila_definitions():
     ):
         _SILA_FEATURE_DEFINITION_SCHEMA.validate(fdl)
 
-    assert 'FeatureVersion="2.0"' in motion_fdl
-    assert 'FeatureVersion="1.2"' in gripper_fdl
-    assert 'FeatureVersion="1.1"' in calibration_fdl
+    assert 'FeatureVersion="2.1"' in motion_fdl
+    assert 'FeatureVersion="1.3"' in gripper_fdl
+    assert 'FeatureVersion="1.2"' in calibration_fdl
     assert "<Identifier>MotionController</Identifier>" in motion_fdl
     assert "<DisplayName>Motion Controller</DisplayName>" in motion_fdl
     assert "<Identifier>PipetteController</Identifier>" in pipette_fdl

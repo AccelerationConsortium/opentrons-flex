@@ -12,7 +12,6 @@
     "name": "Opentrons Flex",
     "type": "LiquidHandler",
     "description": "SiLA2 connector for guarded Opentrons Flex unit-operation qualification",
-    "version": "0.9.1",
     "vendor_url": "https://opentrons.com/",
     "default_lifetime": 3600.0
   },
@@ -54,5 +53,6 @@
   "run_mutation_ledger_path": null,
   "run_mutation_token_env": "UNITELABS_RUN_MUTATION_TOKEN",
   "run_mutation_actor_env": "UNITELABS_RUN_MUTATION_ACTOR",
-  "run_mutation_required": false
+  "run_mutation_required": false,
+  "recovery_state_path": "/var/lib/unitelabs-opentrons-flex/recovery-state.json"
 }

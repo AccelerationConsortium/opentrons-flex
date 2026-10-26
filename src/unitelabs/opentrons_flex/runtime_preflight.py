@@ -142,9 +142,11 @@ def _configuration_issues(
         issues.append("use_simulator must be false for a real Flex deployment.")
     sila_config = config.get("sila_server")
     configured_version = sila_config.get("version") if isinstance(sila_config, dict) else None
-    if configured_version != connector_version:
+    # The version may be omitted; the connector then reports its installed package version.
+    if configured_version is not None and configured_version != connector_version:
         issues.append(
-            f"sila_server.version is {configured_version!r}; expected connector version {connector_version!r}."
+            f"sila_server.version is {configured_version!r}; expected connector version {connector_version!r}. "
+            "Remove sila_server.version from the configuration to always use the installed version."
         )
     return tuple(issues)
 

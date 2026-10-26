@@ -34,4 +34,8 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Reset the entrypoint, don't invoke `uv`
 ENTRYPOINT []
 
-CMD [ "connector", "start", "--app", "unitelabs.opentrons_flex:create_app", "-vvv" ]
+# The container cannot reach a Flex CAN bus, so it always runs the OT3 simulator.
+# Mount your own file over /app/config.json to change ports or simulated modules
+# (generate one with `flexctl config init --profile simulator`).
+COPY config/docker_simulator.json /app/config.json
+CMD [ "connector", "start", "--app", "unitelabs.opentrons_flex:create_app", "--config-path", "/app/config.json", "-vvv" ]

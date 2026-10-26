@@ -50,6 +50,15 @@ from .liquid_handling import (
 )
 from .motion_control import Lights, MotionControlFeature, Mount, Position
 from .pipette import NozzleConfiguration, PipetteFeature, PipetteInfo
+from .robot_status import (
+    EmergencyStopState,
+    ModuleConnection,
+    OverallState,
+    ProtocolRunOwnership,
+    RobotStatus,
+    RobotStatusProvider,
+    WebServerState,
+)
 from .temperature import TemperatureControlStatus, TemperatureControllerStatus, TemperatureModuleFeature
 from .thermocycler import ThermocyclerFeature, ThermocyclerTemperature
 from .tip_controller import PipetteMount, TipController, TipLocation, TipPresence
@@ -59,6 +68,7 @@ __all__ = [
     "AbsorbanceReaderStatus",
     "AxisState",
     "CalibrationFeature",
+    "EmergencyStopState",
     "FlexStackerFeature",
     "FlexStackerLimitSwitchStatus",
     "FlexStackerMaintenanceFeature",
@@ -78,10 +88,12 @@ __all__ = [
     "LiquidLevel",
     "LiquidPosition",
     "MeasurementMode",
+    "ModuleConnection",
     "MotionControlFeature",
     "Mount",
     "NozzleConfiguration",
     "OccupiedLocation",
+    "OverallState",
     "PipetteFeature",
     "PipetteInfo",
     "PipetteMount",
@@ -90,8 +102,11 @@ __all__ = [
     "PlatePresence",
     "PlatformState",
     "Position",
+    "ProtocolRunOwnership",
     "ReaderLidStatus",
     "ReaderStatus",
+    "RobotStatus",
+    "RobotStatusProvider",
     "StackerAxisName",
     "StackerDirection",
     "StackerLedColor",
@@ -109,6 +124,7 @@ __all__ = [
     "VerifiedLiquidClass",
     "VerifiedTransferResult",
     "WavelengthMeasurement",
+    "WebServerState",
     "WellAbsorbance",
     "WellGeometry",
 ]

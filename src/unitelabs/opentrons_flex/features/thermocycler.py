@@ -158,7 +158,7 @@ class ThermocyclerFeature(sila.Feature):
             category="modules",
             identifier="ThermocyclerController",
             name="Thermocycler Controller",
-            version="2.1",
+            version="2.2",
         )
         self._controller = controller
 

@@ -12,7 +12,6 @@
     "name": "Opentrons Flex Smoketest",
     "type": "LiquidHandler",
     "description": "Local smoketest config for the Opentrons Flex connector simulator",
-    "version": "0.9.1",
     "vendor_url": "https://opentrons.com/",
     "default_lifetime": 3600.0
   },

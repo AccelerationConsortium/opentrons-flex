@@ -19,6 +19,7 @@ from unitelabs.opentrons_flex.io import (
     TipPickupError,
     TipStateError,
 )
+from unitelabs.opentrons_flex.io._errors import OperationHaltedError
 
 
 @pytest_asyncio.fixture
@@ -232,7 +233,7 @@ async def test_emergency_stop_during_full_home_keeps_recovery_gate(
     await home_started.wait()
     await controller.stop()
     release_home.set()
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(OperationHaltedError):
         await home_task
 
     assert controller._recovery_state.rehome_required
@@ -267,7 +268,7 @@ async def test_emergency_stop_prevents_actuation_after_interleaved_move(
     await controller.stop()
     release_move.set()
 
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(OperationHaltedError):
         await task
     pickup.assert_not_awaited()
     assert not controller._recovery_state.tip_reconciliation_required
@@ -296,7 +297,7 @@ async def test_emergency_stop_cancels_inside_multistep_pickup(
     await pickup_started.wait()
     await controller.stop()
 
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(OperationHaltedError):
         await pickup_task
     instrument = controller._api.hardware_instruments[OT3Mount.LEFT.to_mount()]
     assert not instrument.has_tip

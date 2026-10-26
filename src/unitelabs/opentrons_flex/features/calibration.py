@@ -11,7 +11,6 @@ Returns measured offsets as structured data — never a boolean "success" — an
 raises defined errors (probe missing, calibration failed) the operator can act on.
 """
 
-import asyncio
 import enum
 import typing
 from dataclasses import dataclass
@@ -21,6 +20,7 @@ from unitelabs.cdk import sila
 from unitelabs.cdk.sila import constraints
 
 from ..io import (
+    SYSTEM_ERRORS,
     CalibrationFailedError,
     CalibrationProbeNotAttachedError,
     FlexCalibrationController,
@@ -28,7 +28,7 @@ from ..io import (
     RunOwnershipError,
 )
 from ._pipette_types import PIPETTE_MOUNTS, PipetteMount
-from ._progress import OperationPhase, OperationProgress, report_progress
+from ._progress import OperationProgress, observable_action
 
 _MILLIMETRE = constraints.Unit(
     "mm",
@@ -72,12 +72,23 @@ class CalibrationFeature(sila.Feature):
             category="robots",
             identifier="CalibrationController",
             name="Calibration Controller",
-            version="1.1",
+            version="1.2",
         )
         self._controller = controller
 
     @sila.ObservableCommand(
-        errors=[RunOwnershipError, CalibrationProbeNotAttachedError, CalibrationFailedError, NotHomedError]
+        errors=[
+            RunOwnershipError,
+            CalibrationProbeNotAttachedError,
+            CalibrationFailedError,
+            NotHomedError,
+            *SYSTEM_ERRORS,
+        ]
+    )
+    @observable_action(
+        "Starting {mount.value} pipette calibration.",
+        "{mount.value} pipette calibration completed.",
+        "{mount.value} pipette calibration cancelled.",
     )
     async def calibrate_pipette(
         self,
@@ -102,35 +113,22 @@ class CalibrationFeature(sila.Feature):
         Returns:
             The measured pipette offset (x, y, z) in mm.
         """
-        report_progress(
-            status,
-            intermediate,
-            0.0,
-            OperationPhase.STARTING,
-            f"Starting {mount.value} pipette calibration.",
-        )
-        try:
-            x, y, z = await self._controller.calibrate_pipette(_ot3_pipette_mount(mount), slot=slot)
-        except asyncio.CancelledError:
-            report_progress(
-                status,
-                intermediate,
-                1.0,
-                OperationPhase.CANCELLED,
-                f"{mount.value} pipette calibration cancelled.",
-            )
-            raise
-        report_progress(
-            status,
-            intermediate,
-            1.0,
-            OperationPhase.COMPLETED,
-            f"{mount.value} pipette calibration completed.",
-        )
+        x, y, z = await self._controller.calibrate_pipette(_ot3_pipette_mount(mount), slot=slot)
         return Offset(x=x, y=y, z=z)
 
     @sila.ObservableCommand(
-        errors=[RunOwnershipError, CalibrationProbeNotAttachedError, CalibrationFailedError, NotHomedError]
+        errors=[
+            RunOwnershipError,
+            CalibrationProbeNotAttachedError,
+            CalibrationFailedError,
+            NotHomedError,
+            *SYSTEM_ERRORS,
+        ]
+    )
+    @observable_action(
+        "Starting {jaw.value} gripper jaw calibration.",
+        "{jaw.value} gripper jaw calibration completed.",
+        "{jaw.value} gripper jaw calibration cancelled.",
     )
     async def calibrate_gripper_jaw(
         self,
@@ -158,35 +156,20 @@ class CalibrationFeature(sila.Feature):
         from opentrons.hardware_control.types import GripperProbe
 
         probe = GripperProbe.FRONT if jaw is GripperJaw.FRONT else GripperProbe.REAR
-        report_progress(
-            status,
-            intermediate,
-            0.0,
-            OperationPhase.STARTING,
-            f"Starting {jaw.value} gripper jaw calibration.",
-        )
-        try:
-            x, y, z = await self._controller.calibrate_gripper_jaw(probe, slot=slot)
-        except asyncio.CancelledError:
-            report_progress(
-                status,
-                intermediate,
-                1.0,
-                OperationPhase.CANCELLED,
-                f"{jaw.value} gripper jaw calibration cancelled.",
-            )
-            raise
-        report_progress(
-            status,
-            intermediate,
-            1.0,
-            OperationPhase.COMPLETED,
-            f"{jaw.value} gripper jaw calibration completed.",
-        )
+        x, y, z = await self._controller.calibrate_gripper_jaw(probe, slot=slot)
         return Offset(x=x, y=y, z=z)
 
     @sila.ObservableCommand(
-        errors=[RunOwnershipError, CalibrationProbeNotAttachedError, CalibrationFailedError, NotHomedError]
+        errors=[
+            RunOwnershipError,
+            CalibrationProbeNotAttachedError,
+            CalibrationFailedError,
+            NotHomedError,
+            *SYSTEM_ERRORS,
+        ]
+    )
+    @observable_action(
+        "Starting deck calibration with {mount.value}.", "Deck calibration completed.", "Deck calibration cancelled."
     )
     async def calibrate_deck(
         self,
@@ -206,16 +189,4 @@ class CalibrationFeature(sila.Feature):
         Yields:
             Update: Current calibration progress update.
         """
-        report_progress(
-            status,
-            intermediate,
-            0.0,
-            OperationPhase.STARTING,
-            f"Starting deck calibration with {mount.value}.",
-        )
-        try:
-            await self._controller.calibrate_deck(_ot3_pipette_mount(mount), pipette_id=pipette_id)
-        except asyncio.CancelledError:
-            report_progress(status, intermediate, 1.0, OperationPhase.CANCELLED, "Deck calibration cancelled.")
-            raise
-        report_progress(status, intermediate, 1.0, OperationPhase.COMPLETED, "Deck calibration completed.")
+        await self._controller.calibrate_deck(_ot3_pipette_mount(mount), pipette_id=pipette_id)

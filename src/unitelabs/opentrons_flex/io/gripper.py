@@ -13,7 +13,14 @@ from typing import TYPE_CHECKING
 
 from opentrons.hardware_control import HardwareControlAPI
 
-from ._errors import GripActionError, GripperNotAttachedError, NotHomedError
+from ._errors import (
+    GripActionError,
+    GripperNotAttachedError,
+    NotHomedError,
+    RecoveryRequiredError,
+    mark_task_halt_cancelled,
+    translate_system_errors,
+)
 from .hardware_proxy import _TimedLock
 from .recovery_state import HardwareRecoveryState, recovery_state_for
 
@@ -86,11 +93,14 @@ class FlexGripperController:
         ready = self._recovery_state.gantry_recovered if jaw_recovery else self._recovery_state.operation_ready
         if not ready:
             msg = f"The robot is recovery-gated. {self._recovery_state.operator_guidance} before continuing."
-            raise NotHomedError(msg)
+            raise RecoveryRequiredError(msg)
 
     def _assert_generation(self, generation: int) -> None:
         if generation != self._recovery_state.generation:
             self._recovery_state.require_gripper_home()
+            task = asyncio.current_task()
+            if task is not None:
+                mark_task_halt_cancelled(task)
             raise asyncio.CancelledError
 
     async def _recover_cancelled_action(self) -> None:
@@ -108,6 +118,7 @@ class FlexGripperController:
         except Exception:
             log.exception("Failed to halt after gripper-operation cancellation")
 
+    @translate_system_errors
     async def grip(self, force_newtons: float | None = None) -> None:
         """Close the jaw to grip labware (optional ``force_newtons``)."""
         self._require_attached()
@@ -129,6 +140,7 @@ class FlexGripperController:
             finally:
                 self._recovery_state.unregister_operation(task)
 
+    @translate_system_errors
     async def ungrip(self, force_newtons: float | None = None) -> None:
         """Open the jaw to release labware."""
         self._require_attached()
@@ -150,6 +162,7 @@ class FlexGripperController:
             finally:
                 self._recovery_state.unregister_operation(task)
 
+    @translate_system_errors
     async def home_jaw(self, recalibrate_jaw_width: bool = False) -> None:
         """Home the gripper jaw to its reference position."""
         self._require_attached()

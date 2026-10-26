@@ -7,8 +7,24 @@ WHEEL_DIR="${2:-dist_arm}"
 STATE_DIR="/var/lib/unitelabs-opentrons-flex"
 ACTIVE_PATH="/var/sila2_flex"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
-ARTIFACT_DIR="$SCRIPT_DIR/$WHEEL_DIR"
+case "$WHEEL_DIR" in
+    /*) ARTIFACT_DIR="$WHEEL_DIR" ;;
+    *) ARTIFACT_DIR="$SCRIPT_DIR/$WHEEL_DIR" ;;
+esac
 MANIFEST_TOOL="$SCRIPT_DIR/scripts/artifact_manifest.py"
+
+# Runtime contract. Keep in sync with runtime_compat.py (enforced by
+# tests/test_runtime_contract_consistency.py); the connector version is read
+# from pyproject.toml so it can never drift from the built wheel.
+OPENTRONS_VERSION=9.0.0
+OPENTRONS_SOURCE_COMMIT=44b37a2f91520bf2e7245c70bf799d46c8c2d9a5
+PYTHON_VERSION=3.12
+ARCHITECTURE=aarch64
+CONNECTOR_VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$SCRIPT_DIR/pyproject.toml" | head -n 1)"
+if [ -z "$CONNECTOR_VERSION" ]; then
+    echo "ERROR: cannot read the connector version from pyproject.toml." >&2
+    exit 1
+fi
 
 if [ -f "$SCRIPT_DIR/config/flex_config.local.json" ]; then
     CONFIG_SRC="$SCRIPT_DIR/config/flex_config.local.json"
@@ -25,14 +41,25 @@ if [ ! -d "$ARTIFACT_DIR" ]; then
     echo "Download and extract the flex-arm-wheels artifact first." >&2
     exit 1
 fi
+if [ ! -f "$ARTIFACT_DIR/runtime-manifest.json" ]; then
+    echo "ERROR: '$ARTIFACT_DIR' has no runtime-manifest.json; it predates verified releases." >&2
+    echo "Rebuild it (see README 'Building dist_arm/') or download a fresh flex-arm-wheels artifact." >&2
+    exit 1
+fi
+BUILT_VERSION="$(python3 "$MANIFEST_TOOL" field "$ARTIFACT_DIR" connectorVersion 2>/dev/null || true)"
+if [ "$BUILT_VERSION" != "$CONNECTOR_VERSION" ]; then
+    echo "ERROR: '$ARTIFACT_DIR' was built for connector ${BUILT_VERSION:-unknown}, but this checkout is $CONNECTOR_VERSION." >&2
+    echo "Rebuild the wheels from this checkout before deploying." >&2
+    exit 1
+fi
 
 python3 "$MANIFEST_TOOL" verify "$ARTIFACT_DIR" \
-    --connector-version 0.9.1 \
-    --opentrons-version 9.0.0 \
-    --robot-server-version 9.0.0 \
-    --opentrons-source-commit 44b37a2f91520bf2e7245c70bf799d46c8c2d9a5 \
-    --python-version 3.12 \
-    --architecture aarch64
+    --connector-version "$CONNECTOR_VERSION" \
+    --opentrons-version "$OPENTRONS_VERSION" \
+    --robot-server-version "$OPENTRONS_VERSION" \
+    --opentrons-source-commit "$OPENTRONS_SOURCE_COMMIT" \
+    --python-version "$PYTHON_VERSION" \
+    --architecture "$ARCHITECTURE"
 RELEASE_ID="$(python3 "$MANIFEST_TOOL" field "$ARTIFACT_DIR" releaseId)"
 CONFIG_SHA="$(python3 -c 'import hashlib,sys; h=hashlib.sha256(); [h.update(open(p,"rb").read()) for p in sys.argv[1:]]; print(h.hexdigest())' \
     "$CONFIG_SRC" "$UNIT_CONFIG_SRC" "$UNIT_MOVEMENT_SRC" "$UNIT_OPERATIONS_SRC")"
@@ -71,21 +98,27 @@ scp -O \
     "$UNIT_OPERATIONS_SRC" \
     "root@$HOST:$UPLOAD_DIR/"
 
-ssh "root@$HOST" sh -s -- "$UPLOAD_DIR" "$RELEASE_PATH" "$ACTIVE_PATH" "$STATE_DIR" "$CONFIG_SHA" <<'REMOTE'
+ssh "root@$HOST" sh -s -- "$UPLOAD_DIR" "$RELEASE_PATH" "$ACTIVE_PATH" "$STATE_DIR" "$CONFIG_SHA" \
+    "$CONNECTOR_VERSION" "$OPENTRONS_VERSION" "$OPENTRONS_SOURCE_COMMIT" "$PYTHON_VERSION" "$ARCHITECTURE" <<'REMOTE'
 set -eu
 UPLOAD_DIR="$1"
 RELEASE_PATH="$2"
 ACTIVE_PATH="$3"
 STATE_DIR="$4"
 EXPECTED_CONFIG_SHA="$5"
+CONNECTOR_VERSION="$6"
+OPENTRONS_VERSION="$7"
+OPENTRONS_SOURCE_COMMIT="$8"
+PYTHON_VERSION="$9"
+ARCHITECTURE="${10}"
 
 python3 "$UPLOAD_DIR/artifact_manifest.py" verify "$UPLOAD_DIR" \
-    --connector-version 0.9.1 \
-    --opentrons-version 9.0.0 \
-    --robot-server-version 9.0.0 \
-    --opentrons-source-commit 44b37a2f91520bf2e7245c70bf799d46c8c2d9a5 \
-    --python-version 3.12 \
-    --architecture aarch64 \
+    --connector-version "$CONNECTOR_VERSION" \
+    --opentrons-version "$OPENTRONS_VERSION" \
+    --robot-server-version "$OPENTRONS_VERSION" \
+    --opentrons-source-commit "$OPENTRONS_SOURCE_COMMIT" \
+    --python-version "$PYTHON_VERSION" \
+    --architecture "$ARCHITECTURE" \
     --check-host-python \
     --check-host-architecture
 UPLOADED_CONFIG_SHA="$(python3 -c 'import hashlib,sys; h=hashlib.sha256(); [h.update(open(p,"rb").read()) for p in sys.argv[1:]]; print(h.hexdigest())' \

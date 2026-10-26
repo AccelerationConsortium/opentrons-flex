@@ -2,6 +2,7 @@ import importlib.metadata
 import sys
 import types
 from unittest.mock import MagicMock
+import pytest
 
 # The connector reads its version via importlib.metadata at import time. When the
 # package is run from source without being pip-installed (offline dev), that
@@ -65,6 +66,8 @@ except ImportError:
     _rs_dependencies = types.ModuleType("robot_server.runs.dependencies")
     _rs_dependencies.start_light_control_task = MagicMock(name="start_light_control_task")
     _rs_dependencies.mark_light_control_startup_finished = MagicMock(name="mark_light_control_startup_finished")
+    _rs_dependencies.get_light_controller = MagicMock(name="get_light_controller")
+    _rs_dependencies.get_run_orchestrator_store = MagicMock(name="get_run_orchestrator_store")
     _opentrons_hardware = types.ModuleType("opentrons_hardware")
     _server_utils = types.ModuleType("server_utils")
     sys.modules["robot_server"] = _rs
@@ -171,3 +174,13 @@ except ImportError:
     sys.modules["unitelabs.cdk.sila"] = _sila
     sys.modules["unitelabs.cdk.sila.constraints"] = _constraints
     _CDK_STUBBED = True
+
+
+@pytest.fixture(autouse=True)
+def _never_signal_the_test_process(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Keep the robot-server watchdog from sending SIGTERM to pytest."""
+    import unitelabs.opentrons_flex as connector
+
+    requests: list[str] = []
+    monkeypatch.setattr(connector, "_request_restart", lambda: requests.append("restart"))
+    return requests
