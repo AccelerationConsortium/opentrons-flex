@@ -1,12 +1,35 @@
 """SiLA 2 provider that reports the complete Flex connector state in one stream."""
 
 import asyncio
+import datetime
 import enum
+import typing
 from dataclasses import dataclass
 
 from unitelabs.cdk import sila
+from unitelabs.cdk.sila import constraints
 
+from ..io.events import EVENTS, ConnectorEvent, EventKind, EventLog
 from ..io.robot_status import HttpServerState, RobotState, RobotStatusSnapshot, RobotStatusSource
+
+# Protocol Engine run statuses (robot-server 9.0) plus the connector's own values.
+PROTOCOL_RUN_STATUSES = (
+    "idle",
+    "running",
+    "paused",
+    "stop-requested",
+    "stopped",
+    "finishing",
+    "failed",
+    "succeeded",
+    "blocked-by-open-door",
+    "awaiting-recovery",
+    "awaiting-recovery-blocked-by-open-door",
+    "awaiting-recovery-paused",
+    "initializing",
+    "unknown",
+)
+ProtocolRunStatus = typing.Annotated[str, constraints.Set(list(PROTOCOL_RUN_STATUSES))]
 
 
 class OverallState(enum.Enum):
@@ -15,9 +38,42 @@ class OverallState(enum.Enum):
     READY = "READY"
     BUSY = "BUSY"
     PROTOCOL_RUN_ACTIVE = "PROTOCOL_RUN_ACTIVE"
+    RECOVERING = "RECOVERING"
     RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
+    EMERGENCY_STOP = "EMERGENCY_STOP"
     HARDWARE_ERROR = "HARDWARE_ERROR"
     INITIALIZING = "INITIALIZING"
+
+
+class EventCategory(enum.Enum):
+    """Category of a connector event."""
+
+    STATE = "STATE"
+    ERROR = "ERROR"
+    HALT = "HALT"
+    RECOVERY = "RECOVERY"
+    MODULE = "MODULE"
+    LIFECYCLE = "LIFECYCLE"
+
+
+@dataclass
+class ConnectorEventEntry:
+    """
+    One entry of the connector event journal.
+
+    Attributes:
+        Sequence: Increasing event number since the connector started.
+        Time: When the event happened (UTC).
+        Category: What kind of event it is.
+        Source: The command, component, or controller that reported it.
+        Message: What happened, including the error type for errors.
+    """
+
+    sequence: int
+    time: datetime.datetime
+    category: EventCategory
+    source: str
+    message: str
 
 
 class EmergencyStopState(enum.Enum):
@@ -66,7 +122,7 @@ class ProtocolRunOwnership:
     """
 
     run_identifier: str
-    run_status: str
+    run_status: ProtocolRunStatus
     direct_control_allowed: bool
 
 
@@ -93,6 +149,12 @@ class RobotStatus:
         UnregisteredModules: Attached modules that appeared after startup; restart the connector to use them.
         WebServer: State of the embedded Opentrons HTTP robot-server.
         RestartPending: Why the connector is restarting itself (for example to register a new module), else empty.
+        StateReason: Why the connector is in its current state and what resolves it; empty when ready.
+        StateSince: When the current state was entered (UTC).
+        LastError: The most recent failed command, halt, or hardware error with its time; empty if none.
+        Warnings: Standing configuration or persistence problems an operator should fix.
+        PreviousExit: How the previous connector process ended, when it did not shut down cleanly.
+        StartedAt: When this connector process started (UTC).
     """
 
     state: OverallState
@@ -112,9 +174,17 @@ class RobotStatus:
     unregistered_modules: list[str]
     web_server: WebServerState
     restart_pending: str
+    state_reason: str
+    state_since: datetime.datetime
+    last_error: str
+    warnings: list[str]
+    previous_exit: str
+    started_at: datetime.datetime
 
 
 _STATE = {state: OverallState[state.name] for state in RobotState}
+_EPOCH = datetime.datetime(1970, 1, 1, tzinfo=datetime.UTC)
+_CATEGORIES = {kind: EventCategory[kind.name] for kind in EventKind}
 _WEB = {state: WebServerState[state.name] for state in HttpServerState}
 
 
@@ -137,7 +207,7 @@ def to_robot_status(snapshot: RobotStatusSnapshot) -> RobotStatus:
         recovery_guidance=snapshot.recovery_guidance,
         protocol_run=ProtocolRunOwnership(
             run_identifier=snapshot.run.run_id,
-            run_status=snapshot.run.status,
+            run_status=snapshot.run.status if snapshot.run.status in PROTOCOL_RUN_STATUSES else "unknown",
             direct_control_allowed=snapshot.run.direct_control_allowed,
         ),
         deck_ledger_configured=snapshot.deck_ledger_configured,
@@ -153,6 +223,23 @@ def to_robot_status(snapshot: RobotStatusSnapshot) -> RobotStatus:
         unregistered_modules=list(snapshot.unregistered_modules),
         web_server=_WEB[snapshot.http_server],
         restart_pending=snapshot.restart_pending,
+        state_reason=snapshot.state_reason,
+        state_since=snapshot.state_since or _EPOCH,
+        last_error=snapshot.last_error,
+        warnings=list(snapshot.warnings),
+        previous_exit=snapshot.previous_exit,
+        started_at=snapshot.started_at or _EPOCH,
+    )
+
+
+def to_event_entry(event: ConnectorEvent) -> ConnectorEventEntry:
+    """Convert a journal event into the SiLA structure."""
+    return ConnectorEventEntry(
+        sequence=event.sequence,
+        time=event.time,
+        category=_CATEGORIES[event.kind],
+        source=event.source,
+        message=event.message,
     )
 
 
@@ -164,14 +251,15 @@ class RobotStatusProvider(sila.Feature):
     operation, so it can be observed continuously while the robot moves.
     """
 
-    def __init__(self, source: RobotStatusSource, *, interval: float = 0.25) -> None:
+    def __init__(self, source: RobotStatusSource, *, interval: float = 0.25, events: EventLog = EVENTS) -> None:
         super().__init__(
             originator="ca.accelerationconsortium",
             category="robots",
-            version="1.0",
+            version="1.1",
         )
         self._source = source
         self._interval = interval
+        self._events = events
 
     @sila.ObservableProperty()
     async def subscribe_status(self) -> sila.Stream[RobotStatus]:
@@ -184,9 +272,28 @@ class RobotStatusProvider(sila.Feature):
                 previous = current
             await asyncio.sleep(self._interval)
 
+    @sila.ObservableProperty()
+    async def subscribe_recent_events(self) -> sila.Stream[list[ConnectorEventEntry]]:
+        """
+        Subscribe to the most recent connector events, oldest first.
+
+        Includes significant state changes, failed commands, halts, recovery steps,
+        and restarts, so a client can see why the connector changed state.
+        """
+        previous = -1
+        while True:
+            sequence = self._events.sequence
+            if sequence != previous:
+                yield [to_event_entry(event) for event in self._events.recent()]
+                previous = sequence
+            await asyncio.sleep(self._interval)
+
 
 __all__ = [
+    "PROTOCOL_RUN_STATUSES",
+    "ConnectorEventEntry",
     "EmergencyStopState",
+    "EventCategory",
     "ModuleConnection",
     "OverallState",
     "ProtocolRunOwnership",

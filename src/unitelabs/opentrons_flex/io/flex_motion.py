@@ -18,7 +18,7 @@ from the robot-server through an ``asyncio.Lock``. This controller is handed the
 import asyncio
 import logging
 import math
-from collections.abc import AsyncIterator
+from collections.abc import Callable, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
@@ -34,6 +34,7 @@ from opentrons_shared_data.robot.types import RobotType
 from ._errors import (
     LiquidVolumeOutOfRangeError,
     MachineErrorStateError,
+    halt_cancellation_pending,
     NozzleConfigurationError,
     PipetteNotAttachedError,
     RecoveryRequiredError,
@@ -69,6 +70,49 @@ _MOUNT_AXES: dict[OT3Mount, list[Axis]] = {
 # not an error.
 _ESTOP_ERROR_STATES: frozenset[EstopState] = frozenset({EstopState.PHYSICALLY_ENGAGED, EstopState.LOGICALLY_ENGAGED})
 MAX_SUPPORTED_TIP_LENGTH_MM = 100.0
+
+
+def position_untrusted_after(error: BaseException) -> bool:
+    """
+    Whether a failure during an actuation leaves the gantry position untrustworthy.
+
+    Stalls, collisions, motor or CAN communication faults, an E-stop, and
+    unexpected driver errors all mean the encoder and the software position may
+    disagree, so a full home is required before the next move. Planning errors
+    (an out-of-bounds target), a liquid probe that found no liquid (the pipette
+    returns to its start first), tip-interaction failures, and module USB errors
+    happen before or without losing gantry position and keep their own recovery paths.
+    """
+    from opentrons_shared_data.errors import exceptions
+
+    return isinstance(error, (MachineErrorStateError, *_position_loss_errors(exceptions)))
+
+
+_POSITION_LOSS_ERROR_NAMES = (
+    # The gantry stopped somewhere other than commanded, or its motors lost track.
+    "StallOrCollisionDetectedError",
+    "MotionFailedError",
+    "MoveConditionNotMetError",
+    "MotorDriverError",
+    "HomingFailedError",
+    "MisalignedGantryError",
+    "PositionEstimationInvalidError",
+    "EStopActivatedError",
+    # The controller lost contact with the motor boards mid-move.
+    "CanbusCommunicationError",
+    "CANBusBusError",
+    "CommandTimedOutError",
+    # An unexpected driver error while the actuation was running.
+    "PythonException",
+)
+
+
+def _position_loss_errors(module: object) -> tuple[type[BaseException], ...]:
+    return tuple(
+        error
+        for name in _POSITION_LOSS_ERROR_NAMES
+        if isinstance(error := getattr(module, name, None), type) and issubclass(error, BaseException)
+    )
 
 
 @dataclass(frozen=True)
@@ -192,7 +236,18 @@ class FlexMotionController:
         estop = self._api.get_estop_state()
         door_open = self._api.door_state == DoorState.OPEN
         is_error = estop in _ESTOP_ERROR_STATES
-        message = f"E-stop is {estop.name}. Release the E-stop and re-home before continuing." if is_error else ""
+        if estop is EstopState.PHYSICALLY_ENGAGED:
+            message = (
+                "The E-stop is pressed. Make the robot safe, release (twist) the E-stop, then run "
+                "RecoveryController.Recover."
+            )
+        elif estop is EstopState.LOGICALLY_ENGAGED:
+            message = (
+                "The E-stop was released but not acknowledged. Run RecoveryController.Recover (or "
+                "RecoveryController.AcknowledgeEmergencyStop) to acknowledge it and re-home."
+            )
+        else:
+            message = ""
         return MachineState(estop=estop.name, door_open=door_open, is_error_state=is_error, message=message)
 
     def _assert_machine_ok(self) -> None:
@@ -209,7 +264,7 @@ class FlexMotionController:
 
     async def _finish_cancelled_actuation(self) -> None:
         """Halt a cancelled multi-step actuation before its hardware lock is released."""
-        self._recovery_state.mark_halted()
+        self._recovery_state.mark_halted("A SiLA command was cancelled while the robot moved")
         halt = asyncio.create_task(self._api.halt())
         while not halt.done():
             try:
@@ -232,17 +287,35 @@ class FlexMotionController:
             self._recovery_state.unregister_operation(task)
             await self._finish_cancelled_actuation()
             raise
+        except Exception as exc:
+            if position_untrusted_after(exc) and not halt_cancellation_pending():
+                self._recovery_state.require_rehome(f"{type(exc).__name__} while the robot moved: {exc}")
+            raise
         finally:
             self._recovery_state.unregister_operation(task)
 
     # ------------------------------------------------------------------ motion
 
     @translate_motion_errors
-    async def home(self, axes: list[Axis] | None = None) -> None:
-        """Home the given axes (all axes when ``None``)."""
+    async def home(
+        self,
+        axes: list[Axis] | None = None,
+        *,
+        guard: Callable[[], bool] | None = None,
+    ) -> None:
+        """
+        Home the given axes (all axes when ``None``).
+
+        ``guard`` runs after the hardware lock is acquired and immediately before
+        motion: it raises to abort, or returns False to skip a home that is no
+        longer needed (recovery uses it to re-check the door, the E-stop, and that
+        no halt happened while it waited for the lock).
+        """
         async with self._lock:
             if axes is not None:
                 self._assert_operation_ready()
+            if guard is not None and not guard():
+                return
             async with self._active_operation() as generation:
                 await self._api.home(axes=axes)
                 self._assert_operation_generation(generation)
@@ -294,7 +367,7 @@ class FlexMotionController:
     @translate_system_errors
     async def stop(self) -> None:
         """Halt all motion without waiting for the operation lock."""
-        self._recovery_state.mark_halted()
+        self._recovery_state.mark_halted("EmergencyStop was requested")
         # Emergency stop must be able to pre-empt the command currently holding
         # the shared lock. All ordinary hardware operations remain serialized.
         halt = asyncio.create_task(self._api.halt())
@@ -569,8 +642,8 @@ class FlexMotionController:
 
     async def _halt_cancelled_tip_operation(self, mount: OT3Mount, known_tip_length: float | None) -> None:
         """Halt and reconcile physical/software tip state before releasing the lock."""
-        self._recovery_state.mark_halted()
-        self._recovery_state.require_tip_reconciliation(mount.name)
+        self._recovery_state.mark_halted("A tip pickup or drop was cancelled")
+        self._recovery_state.require_tip_reconciliation(mount.name, "A tip pickup or drop was cancelled")
         try:
             await self._api.halt()
         except Exception:
@@ -647,7 +720,9 @@ class FlexMotionController:
                     try:
                         self._synchronize_tip_model(mount, state, tip_length)
                     except Exception:
-                        self._recovery_state.require_tip_reconciliation(mount.name)
+                        self._recovery_state.require_tip_reconciliation(
+                            mount.name, f"The {mount.name} tip sensor disagreed after a pickup"
+                        )
                         log.exception("Failed to reconcile %s after pickup verification failed", mount.name)
                     msg = f"Tip pickup completed but {mount.name} sensor reported {state.name}."
                     raise TipStateError(msg)
@@ -697,7 +772,9 @@ class FlexMotionController:
                     try:
                         self._synchronize_tip_model(mount, state, known_tip_length)
                     except Exception:
-                        self._recovery_state.require_tip_reconciliation(mount.name)
+                        self._recovery_state.require_tip_reconciliation(
+                            mount.name, f"The {mount.name} tip sensor disagreed after a drop"
+                        )
                         log.exception("Failed to reconcile %s after drop verification failed", mount.name)
                     msg = f"Tip drop completed but {mount.name} sensor reported {state.name}."
                     raise TipStateError(msg)
@@ -739,6 +816,51 @@ class FlexMotionController:
             self._recovery_state.mark_tip_reconciled(mount.name)
             log.info("%s tip state reconciled to %s by operator request", mount.name, state.name)
             return state
+
+    @translate_tip_errors
+    async def reconcile_tip_state_from_sensor(self, mount: OT3Mount) -> TipStateType:
+        """
+        Clear a tip quarantine when the sensor reading needs no operator input.
+
+        The software model is aligned with the sensor when the sensor reports no
+        tip, or reports a tip whose length the software already knows. A tip the
+        software does not know about needs its length from the operator
+        (``reconcile_tip_state``), so that case raises ``TipStateError``. A mount
+        with no pipette has no tip state to reconcile and is cleared.
+        """
+        async with self._lock:
+            if self._api.hardware_instruments.get(mount.to_mount()) is None:
+                self._recovery_state.mark_tip_reconciled(mount.name)
+                log.info("%s tip quarantine cleared: no pipette is attached", mount.name)
+                return TipStateType.ABSENT
+            state = await self._api.get_tip_presence_status(mount)
+            instrument = self._api.hardware_instruments[mount.to_mount()]
+            if state is TipStateType.PRESENT and not instrument.has_tip:
+                msg = (
+                    f"The {mount.name} pipette holds a tip the software did not record, so its length is unknown. "
+                    "Remove the tip by hand and run Recover again, or run TipController.ReconcileTipState with "
+                    "the tip length."
+                )
+                raise TipStateError(msg)
+            self._synchronize_tip_model(mount, state, None)
+            self._recovery_state.mark_tip_reconciled(mount.name)
+            log.info("%s tip state reconciled to %s from the sensor", mount.name, state.name)
+            return state
+
+    def acknowledge_emergency_stop(self) -> str:
+        """
+        Acknowledge a released E-stop so motion can resume, and return the resulting state name.
+
+        Raises:
+            MachineErrorStateError: The E-stop is still pressed.
+        """
+        estop = self._api.get_estop_state()
+        if estop is EstopState.PHYSICALLY_ENGAGED:
+            raise MachineErrorStateError(self.machine_status().message)
+        if estop is EstopState.LOGICALLY_ENGAGED:
+            self._api.estop_acknowledge_and_clear()
+            log.info("E-stop acknowledged; it now reports %s", self._api.get_estop_state().name)
+        return self._api.get_estop_state().name
 
     async def cached_gantry_position(self, mount: OT3Mount) -> Point | None:
         """

@@ -106,6 +106,18 @@ if [ "$command" = "is-active" ] || [ "$command" = "is-enabled" ]; then
     done
 fi
 case "$command" in
+    show)
+        case "$*" in
+            *"-p Environment "*)
+                default_environment="RUNNING_ON_VERDIN=true"
+                persistence=/data/opentrons_robot_server
+                default_environment="$default_environment OT_ROBOT_SERVER_persistence_directory=$persistence"
+                printf '%s\n' "${FAKE_STOCK_ENVIRONMENT-$default_environment}"
+                ;;
+            *"-p EnvironmentFiles "*) printf '%s\n' "${FAKE_STOCK_ENVIRONMENT_FILES-}" ;;
+        esac
+        exit 0
+        ;;
     cat)
         selector="$FAKE_RUNTIME_ROOT/var/lib/unitelabs-opentrons-flex/connector-config.json"
         printf 'ExecStart=connector --config-path %s\n' "$selector"
@@ -205,6 +217,9 @@ case "$code" in
     *json.load*)
         cat >/dev/null
         ;;
+    *shlex.split*)
+        tr ' ' '\n' | sed '/^$/d'
+        ;;
     *os.replace*)
         [ "${FAKE_ACTIVATION_FAIL:-0}" != 1 ] || exit 1
         rm -f "$4"
@@ -232,6 +247,7 @@ exit 0
         **os.environ,
         "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
         "FAKE_RUNTIME_ROOT": str(runtime_root),
+        "SYSTEMD_UNIT_DIR": str(systemd_dir),
         "FAKE_COMMAND_LOG": str(command_log),
         "FAKE_CONNECTOR_ACTIVE": str(connector_active),
         "FAKE_STOCK_ACTIVE": str(stock_active),
@@ -508,3 +524,64 @@ def test_rollback_atomically_swaps_release_and_records_prior_target(tmp_path: Pa
     assert paths["active"].resolve() == paths["previous_release"]
     assert paths["previous_record"].read_text() == f"release:{paths['current_release']}\n"
     assert paths["stock_active"].is_file()
+
+
+def _install_successfully(tmp_path: Path, **extra: str) -> tuple[subprocess.CompletedProcess[str], dict[str, Path]]:
+    environment, paths = _offline_remote_environment(tmp_path)
+    environment.update(extra)
+    result = _run_remote_body("scripts/install_connector_service.sh", environment)
+    return result, paths
+
+
+def test_install_copies_the_stock_robot_environment_into_the_connector_unit(tmp_path: Path) -> None:
+    result, paths = _install_successfully(tmp_path, FAKE_STOCK_ENVIRONMENT_FILES="/etc/robot.env (ignore_errors=yes)")
+
+    assert result.returncode == 0, result.stderr
+    runtime_root = paths["active"].parents[1]
+    environment_file = runtime_root / "var/lib/unitelabs-opentrons-flex/robot-environment.env"
+    assert environment_file.read_text().splitlines() == [
+        "RUNNING_ON_VERDIN=true",
+        "OT_ROBOT_SERVER_persistence_directory=/data/opentrons_robot_server",
+    ]
+    unit = (runtime_root / "etc/systemd/system/sila2-connector.service").read_text()
+    assert f"EnvironmentFile=-{environment_file}" in unit
+    assert "EnvironmentFile=-/etc/robot.env" in unit
+    assert "StartLimitIntervalSec=0" in unit
+    assert unit.index("robot-environment.env") < unit.index("run-mutation.env")
+
+
+def test_install_adds_the_robot_marker_when_the_stock_unit_lacks_it(tmp_path: Path) -> None:
+    result, paths = _install_successfully(tmp_path, FAKE_STOCK_ENVIRONMENT="OT_SMOOTHIE_ID=AMA")
+
+    assert result.returncode == 0, result.stderr
+    environment_file = paths["active"].parents[1] / "var/lib/unitelabs-opentrons-flex/robot-environment.env"
+    assert "RUNNING_ON_VERDIN=true" in environment_file.read_text().splitlines()
+
+
+def test_watchdog_drop_in_follows_the_active_release(tmp_path: Path) -> None:
+    environment, paths = _offline_remote_environment(tmp_path)
+    runtime_root = paths["active"].parents[1]
+    drop_in = runtime_root / "etc/systemd/system/sila2-connector.service.d/watchdog.conf"
+
+    result = _run_remote_body("scripts/install_connector_service.sh", environment)
+    assert result.returncode == 0, result.stderr
+    assert not drop_in.exists(), "a release without heartbeat support must not get a watchdog"
+
+    package = paths["current_release"] / "lib/python3.12/site-packages/unitelabs/opentrons_flex"
+    package.mkdir(parents=True)
+    (package / "runtime_environment.py").write_text("")
+    paths["connector_active"].unlink(missing_ok=True)
+    result = _run_remote_body("scripts/install_connector_service.sh", environment)
+    assert result.returncode == 0, result.stderr
+    text = drop_in.read_text()
+    assert "Type=notify" in text
+    assert "WatchdogSec=120" in text
+
+
+def test_deploy_cleans_uploads_and_keeps_only_active_and_rollback_releases() -> None:
+    script = _text("deploy.sh")
+
+    assert 'rm -rf "$UPLOAD_DIR"' in script
+    prune = script.index("for old_release in")
+    assert '"$KEEP_ACTIVE" | "$KEEP_PREVIOUS" | "$RELEASE_PATH") continue' in script[prune:]
+    assert script.index('ln -sfn "$RELEASE_PATH" "$ACTIVE_PATH"') < prune

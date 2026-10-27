@@ -146,6 +146,9 @@ fi
 CLEANUP_INCOMPLETE=no
 COMPLETE_MARKER="$RELEASE_PATH/.unitelabs-release-complete"
 cleanup_deploy() {
+    case "$UPLOAD_DIR" in
+        /root/unitelabs-flex-upload-*) rm -rf "$UPLOAD_DIR" ;;
+    esac
     if [ "$CLEANUP_INCOMPLETE" = yes ] &&
         [ -d "$RELEASE_PATH" ] &&
         [ ! -f "$COMPLETE_MARKER" ]; then
@@ -247,7 +250,32 @@ else
 fi
 
 echo "Activated release: $(readlink -f "$ACTIVE_PATH")"
+
+# Keep the active release and the rollback target; older releases only use disk
+# space (each is a complete virtual environment).
+KEEP_ACTIVE="$(readlink -f "$ACTIVE_PATH")"
+KEEP_PREVIOUS=""
+if [ -f "$STATE_DIR/previous-release" ]; then
+    KEEP_PREVIOUS="$(sed -n '1s/^release://p' "$STATE_DIR/previous-release")"
+fi
+for old_release in "$STATE_DIR"/releases/*; do
+    [ -d "$old_release" ] || continue
+    case "$old_release" in
+        "$KEEP_ACTIVE" | "$KEEP_PREVIOUS" | "$RELEASE_PATH") continue ;;
+    esac
+    echo "Removing old release $old_release"
+    rm -rf "$old_release"
+done
+# Upload folders left behind by interrupted earlier deployments.
+for stale_upload in /root/unitelabs-flex-upload-*; do
+    if [ -d "$stale_upload" ] && [ "$stale_upload" != "$UPLOAD_DIR" ]; then
+        rm -rf "$stale_upload"
+    fi
+done
+df -h "$STATE_DIR" | sed -n '2s/^/Disk after cleanup: /p'
+
 echo "Stock robot-server remains in control until the connector service is explicitly installed/switched."
+rm -rf "$UPLOAD_DIR"
 rmdir "$LOCK_DIR"
 trap - 0 HUP INT TERM
 REMOTE

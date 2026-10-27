@@ -96,7 +96,7 @@ async def test_machine_status_reports_estop_engaged(controller: FlexMotionContro
     state = controller.machine_status()
     assert state.estop == "PHYSICALLY_ENGAGED"
     assert state.is_error_state is True
-    assert "re-home" in state.message.lower()
+    assert "release" in state.message.lower() and "recover" in state.message.lower()
 
 
 async def test_machine_status_reports_open_door(controller: FlexMotionController, monkeypatch: pytest.MonkeyPatch):

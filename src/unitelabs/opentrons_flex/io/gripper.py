@@ -105,7 +105,7 @@ class FlexGripperController:
 
     async def _recover_cancelled_action(self) -> None:
         """Finish a physical halt despite repeated client cancellation."""
-        self._recovery_state.mark_halted()
+        self._recovery_state.mark_halted("A gripper action was cancelled while the jaw or gantry moved")
         self._recovery_state.require_gripper_home()
         halt = asyncio.create_task(self._api.halt())
         while not halt.done():
@@ -161,6 +161,15 @@ class FlexGripperController:
                 raise GripActionError(msg) from exc
             finally:
                 self._recovery_state.unregister_operation(task)
+
+    def clear_jaw_gate_if_detached(self) -> bool:
+        """Clear the jaw-home gate when no gripper is attached (nothing to home); return whether it was cleared."""
+        if self.attached or not self._recovery_state.gripper_home_required:
+            return False
+        if not self._recovery_state.mark_gripper_homed(self._recovery_state.generation):
+            return False
+        log.info("Gripper jaw gate cleared: no gripper is attached")
+        return True
 
     @translate_system_errors
     async def home_jaw(self, recalibrate_jaw_width: bool = False) -> None:

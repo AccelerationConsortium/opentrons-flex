@@ -261,16 +261,16 @@ class FlexLabwareMovementController:
                     )
                     return plan, result
             except asyncio.CancelledError:
-                self._motion._recovery_state.require_gripper_home()
+                self._motion._recovery_state.require_gripper_home("A labware move was cancelled")
                 raise
             except FailedGripperPickupError as exc:
-                self._motion._recovery_state.require_gripper_home()
+                self._motion._recovery_state.require_gripper_home("The gripper did not pick up the labware")
                 raise LabwareNotPickedError(str(exc)) from exc
             except LabwareDroppedError as exc:
-                self._motion._recovery_state.require_gripper_home()
+                self._motion._recovery_state.require_gripper_home("The gripper dropped the labware")
                 raise LabwareNotPlacedError(str(exc)) from exc
-            except Exception:
-                self._motion._recovery_state.require_gripper_home()
+            except Exception as exc:
+                self._motion._recovery_state.require_gripper_home(f"A labware move failed ({type(exc).__name__})")
                 raise
 
     async def _move_locked(self, plan: LabwareMovementPlan) -> LabwareMoveResult:

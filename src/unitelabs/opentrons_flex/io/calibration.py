@@ -70,7 +70,7 @@ class FlexCalibrationController:
 
     async def _recover_cancelled_calibration(self) -> None:
         """Finish a physical halt despite repeated client cancellation."""
-        self._recovery_state.mark_halted()
+        self._recovery_state.mark_halted("A calibration was cancelled while the robot moved")
         halt = asyncio.create_task(self._api.halt())
         while not halt.done():
             try:

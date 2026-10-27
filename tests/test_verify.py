@@ -158,9 +158,11 @@ async def test_physical_estop_is_detected_and_acknowledged(monkeypatch: pytest.M
     monkeypatch.setattr(OT3API, "get_estop_state", lambda _self: state["value"])
     acknowledged: list[bool] = []
 
-    def acknowledge() -> None:
+    def acknowledge(*_args: object) -> None:
         acknowledged.append(True)
         state["value"] = EstopState.DISENGAGED
+
+    monkeypatch.setattr(OT3API, "estop_acknowledge_and_clear", acknowledge)
 
     async with _simulator() as address:
         verifier = _Verifier(
@@ -176,9 +178,10 @@ async def test_physical_estop_is_detected_and_acknowledged(monkeypatch: pytest.M
             await verifier._motion_home()
             detail = await verifier._motion_physical_estop()
 
-    assert acknowledged == [True]
+    assert acknowledged == [True], "Recover acknowledges the released E-stop over SiLA"
     assert "PHYSICALLY_ENGAGED" in detail
     assert "LOGICALLY_ENGAGED" in detail
+    assert "acknowledge the released E-stop" in detail
 
 
 async def test_undetected_estop_reports_the_states_it_saw(monkeypatch: pytest.MonkeyPatch) -> None:

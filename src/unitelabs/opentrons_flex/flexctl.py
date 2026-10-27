@@ -171,6 +171,7 @@ def build_config(profile: str, *, simulated_modules: Sequence[str] | None = None
                 "run_mutation_ledger_path": f"{STATE_DIR}/run-mutations.jsonl",
                 "run_mutation_required": True,
                 "recovery_state_path": f"{STATE_DIR}/recovery-state.json",
+                "lifecycle_state_path": f"{STATE_DIR}/lifecycle.json",
             }
         )
     else:
@@ -181,6 +182,7 @@ def build_config(profile: str, *, simulated_modules: Sequence[str] | None = None
                 "run_mutation_required": False,
                 "labware_movement_config": f"{ACTIVE_PATH}/asms-unit-labware-movement.json",
                 "recovery_state_path": f"{STATE_DIR}/recovery-state.json",
+                "lifecycle_state_path": f"{STATE_DIR}/lifecycle.json",
             }
         )
     config["run_mutation_token_env"] = "UNITELABS_RUN_MUTATION_TOKEN"

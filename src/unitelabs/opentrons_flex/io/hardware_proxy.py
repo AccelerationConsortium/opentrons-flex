@@ -350,7 +350,9 @@ class HardwareProxy:
                         object.__setattr__(self, "_post_run_gripper_z_homed", False)
                     else:
                         self._clear_post_run_recovery()
-                    self._recovery_state.mark_halted()
+                    self._recovery_state.mark_halted(
+                        "The robot was halted through the HTTP API or a Protocol Engine run"
+                    )
                     # A halt must not wait behind the operation it is stopping.
                     halt = asyncio.create_task(attr(*args, **kwargs))
                     cancelled = False
@@ -610,7 +612,7 @@ async def _recover_cancelled_proxy_action(
     state: HardwareRecoveryState,
 ) -> None:
     """Halt an HTTP-side action before propagating its cancellation."""
-    state.mark_halted()
+    state.mark_halted("An HTTP or Protocol Engine hardware action was cancelled while the robot moved")
     halt = asyncio.create_task(api.halt())
     while not halt.done():
         try:
