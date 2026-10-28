@@ -216,6 +216,10 @@ class FlexLabwareMovementController:
             gripper.attach_labware_state(state)
         for plan in plan_list:
             self._validate_plan_definition(plan)
+            # Reach needs the gripper's critical point; in robot-server mode the
+            # gripper is detected after startup, so move_labware re-checks it.
+            if self._api.has_gripper():
+                self._validate_plan_reach(plan)
 
     @translate_motion_errors
     async def move_labware(
@@ -231,6 +235,7 @@ class FlexLabwareMovementController:
 
         async with self._motion._lock:
             self._gripper._require_attached()
+            self._validate_plan_reach(plan)
             if not self._api.gripper_jaw_can_home():
                 msg = (
                     "The gripper appears to be holding an object. Reconcile the deck and run HomeJaw before a new move."
@@ -460,6 +465,8 @@ class FlexLabwareMovementController:
         ):
             msg = f"Plan {plan.identifier!r} requires positive width and non-negative uncertainties."
             raise ValueError(msg)
+
+    def _validate_plan_reach(self, plan: LabwareMovementPlan) -> None:
         self._motion._validate_absolute_target(OT3Mount.GRIPPER, plan.source_grip_point)
         self._motion._validate_absolute_target(OT3Mount.GRIPPER, plan.destination_grip_point)
 
