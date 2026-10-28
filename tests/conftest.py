@@ -1,4 +1,5 @@
 import importlib.metadata
+import importlib.util
 import sys
 import types
 from unittest.mock import MagicMock
@@ -179,8 +180,15 @@ except ImportError:
 @pytest.fixture(autouse=True)
 def _never_signal_the_test_process(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Keep the robot-server watchdog from sending SIGTERM to pytest."""
+    requests: list[str] = []
+    # The offline workflow venv (windows-operator-readiness) deliberately
+    # installs only the acceptance contract, not the connector's opentrons
+    # runtime. Without opentrons the connector and its watchdog cannot load,
+    # so there is nothing to neutralise.
+    if importlib.util.find_spec("opentrons") is None:
+        return requests
+
     import unitelabs.opentrons_flex as connector
 
-    requests: list[str] = []
     monkeypatch.setattr(connector, "_request_restart", lambda: requests.append("restart"))
     return requests
