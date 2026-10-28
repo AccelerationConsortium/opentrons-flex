@@ -63,12 +63,14 @@ ln -sfn "$ACTIVE_PATH/config.json" "$CONFIG_SELECTOR"
 # Run the connector with the same environment as the stock robot-server, so the
 # Opentrons libraries detect the robot (RUNNING_ON_VERDIN: calibration from
 # /data) and the embedded robot-server keeps its data where the stock one does.
+# Interpreter variables (PYTHONPATH etc.) are skipped: the stock ones point at
+# /opt/opentrons-robot-server and would shadow the release's own packages.
 ROBOT_ENV_FILE="$STATE_DIR/robot-environment.env"
 systemctl show opentrons-robot-server -p Environment --value 2>/dev/null | python3 -c '
 import shlex, sys
 for item in shlex.split(sys.stdin.read()):
     key, sep, value = item.partition("=")
-    if sep and key.replace("_", "").isalnum():
+    if sep and key.replace("_", "").isalnum() and not key.startswith("PYTHON"):
         print(key + "=" + shlex.quote(value))
 ' > "$ROBOT_ENV_FILE.tmp"
 if ! grep -qE "^RUNNING_ON_(VERDIN|PI)=" "$ROBOT_ENV_FILE.tmp"; then
