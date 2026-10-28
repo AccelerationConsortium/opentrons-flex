@@ -158,11 +158,14 @@ class TipController(sila.Feature):
         intermediate: sila.Intermediate[TipOperationProgress],
     ) -> TipPresence:
         """
-        Move to an absolute deck position, pick up a tip, and verify it.
+        Approach an absolute deck position vertically, pick up a tip, lift it clear, and verify it.
 
-        Movement and pickup execute under one hardware lock, so another client
-        cannot move the robot between positioning and pickup. Presses and depth
-        increments use the hardware model's validated defaults.
+        All mounts are raised to the top of travel, the pipette moves horizontally to
+        directly above the location, then descends straight down; after pickup the
+        mount is raised again, so the tip never sweeps through labware. Movement and
+        pickup execute under one hardware lock, so another client cannot move the
+        robot between positioning and pickup. Presses and depth increments use the
+        hardware model's validated defaults.
 
         Args:
             Mount: Pipette mount to operate (LEFT or RIGHT).
@@ -204,10 +207,12 @@ class TipController(sila.Feature):
         intermediate: sila.Intermediate[TipOperationProgress],
     ) -> TipPresence:
         """
-        Move to an absolute deck position, drop the attached tip, and verify it.
+        Approach an absolute deck position vertically, drop the attached tip, and verify it.
 
-        Movement and release execute under one hardware lock. The supplied
-        location must be a safe trash or return-tip position.
+        All mounts are raised to the top of travel, the pipette moves horizontally to
+        directly above the location, then descends straight down; the mount is raised
+        again after the release. Movement and release execute under one hardware lock.
+        The supplied location must be a safe trash or return-tip position.
 
         Args:
             Mount: Pipette mount to operate (LEFT or RIGHT).
