@@ -672,6 +672,19 @@ class FlexMotionController:
                 continue
         await recovery
 
+    async def _approach_vertically(self, mount: OT3Mount, location: Point, generation: int) -> None:
+        """Lift every mount, travel in XY at the top of travel, then descend straight onto ``location``."""
+        for axis in Axis.ot3_mount_axes():
+            await self._api.retract_axis(axis)
+            self._assert_operation_generation(generation)
+        top = await self._api.gantry_position(mount, refresh=True)
+        above = Point(x=location.x, y=location.y, z=top.z)
+        self._validate_absolute_target(mount, above)
+        await self._api.move_to(mount=mount, abs_position=above)
+        self._assert_operation_generation(generation)
+        self._assert_machine_ok()
+        await self._api.move_to(mount=mount, abs_position=location)
+
     @translate_tip_errors
     @translate_motion_errors
     async def pick_up_tip(
@@ -681,7 +694,12 @@ class FlexMotionController:
         tip_length: float,
         prep_after: bool = True,
     ) -> TipStateType:
-        """Atomically move to ``location``, pick up a tip, and verify it."""
+        """
+        Atomically approach ``location`` vertically, pick up a tip, lift it clear, and verify it.
+
+        The approach lifts all mounts, travels in XY only, and descends straight down, so
+        no diagonal move can sweep through labware; the mount is retracted after pickup.
+        """
         if not math.isfinite(tip_length) or not 0.0 < tip_length <= MAX_SUPPORTED_TIP_LENGTH_MM:
             msg = f"tip_length must be finite, greater than 0 mm, and at most {MAX_SUPPORTED_TIP_LENGTH_MM:g} mm"
             raise ValueError(msg)
@@ -702,7 +720,7 @@ class FlexMotionController:
                     )
                     raise TipPickupError(msg)
                 self._validate_absolute_target(mount, location)
-                await self._api.move_to(mount=mount, abs_position=location)
+                await self._approach_vertically(mount, location, generation)
                 self._assert_operation_generation(generation)
                 self._assert_machine_ok()
                 await self._api.pick_up_tip(
@@ -712,6 +730,8 @@ class FlexMotionController:
                     increment=None,
                     prep_after=prep_after,
                 )
+                self._assert_operation_generation(generation)
+                await self._api.retract(mount)
                 self._assert_operation_generation(generation)
                 state = await self._api.get_tip_presence_status(mount)
                 self._assert_operation_generation(generation)
@@ -739,7 +759,7 @@ class FlexMotionController:
     @translate_tip_errors
     @translate_motion_errors
     async def drop_tip(self, mount: OT3Mount, location: Point, home_after: bool = False) -> TipStateType:
-        """Atomically move to ``location``, drop the tip, and verify it."""
+        """Atomically approach ``location`` vertically, drop the tip, lift the mount, and verify it."""
         self._validate_tip_location(location)
         async with self._lock:
             known_tip_length: float | None = None
@@ -760,10 +780,12 @@ class FlexMotionController:
                     msg = f"{mount.name} sensor reports a tip but the software tip length is unavailable."
                     raise TipStateError(msg)
                 self._validate_absolute_target(mount, location)
-                await self._api.move_to(mount=mount, abs_position=location)
+                await self._approach_vertically(mount, location, generation)
                 self._assert_operation_generation(generation)
                 self._assert_machine_ok()
                 await self._api.drop_tip(mount=mount, home_after=home_after)
+                self._assert_operation_generation(generation)
+                await self._api.retract(mount)
                 self._assert_operation_generation(generation)
                 state = await self._api.get_tip_presence_status(mount)
                 self._assert_operation_generation(generation)
