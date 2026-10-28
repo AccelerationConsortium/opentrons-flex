@@ -60,24 +60,71 @@ if systemctl is-active --quiet sila2-connector 2>/dev/null; then
 fi
 ln -sfn "$ACTIVE_PATH/config.json" "$CONFIG_SELECTOR"
 
+# Run the connector with the same environment as the stock robot-server, so the
+# Opentrons libraries detect the robot (RUNNING_ON_VERDIN: calibration from
+# /data) and the embedded robot-server keeps its data where the stock one does.
+ROBOT_ENV_FILE="$STATE_DIR/robot-environment.env"
+systemctl show opentrons-robot-server -p Environment --value 2>/dev/null | python3 -c '
+import shlex, sys
+for item in shlex.split(sys.stdin.read()):
+    key, sep, value = item.partition("=")
+    if sep and key.replace("_", "").isalnum():
+        print(key + "=" + shlex.quote(value))
+' > "$ROBOT_ENV_FILE.tmp"
+if ! grep -qE "^RUNNING_ON_(VERDIN|PI)=" "$ROBOT_ENV_FILE.tmp"; then
+    echo "The stock robot-server unit sets no RUNNING_ON_VERDIN; adding it (this is a Flex)."
+    echo "RUNNING_ON_VERDIN=true" >> "$ROBOT_ENV_FILE.tmp"
+fi
+mv "$ROBOT_ENV_FILE.tmp" "$ROBOT_ENV_FILE"
+echo "Connector environment copied from the stock robot-server:"
+sed 's/^/  /' "$ROBOT_ENV_FILE"
+STOCK_ENV_FILES="$(systemctl show opentrons-robot-server -p EnvironmentFiles --value 2>/dev/null |
+    sed -n 's/^\([^ ]*\) (ignore_errors=.*/\1/p')"
+EXTRA_ENV_LINES=""
+for env_file in $STOCK_ENV_FILES; do
+    EXTRA_ENV_LINES="${EXTRA_ENV_LINES}EnvironmentFile=-${env_file}
+"
+done
+
 cat > /etc/systemd/system/sila2-connector.service <<EOF
 [Unit]
 Description=SiLA2 Opentrons Flex Connector
 After=network.target
 Wants=network.target
+# Never stop retrying: an unattended robot must come back on its own.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 ExecStart=$ACTIVE_PATH/bin/connector start --app unitelabs.opentrons_flex:create_app --config-path $CONFIG_SELECTOR
+${EXTRA_ENV_LINES}EnvironmentFile=-$ROBOT_ENV_FILE
 Environment=PYTHONPYCACHEPREFIX=/var/cache/sila2-pycache
 EnvironmentFile=-$ENV_FILE
+# Type=notify, the startup timeout, and the watchdog are set by a drop-in that
+# configure_connector_watchdog writes only for releases that support them.
 Restart=on-failure
-RestartSec=5
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 EOF
-systemctl daemon-reload
+configure_connector_watchdog() {
+    # Releases that report readiness and send heartbeats run as Type=notify with a
+    # systemd watchdog; older releases (for example after a rollback) run without it.
+    dropin_dir="${SYSTEMD_UNIT_DIR:-/etc/systemd/system}/sila2-connector.service.d"
+    mkdir -p "$dropin_dir"
+    set -- "$ACTIVE_PATH"/lib/python3*/site-packages/unitelabs/opentrons_flex/runtime_environment.py
+    if [ -f "$1" ]; then
+        printf '%s\n' '[Service]' 'Type=notify' 'NotifyAccess=main' 'TimeoutStartSec=300' 'WatchdogSec=120' \
+            > "$dropin_dir/watchdog.conf"
+        echo "systemd watchdog enabled for the active release."
+    else
+        rm -f "$dropin_dir/watchdog.conf"
+        echo "Active release has no systemd watchdog support; running without it."
+    fi
+    systemctl daemon-reload
+}
+configure_connector_watchdog
 
 # Preserve the prior service state for automatic failure recovery and explicit
 # rollback. Unknown services are ignored.

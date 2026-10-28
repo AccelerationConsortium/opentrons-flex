@@ -194,6 +194,12 @@ def mark_task_halt_cancelled(task: "asyncio.Task[object]") -> None:
     _HALT_CANCELLED_TASKS.add(task)
 
 
+def halt_cancellation_pending() -> bool:
+    """Whether the current task is being cancelled by a halt (without consuming the mark)."""
+    task = asyncio.current_task()
+    return task is not None and task in _HALT_CANCELLED_TASKS
+
+
 def consume_halt_cancellation() -> bool:
     """Return True (once) when the current task's cancellation came from a halt."""
     task = asyncio.current_task()
@@ -218,6 +224,14 @@ def _hardware_error(exc: BaseException) -> HardwareError:
     return HardwareError(f"{exc}.{suffix} Inspect the robot, resolve the reported condition, re-home, and retry.")
 
 
+def _recorded(fn: typing.Callable[..., object], error: Exception) -> Exception:
+    """Add a failed hardware call to the connector event journal and return the error."""
+    from .events import EVENTS
+
+    EVENTS.record_error(getattr(fn, "__qualname__", getattr(fn, "__name__", "hardware")), error)
+    return error
+
+
 def _translation_boundary(
     fn: typing.Callable[..., typing.Awaitable[object]],
     translate: typing.Callable[[Exception], Exception | None],
@@ -240,7 +254,7 @@ def _translation_boundary(
             return await fn(*args, **kwargs)
         except asyncio.CancelledError:
             if outermost and consume_halt_cancellation():
-                raise _halted_error() from None
+                raise _recorded(fn, _halted_error()) from None
             raise
         except Exception as exc:
             # On real hardware the cancellation from a halt does not surface as
@@ -248,12 +262,14 @@ def _translation_boundary(
             # 4000) or a driver raises its own error while unwinding. Any error in
             # a task the halt cancelled is a consequence of that halt.
             if outermost and consume_halt_cancellation():
-                raise _halted_error() from exc
+                raise _recorded(fn, _halted_error()) from exc
             translated = translate(exc)
             if translated is not None:
-                raise translated from exc
+                raise (_recorded(fn, translated) if outermost else translated) from exc
             if outermost and isinstance(exc, EnumeratedError):
-                raise _hardware_error(exc) from exc
+                raise _recorded(fn, _hardware_error(exc)) from exc
+            if outermost:
+                _recorded(fn, exc)
             raise
         finally:
             _TRANSLATION_DEPTH.reset(token)

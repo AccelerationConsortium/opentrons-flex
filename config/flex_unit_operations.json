@@ -54,5 +54,6 @@
   "run_mutation_token_env": "UNITELABS_RUN_MUTATION_TOKEN",
   "run_mutation_actor_env": "UNITELABS_RUN_MUTATION_ACTOR",
   "run_mutation_required": false,
-  "recovery_state_path": "/var/lib/unitelabs-opentrons-flex/recovery-state.json"
+  "recovery_state_path": "/var/lib/unitelabs-opentrons-flex/recovery-state.json",
+  "lifecycle_state_path": "/var/lib/unitelabs-opentrons-flex/lifecycle.json"
 }

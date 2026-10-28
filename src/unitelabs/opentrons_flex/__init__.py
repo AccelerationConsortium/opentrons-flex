@@ -45,7 +45,20 @@ from .io import (
 from .features._progress import observable_commands_in_flight
 from .io._module_base import module_activity
 from .io.recovery_state import recovery_state_for
+from .io.events import EVENTS, EventKind
 from .io.hot_plug import ModuleHotPlugMonitor
+from .io.recovery import AUTO_RECOVERY_MODES, AutoRecovery, RecoveryCoordinator, StackerRecoveryTarget
+from .features.recovery_controller import RecoveryController
+from .runtime_environment import (
+    PERSISTENCE_ENV,
+    LifecycleRecord,
+    robot_environment_detected,
+    apply_robot_server_persistence,
+    quiet_noisy_loggers,
+    remove_stale_robot_server_tempdirs,
+    require_robot_environment,
+    systemd_service,
+)
 from .io.robot_status import HttpServerState, RobotState, RobotStatusSource
 from .io.run_authority import (
     ProtocolRunAuthority,
@@ -243,6 +256,36 @@ class OpentronsFlexConfig(ConnectorBaseConfig):
     module whose type is already registered never needs a restart.
     """
 
+    require_robot_environment: bool = True
+    """Refuse to drive real hardware unless the Opentrons robot environment is set.
+
+    Without ``RUNNING_ON_VERDIN`` (copied from the stock robot-server unit by
+    ``install_connector_service.sh``) Opentrons reads calibration from
+    ``~/.opentrons`` instead of ``/data``. Disable only for a bench test.
+    """
+
+    robot_server_persistence_directory: str | None = None
+    """Data directory for the embedded robot-server (protocols, runs, offsets, deck configuration).
+
+    When omitted the inherited ``OT_ROBOT_SERVER_persistence_directory`` is used,
+    which the service copies from the stock robot-server unit.
+    """
+
+    robot_server_access_log: bool = False
+    """Log every HTTP request of the embedded robot-server (off: the touchscreen polls continuously)."""
+
+    lifecycle_state_path: str | None = None
+    """Small file recording how the previous connector process ended, so a restart is explained in Status."""
+
+    auto_recovery: str = "safe"
+    """Automatic recovery while the robot is idle and recovery-gated.
+
+    ``safe`` (default) only performs steps that never move the robot (tip state
+    settled by the sensor, jaw gate without a gripper). ``full`` also runs the
+    complete Recover sequence, which homes the robot, 30 s after a gate is set
+    when the E-stop is released and the door is closed. ``off`` disables it.
+    """
+
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.sila_server is not None:
@@ -252,6 +295,9 @@ class OpentronsFlexConfig(ConnectorBaseConfig):
         unknown = sorted(set(self.simulated_modules) - set(SIMULATED_MODULE_NAMES))
         if unknown:
             message = f"Unknown simulated_modules entries {unknown}; choose from {', '.join(SIMULATED_MODULE_NAMES)}."
+            raise ValueError(message)
+        if self.auto_recovery not in AUTO_RECOVERY_MODES:
+            message = f"auto_recovery must be one of {', '.join(AUTO_RECOVERY_MODES)}."
             raise ValueError(message)
         if self.module_hot_plug not in {"auto", "restart", "report"}:
             message = "module_hot_plug must be one of auto, restart, report."
@@ -384,6 +430,7 @@ def _register_modules(
     shared_lock: asyncio.Lock | RunAwareLock,
     *,
     live_modules: collections.abc.Callable[[], collections.abc.Iterable[object]] | None = None,
+    controllers_out: list[object] | None = None,
 ) -> list[_RegisteredModule]:
     """Register one SiLA feature set per supported attached module and return their identities."""
     modules = list(attached_modules)
@@ -415,6 +462,8 @@ def _register_modules(
             continue
         controller_cls, feature_classes = factory
         controller = controller_cls.from_module(module, lock=shared_lock, attached_modules=live_modules)
+        if controllers_out is not None:
+            controllers_out.append(controller)
         for feature_cls in feature_classes:
             connector.register(feature_cls(controller))
             log.info("Registered SiLA feature %s for module %s", feature_cls.__name__, module.MODULE_TYPE.name)
@@ -443,6 +492,8 @@ def _attached_module_ids(api: object) -> collections.abc.Callable[[], list[tuple
 def _shared_hardware_robot_server_lifespan(
     original_lifespan: collections.abc.Callable[[_AppWithState], typing.AsyncContextManager[None]],
     proxy: HardwareProxy,
+    *,
+    access_log: bool = False,
 ) -> collections.abc.Callable[[_AppWithState], typing.AsyncContextManager[None]]:
     """
     Add robot-server post-init callbacks skipped by shared hardware injection.
@@ -471,6 +522,8 @@ def _shared_hardware_robot_server_lifespan(
         )
 
         async with original_lifespan(app):
+            # robot-server's lifespan re-applies its own logging configuration.
+            quiet_noisy_loggers(access_log=access_log)
             await start_light_control_task(app.state, proxy)
             await mark_light_control_startup_finished(app.state, proxy)
             await initialize_run_store(bindings, proxy)
@@ -536,8 +589,9 @@ def _register_all(
     run_state: collections.abc.Callable[[], tuple[str | None, str, bool]] | None = None,
     http_server_state: collections.abc.Callable[[], HttpServerState] | None = None,
     restart_pending: collections.abc.Callable[[], str | None] | None = None,
-) -> tuple[RobotStatusSource, set[str]]:
-    """Register core, module, and status features; return the status source and registered module types."""
+    warnings: collections.abc.Callable[[], collections.abc.Iterable[str]] | None = None,
+) -> tuple[RobotStatusSource, set[str], RecoveryCoordinator]:
+    """Register core, module, recovery, and status features; return the status source, module types, and recovery."""
     _register_core_features(
         connector,
         hardware.motion,
@@ -546,13 +600,31 @@ def _register_all(
         labware_config,
         hardware.labware_state,
     )
+    module_controllers: list[object] = []
     registered_modules = _register_modules(
         connector,
         hardware.api.attached_modules,
         hardware.lock,
         live_modules=lambda: hardware.api.attached_modules,
+        controllers_out=module_controllers,
     )
     labware_state = hardware.labware_state
+    coordinator = RecoveryCoordinator(
+        hardware.motion,
+        hardware.gripper,
+        stackers=[
+            StackerRecoveryTarget(
+                serial=_module_serial(controller._bound_module),
+                recovery_required=controller.recovery_required_now,
+                connected=lambda controller=controller: controller.module_connected,
+                home=lambda controller=controller: controller.home_all(ignore_latch=False),
+            )
+            for controller in module_controllers
+            if isinstance(controller, FlexStackerController)
+        ],
+        deck_valid=(lambda: labware_state.valid) if labware_state is not None else None,
+    )
+    connector.register(RecoveryController(coordinator))
     source = RobotStatusSource(
         hardware.motion,
         run_state=run_state,
@@ -561,9 +633,12 @@ def _register_all(
         attached_module_ids=_attached_module_ids(hardware.api),
         http_server_state=http_server_state,
         restart_pending=restart_pending,
+        recovering=lambda: coordinator.running,
+        warnings=warnings,
+        previous_exit=_LIFECYCLE.previous.summary if _LIFECYCLE is not None and not _LIFECYCLE.previous.clean else "",
     )
     connector.register(RobotStatusProvider(source))
-    return source, {module.module_type for module in registered_modules}
+    return source, {module.module_type for module in registered_modules}, coordinator
 
 
 _FINISHED_RUN_STATUSES = frozenset({"idle", "succeeded", "failed", "stopped"})
@@ -587,6 +662,50 @@ def _safe_to_restart(source: RobotStatusSource, hardware: _Hardware) -> bool:
         return False
     locked = getattr(hardware.lock, "locked", None)
     return not (callable(locked) and locked())
+
+
+def _auto_recovery_may_run(source: RobotStatusSource, hardware: _Hardware) -> bool:
+    """
+    Whether automatic recovery may act now.
+
+    RECOVERY_REQUIRED outranks BUSY and PROTOCOL_RUN_ACTIVE in the state
+    precedence, so idleness is checked separately: no command in flight, no
+    locked hardware, and no Protocol Engine run that owns the robot.
+    """
+    snapshot = source.snapshot()
+    if snapshot.state is not RobotState.RECOVERY_REQUIRED:
+        return False
+    if observable_commands_in_flight() or module_activity(hardware.lock) or hardware.motion.hardware_busy:
+        return False
+    return snapshot.run.direct_control_allowed and snapshot.run.status in _FINISHED_RUN_STATUSES
+
+
+def _start_background_tasks(
+    config: OpentronsFlexConfig,
+    hardware: _Hardware,
+    source: RobotStatusSource,
+    registered_types: set[str],
+    restart: "_RestartRequest",
+    coordinator: RecoveryCoordinator,
+) -> asyncio.Task[None]:
+    """Start module hot-plug handling and automatic recovery as one supervised task."""
+    auto_recovery = AutoRecovery(
+        coordinator,
+        mode=config.auto_recovery,
+        gated_and_idle=lambda: _auto_recovery_may_run(source, hardware),
+    )
+    hot_plug = _start_hot_plug_monitor(config, hardware, source, registered_types, restart)
+
+    async def supervise() -> None:
+        recovery = asyncio.create_task(auto_recovery.run(), name="flex-auto-recovery")
+        try:
+            await asyncio.gather(hot_plug, recovery)
+        finally:
+            for task in (hot_plug, recovery):
+                task.cancel()
+            await asyncio.gather(hot_plug, recovery, return_exceptions=True)
+
+    return asyncio.create_task(supervise(), name="flex-background")
 
 
 def _start_hot_plug_monitor(
@@ -654,12 +773,36 @@ async def create_app(config: OpentronsFlexConfig) -> collections.abc.AsyncGenera
         raise ValueError(message)
 
     labware_config = _load_labware_config(config)
+    require_robot_environment(use_simulator=config.use_simulator, required=config.require_robot_environment)
+    quiet_noisy_loggers(access_log=config.robot_server_access_log)
 
-    if config.with_robot_server:
-        async for connector in _create_app_with_robot_server(config, labware_config, compatibility):
-            yield connector
-        return
+    global _LIFECYCLE  # noqa: PLW0603 - one lifecycle record per connector process
+    _LIFECYCLE = LifecycleRecord(config.lifecycle_state_path)
+    previous = _LIFECYCLE.start()
+    EVENTS.record(
+        EventKind.LIFECYCLE,
+        "Connector",
+        f"started v{__version__}" + (f"; previous run: {previous.summary}" if previous.summary else ""),
+    )
+    try:
+        if config.with_robot_server:
+            async for connector in _create_app_with_robot_server(config, labware_config, compatibility):
+                async with systemd_service(f"Serving SiLA on port {config.sila_server.port} with the web server"):
+                    yield connector
+            return
 
+        async for connector in _create_app_sila_only(config, labware_config):
+            async with systemd_service(f"Serving SiLA on port {config.sila_server.port}"):
+                yield connector
+    finally:
+        _LIFECYCLE.stop("orderly shutdown")
+
+
+async def _create_app_sila_only(
+    config: OpentronsFlexConfig,
+    labware_config: LoadedLabwareMovementConfig,
+) -> collections.abc.AsyncGenerator[Connector, None]:
+    """Serve SiLA without the embedded robot-server (simulator or connector-unit mode)."""
     api = await _build_api(config)
     hardware: _Hardware | None = None
     restart = _RestartRequest()
@@ -667,8 +810,14 @@ async def create_app(config: OpentronsFlexConfig) -> collections.abc.AsyncGenera
     try:
         hardware = _wire_hardware(config, api, asyncio.Lock(), labware_config)
         app = Connector(config)
-        source, registered_types = _register_all(app, hardware, labware_config, restart_pending=lambda: restart.reason)
-        monitor = _start_hot_plug_monitor(config, hardware, source, registered_types, restart)
+        source, registered_types, coordinator = _register_all(
+            app,
+            hardware,
+            labware_config,
+            restart_pending=lambda: restart.reason,
+            warnings=_standing_warnings(config),
+        )
+        monitor = _start_background_tasks(config, hardware, source, registered_types, restart, coordinator)
         log.info("SiLA server listening on %s:%d", config.sila_server.hostname, config.sila_server.port)
         yield app
     finally:
@@ -737,6 +886,30 @@ RESTART_EXIT_CODE = 75
 """Exit status that asks the service manager (systemd ``Restart=on-failure``) to start the connector again."""
 
 
+_LIFECYCLE: LifecycleRecord | None = None
+
+
+def _standing_warnings(config: OpentronsFlexConfig) -> collections.abc.Callable[[], list[str]]:
+    """Return a reader of configuration problems that do not stop the connector but should be fixed."""
+
+    def read() -> list[str]:
+        warnings: list[str] = []
+        if config.with_robot_server and os.environ.get(PERSISTENCE_ENV, "") in ("", "automatically_make_temporary"):
+            warnings.append(
+                "The embedded Opentrons web server keeps protocols, runs, labware offsets, and the deck "
+                "configuration in a temporary directory, so they are lost on every restart. Reinstall the "
+                "service with scripts/install_connector_service.sh or set robot_server_persistence_directory."
+            )
+        if not config.use_simulator and not robot_environment_detected():
+            warnings.append(
+                "The Opentrons robot environment is not set, so calibration is not read from /data. "
+                "Reinstall the service with scripts/install_connector_service.sh."
+            )
+        return warnings
+
+    return read
+
+
 class _RestartRequest:
     """One-shot request to restart the connector process after a clean shutdown."""
 
@@ -748,12 +921,14 @@ class _RestartRequest:
         if self.reason is not None:
             return
         self.reason = reason
-        log.warning("Restarting the connector to %s.", reason)
+        EVENTS.record(EventKind.LIFECYCLE, "Connector", f"restarting to {reason}")
         _request_restart()
 
     def exit_if_requested(self) -> None:
         """Call after hardware cleanup; terminates the process when a restart was requested."""
         if self.reason is not None:
+            if _LIFECYCLE is not None:
+                _LIFECYCLE.stop(f"restarted to {self.reason}")
             log.critical("Exiting with status %d so the service manager restarts the connector.", RESTART_EXIT_CODE)
             os._exit(RESTART_EXIT_CODE)
 
@@ -839,6 +1014,9 @@ async def _create_app_with_robot_server(
         config,
         compatibility,
     )
+    persistence = apply_robot_server_persistence(config.robot_server_persistence_directory)
+    if not persistence.temporary:
+        remove_stale_robot_server_tempdirs()
     shared_hardware = await _build_api(config)
     restart = _RestartRequest()
 
@@ -948,6 +1126,7 @@ async def _serve_with_robot_server(
         lifespan_factory=lambda original_lifespan: _shared_hardware_robot_server_lifespan(
             typing.cast(typing.Callable[..., object], original_lifespan),
             proxy,
+            access_log=config.robot_server_access_log,
         ),
     )
 
@@ -1019,6 +1198,7 @@ async def _serve_with_robot_server(
             ws="wsproto",
             loop="none",
             log_level="info",
+            access_log=config.robot_server_access_log,
         )
         log.info("robot-server starting on 127.0.0.1:%d", config.robot_server_tcp_port)
     else:
@@ -1028,6 +1208,7 @@ async def _serve_with_robot_server(
             ws="wsproto",
             loop="none",
             log_level="info",
+            access_log=config.robot_server_access_log,
         )
         log.info("robot-server starting on %s", config.robot_server_uds)
 
@@ -1062,15 +1243,16 @@ async def _serve_with_robot_server(
         watchdog.watch(robot_server_task)
 
         connector = Connector(config)
-        source, registered_types = _register_all(
+        source, registered_types, coordinator = _register_all(
             connector,
             hardware,
             labware_config,
             run_state=_run_state,
             http_server_state=watchdog.state,
             restart_pending=lambda: restart.reason,
+            warnings=_standing_warnings(config),
         )
-        monitor = _start_hot_plug_monitor(config, hardware, source, registered_types, restart)
+        monitor = _start_background_tasks(config, hardware, source, registered_types, restart, coordinator)
 
         log.info("SiLA server listening on %s:%d", config.sila_server.hostname, config.sila_server.port)
 

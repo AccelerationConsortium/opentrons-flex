@@ -41,7 +41,12 @@ from unitelabs.opentrons_flex.features import (
 )
 from unitelabs.opentrons_flex.io import HardwareProxy
 
-_CONFIG = OpentronsFlexConfig(use_simulator=False, with_robot_server=True, robot_server_uds="/run/aiohttp.sock")
+_CONFIG = OpentronsFlexConfig(
+    use_simulator=False,
+    with_robot_server=True,
+    robot_server_uds="/run/aiohttp.sock",
+    require_robot_environment=False,
+)
 
 # Where the deferred OT3API import resolves inside _create_app_with_robot_server.
 _OT3API_BUILD = "opentrons.hardware_control.ot3api.OT3API.build_hardware_controller"

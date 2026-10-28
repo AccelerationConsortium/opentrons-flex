@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from unitelabs.opentrons_flex import OpentronsFlexConfig, _register_modules, create_app
+from unitelabs.opentrons_flex.features.recovery_controller import RecoveryController
 from unitelabs.opentrons_flex.features import (
     AbsorbanceReaderFeature,
     CalibrationFeature,
@@ -62,6 +63,7 @@ async def test_simulate_registers_core_features():
             TipController,
             GripperFeature,
             CalibrationFeature,
+            RecoveryController,
             RobotStatusProvider,
         ]
 
@@ -79,7 +81,7 @@ async def test_bare_simulator_registers_no_module_features():
     """With no attached modules, only the core features and the status provider register."""
     config = OpentronsFlexConfig(use_simulator=True)
     async with _run_app(config) as registered:
-        assert len(registered) == 8
+        assert len(registered) == 9
 
 
 @pytest.mark.asyncio

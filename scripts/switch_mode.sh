@@ -64,6 +64,23 @@ unit_http_is_unavailable() {
         http://127.0.0.1:31950/health >/dev/null 2>&1
 }
 
+configure_connector_watchdog() {
+    # Releases that report readiness and send heartbeats run as Type=notify with a
+    # systemd watchdog; older releases (for example after a rollback) run without it.
+    dropin_dir="${SYSTEMD_UNIT_DIR:-/etc/systemd/system}/sila2-connector.service.d"
+    mkdir -p "$dropin_dir"
+    set -- "$ACTIVE_PATH"/lib/python3*/site-packages/unitelabs/opentrons_flex/runtime_environment.py
+    if [ -f "$1" ]; then
+        printf '%s\n' '[Service]' 'Type=notify' 'NotifyAccess=main' 'TimeoutStartSec=300' 'WatchdogSec=120' \
+            > "$dropin_dir/watchdog.conf"
+        echo "systemd watchdog enabled for the active release."
+    else
+        rm -f "$dropin_dir/watchdog.conf"
+        echo "Active release has no systemd watchdog support; running without it."
+    fi
+    systemctl daemon-reload
+}
+
 wait_for_pe_connector() {
     i=60
     while [ "$i" -gt 0 ]; do
@@ -191,6 +208,7 @@ if [ "$MODE" = connector-pe ] || [ "$MODE" = connector-unit ]; then
         exit 1
     fi
     ln -sfn "$TARGET_CONFIG" "$CONFIG_SELECTOR"
+    configure_connector_watchdog
     systemctl reset-failed sila2-connector 2>/dev/null || true
     STARTED=no
     if systemctl start sila2-connector; then

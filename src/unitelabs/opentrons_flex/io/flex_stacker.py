@@ -116,6 +116,13 @@ class FlexStackerController(ModuleControllerBase):
             error_details=error,
         )
 
+    def recovery_required_now(self) -> bool:
+        """Whether the Stacker must be fully homed; never raises (uses the recorded gate while detached)."""
+        try:
+            return bool(self.state.recovery_required)
+        except Exception:  # noqa: BLE001 - a detached Stacker reports its recorded gate
+            return bool(self._recovery_state is not None and self._recovery_state.full_home_required)
+
     @property
     def device_info(self) -> DeviceInfo:
         """Return the attached Stacker identity."""

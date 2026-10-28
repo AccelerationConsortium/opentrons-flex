@@ -290,7 +290,13 @@ class Verifier:
         guidance = field(status, "recovery_guidance")
         if guidance:
             details.append(f"recovery: {guidance}")
-        if state in {"HARDWARE_ERROR", "INITIALIZING"}:
+        try:
+            reason = str(field(status, "state_reason"))
+        except (KeyError, AttributeError):
+            reason = ""
+        if reason:
+            details.append(f"reason: {reason}")
+        if state in {"HARDWARE_ERROR", "EMERGENCY_STOP", "INITIALIZING"}:
             raise _Warn("; ".join(details))
         return "; ".join(details)
 
@@ -398,17 +404,31 @@ class Verifier:
         else:
             message = "motion was accepted while the recovery gate was set"
             raise RuntimeError(message)
-        await self.client.run("MotionController", "Home", timeout_s=180.0)
+        performed = await self._recover()
         await self._wait_for(lambda status: enum_name(field(status, "state")) == "READY", timeout_s=10.0)
         guidance = field(status, "recovery_guidance")
-        return f"move halted with OperationHaltedError; gate blocked motion ({guidance}); Home cleared it"
+        return (
+            f"move halted with OperationHaltedError; gate blocked motion ({guidance}); "
+            f"Recover cleared it ({'; '.join(performed) or 'no steps'})"
+        )
+
+    async def _recover(self) -> list[str]:
+        """Run RecoveryController.Recover (falls back to Home on a connector without it)."""
+        try:
+            responses = await self.client.run("RecoveryController", "Recover", timeout_s=240.0)
+        except SiLACallError as exc:
+            if "Unknown feature" not in exc.message:
+                raise
+            await self.client.run("MotionController", "Home", timeout_s=180.0)
+            return ["fully home the robot (MotionController.Home)"]
+        return [str(step) for step in next(iter(responses.values()), [])]
 
     async def _best_effort_home(self) -> None:
         """After a failed motion step, try to leave the robot homed and READY for the next step."""
         with contextlib.suppress(Exception):
             if await self._state() == "RECOVERY_REQUIRED":
-                self._operator.say("    (homing to clear the recovery gate before the next step)")
-                await self.client.run("MotionController", "Home", timeout_s=180.0)
+                self._operator.say("    (running Recover to clear the recovery gate before the next step)")
+                await self._recover()
 
     async def _motion_physical_estop(self) -> str:
         self._require_deck_clear()
@@ -433,7 +453,7 @@ class Verifier:
                 "showed an E-stop alert, the connector is not reading the E-stop state."
             )
             raise RuntimeError(message) from None
-        if estop(status) == "PHYSICALLY_ENGAGED" and enum_name(field(status, "state")) != "HARDWARE_ERROR":
+        if estop(status) == "PHYSICALLY_ENGAGED" and enum_name(field(status, "state")) != "EMERGENCY_STOP":
             message = f"state was {enum_name(field(status, 'state'))} with the E-stop engaged"
             raise RuntimeError(message)
         if not self._operator.ask("Release (twist) the E-stop, then press Enter."):
@@ -441,16 +461,21 @@ class Verifier:
         status = await self._wait_for(
             lambda status: estop(status) in {"LOGICALLY_ENGAGED", "DISENGAGED"}, timeout_s=15.0
         )
-        if estop(status) == "LOGICALLY_ENGAGED":
-            # A released E-stop stays latched until acknowledged (touchscreen "Resume" or HTTP).
-            if self._acknowledge_estop is not None:
-                self._acknowledge_estop()
-            elif not self._operator.ask("Acknowledge the E-stop on the touchscreen, then press Enter."):
-                raise _Skip("E-stop left latched")
-            await self._wait_for(lambda status: estop(status) == "DISENGAGED", timeout_s=15.0)
-        await self.client.run("MotionController", "Home", timeout_s=180.0)
+        # A released E-stop stays latched (LOGICALLY_ENGAGED); Recover acknowledges it and re-homes.
+        try:
+            performed = await self._recover()
+        except SiLACallError:
+            if self._acknowledge_estop is None:
+                raise
+            self._acknowledge_estop()
+            await self.client.run("MotionController", "Home", timeout_s=180.0)
+            performed = ["acknowledged over HTTP", "fully home the robot"]
+        await self._wait_for(lambda status: estop(status) in {"DISENGAGED", "NOT_PRESENT"}, timeout_s=15.0)
         await self._wait_for(lambda status: enum_name(field(status, "state")) == "READY", timeout_s=10.0)
-        return f"E-stop states {' -> '.join(seen)}; reported as HARDWARE_ERROR; recovered after release and Home"
+        return (
+            f"E-stop states {' -> '.join(seen)}; reported as EMERGENCY_STOP; "
+            f"Recover returned the robot to READY ({'; '.join(performed)})"
+        )
 
     # --------------------------------------------------------------- recovery
 
