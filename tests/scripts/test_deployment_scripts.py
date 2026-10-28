@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import hashlib
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -218,7 +219,7 @@ case "$code" in
         cat >/dev/null
         ;;
     *shlex.split*)
-        tr ' ' '\n' | sed '/^$/d'
+        exec "$REAL_PYTHON" "$@"
         ;;
     *os.replace*)
         [ "${FAKE_ACTIVATION_FAIL:-0}" != 1 ] || exit 1
@@ -247,6 +248,7 @@ exit 0
         **os.environ,
         "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
         "FAKE_RUNTIME_ROOT": str(runtime_root),
+        "REAL_PYTHON": sys.executable,
         "SYSTEMD_UNIT_DIR": str(systemd_dir),
         "FAKE_COMMAND_LOG": str(command_log),
         "FAKE_CONNECTOR_ACTIVE": str(connector_active),
@@ -556,6 +558,17 @@ def test_install_adds_the_robot_marker_when_the_stock_unit_lacks_it(tmp_path: Pa
     assert result.returncode == 0, result.stderr
     environment_file = paths["active"].parents[1] / "var/lib/unitelabs-opentrons-flex/robot-environment.env"
     assert "RUNNING_ON_VERDIN=true" in environment_file.read_text().splitlines()
+
+
+def test_install_does_not_copy_the_stock_python_path(tmp_path: Path) -> None:
+    result, paths = _install_successfully(
+        tmp_path,
+        FAKE_STOCK_ENVIRONMENT="RUNNING_ON_PI=true PYTHONPATH=/opt/opentrons-robot-server:/usr/lib/site-packages",
+    )
+
+    assert result.returncode == 0, result.stderr
+    environment_file = paths["active"].parents[1] / "var/lib/unitelabs-opentrons-flex/robot-environment.env"
+    assert environment_file.read_text().splitlines() == ["RUNNING_ON_PI=true"]
 
 
 def test_watchdog_drop_in_follows_the_active_release(tmp_path: Path) -> None:
