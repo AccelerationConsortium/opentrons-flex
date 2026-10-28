@@ -11,6 +11,7 @@ from opentrons.hardware_control.modules.types import ModuleType
 from opentrons.hardware_control.ot3api import OT3API
 from opentrons.hardware_control.types import OT3Mount
 from opentrons.types import Point
+from opentrons_shared_data.errors.exceptions import GripperNotPresentError
 
 from unitelabs.opentrons_flex.io import (
     DestinationOccupiedError,
@@ -23,6 +24,7 @@ from unitelabs.opentrons_flex.io import (
     LabwareMovementNotAllowedError,
     LabwareMovementPlan,
     LabwareMovementState,
+    MovementOutOfBoundsError,
     NotHomedError,
     load_labware_movement_config,
 )
@@ -129,6 +131,35 @@ async def test_remote_call_cannot_supply_or_bypass_an_unconfigured_plan(
             controller._state,
         )
         await lid_controller.move_labware("lid-plan", expect_lid=False)
+
+
+async def test_plans_load_before_the_gripper_is_detected_and_reach_is_checked_on_move(
+    labware_controller: tuple[OT3API, FlexLabwareMovementController, LabwareMovementPlan],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api, controller, plan = labware_controller
+    unreachable = replace(
+        plan, identifier="out-of-reach", source_grip_point=Point(plan.source_grip_point.x, 9999.0, 80.0)
+    )
+    state = LabwareMovementState(tmp_path / "late-gripper-state.json", {"D1": "plate-1"})
+
+    # In robot-server mode the gripper is detected only after the features are built.
+    def no_gripper_yet(*args: object, **kwargs: object) -> Point:
+        raise GripperNotPresentError
+
+    monkeypatch.setattr(api, "has_gripper", lambda: False)
+    monkeypatch.setattr(api, "critical_point_for", no_gripper_yet)
+    late = FlexLabwareMovementController(controller._motion, controller._gripper, [unreachable], state)
+    monkeypatch.undo()
+    moves: list[object] = []
+    monkeypatch.setattr(api, "move_to", lambda *args, **kwargs: moves.append(kwargs))
+
+    with pytest.raises(MovementOutOfBoundsError):
+        await late.move_labware(unreachable.identifier, expect_lid=False)
+
+    assert moves == []
+    state.close()
 
 
 async def test_allowlisted_mode_blocks_raw_gripper_motion_and_jaw_actuation(
