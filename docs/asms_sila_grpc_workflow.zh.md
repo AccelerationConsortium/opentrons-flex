@@ -68,12 +68,20 @@ wash/elute 用的是仓库修正版：甲醇加进 elution 板，再从 elution 
 
 **① 部署本分支的 connector**（新命令必须在机器人上）
 
+本分支的版本号是 `0.9.1+asms.1`，机器人上显示的 SiLA 服务版本是 `0.9.1_asms_1`。用版本号就能分清机器人上装的是不是这个分支的 connector。`flexctl` 按版本号挑 wheel 包，只看版本号、不看代码，所以这个独立的版本号必不可少：本地或 GitHub 上那些 0.9.1 的包都是 main 的代码，没有新命令，不会被误用。
+
+ARM wheel 包的构建只在 main、tag 和合进 main 的 PR 上自动运行，这个分支要手动触发：
+
 ```bash
 git switch feat/asms-grpc-workflow
-uv run flexctl up <robot-ip> --mode unit
+gh workflow run build-flex-arm-wheels.yml -R AccelerationConsortium/opentrons-flex --ref feat/asms-grpc-workflow
+uv run flexctl up <robot-ip> --mode unit     # 会下载版本为 0.9.1+asms.1 的包
+uv run flexctl status <robot-ip>             # 确认 connector 版本是 0.9.1+asms.1
 ```
 
-`flexctl up` 会按当前代码检查 wheel 包，缺了或过期了就去取。用 GitHub Actions 取 wheel 需要先把这个分支推上去；不想推的话，用 Docker 在本地构建（`flexctl build`）。`connector-unit` 模式自带 ASMS 的 gripper plan（`/var/sila2_flex/asms-unit-labware-movement.json`），不用改配置。
+`connector-unit` 模式自带 ASMS 的 gripper plan（`/var/sila2_flex/asms-unit-labware-movement.json`），不用改配置。
+
+**测完要换回通用的 connector 时**，切回 main 再部署一次（`git switch main && uv run flexctl up <robot-ip> --mode unit`），或者用 `flexctl rollback <robot-ip>` 回到上一个版本。
 
 **② 生成计划并检查**（不连机器人）
 
