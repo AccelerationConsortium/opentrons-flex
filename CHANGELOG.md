@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Branch build `0.9.1+asms.1` for the AS-MS gRPC test: a distinct package
+  version so `flexctl up` never mistakes a main 0.9.1 bundle for this branch.
+  The SiLA server reports PEP 440 local versions as `0.9.1_asms_1`.
 - `PipetteController` 1.3: `ConfigureTipType` (50/200/1000 µL tips; restores that
   tip's default flow rates), `SetFlowRates` and `GetFlowRates` in µL/s. A `Rate`
   of 1 on later liquid commands now runs at exactly the configured µL/s.

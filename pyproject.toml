@@ -1,6 +1,6 @@
 [project]
 name = "unitelabs-opentrons-flex"
-version = "0.9.1"
+version = "0.9.1+asms.1"
 description = "A SiLA2 connector for the Opentrons Flex liquid handling robot"
 readme = "README.md"
 authors = [{name = "Acceleration Consortium", email = "developers@accelerationconsortium.ca"},]

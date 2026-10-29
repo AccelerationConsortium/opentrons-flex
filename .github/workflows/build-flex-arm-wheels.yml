@@ -53,7 +53,7 @@ jobs:
         run: |
           ls -la dist_arm/
           python scripts/artifact_manifest.py verify dist_arm \
-            --connector-version 0.9.1 \
+            --connector-version 0.9.1+asms.1 \
             --opentrons-version 9.0.0 \
             --robot-server-version 9.0.0 \
             --opentrons-source-commit 44b37a2f91520bf2e7245c70bf799d46c8c2d9a5 \

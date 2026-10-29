@@ -90,6 +90,19 @@ log = logging.getLogger(__name__)
 __version__ = version("unitelabs-opentrons-flex")
 
 
+def _sila_server_version(package_version: str) -> str:
+    """
+    Return the package version in SiLA 2 server form, ``major.minor.patch_label``.
+
+    A PEP 440 local version such as ``0.9.1+asms.1`` becomes ``0.9.1_asms_1``.
+    """
+    public, _, local = package_version.partition("+")
+    return f"{public}_{local.replace('.', '_')}" if local else public
+
+
+SILA_SERVER_VERSION = _sila_server_version(__version__)
+
+
 class _AppWithState(typing.Protocol):
     state: object
 
@@ -105,7 +118,7 @@ _SILA_SERVER_DEFAULTS = {
         _LIBRARY_SILA_DEFAULTS.description,
         "SiLA2 connector for liquid handling, tip and labware movement, modules, and calibration on an Opentrons Flex",
     ),
-    "version": (_LIBRARY_SILA_DEFAULTS.version, str(__version__)),
+    "version": (_LIBRARY_SILA_DEFAULTS.version, SILA_SERVER_VERSION),
     "vendor_url": (_LIBRARY_SILA_DEFAULTS.vendor_url, "https://opentrons.com/"),
 }
 
@@ -164,7 +177,7 @@ class OpentronsFlexConfig(ConnectorBaseConfig):
                 "SiLA2 connector for liquid handling, tip and labware movement, modules, and calibration "
                 "on an Opentrons Flex"
             ),
-            version=str(__version__),
+            version=SILA_SERVER_VERSION,
             vendor_url="https://opentrons.com/",
         )
     )
