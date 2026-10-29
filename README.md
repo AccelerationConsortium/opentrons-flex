@@ -127,10 +127,10 @@ of the robot/module under test before that combination is described as validated
 
 | Feature | Commands / properties |
 |---------|------------------------|
-| `MotionController` | `Home`, `HomeMount`, `MoveTo`, `MoveRelative`, `GetPosition`, `Aspirate`, `Dispense`, `BlowOut`, `PrepareForAspirate`, `EmergencyStop`, `Pause`, `Resume`, `SetLights`; `Lights`, `IsSimulating`, `MachineStatus` |
+| `MotionController` | `Home`, `HomeMount`, `MoveTo`, `MoveRelative`, `GetPosition`, `Aspirate`, `Dispense`, `DispenseWithoutPushOut`, `BlowOut`, `PrepareForAspirate`, `EmergencyStop`, `Pause`, `Resume`, `SetLights`; `Lights`, `IsSimulating`, `MachineStatus` |
 | `LiquidHandlingController` | `Mix`, `TouchTip`, `ProbeLiquidLevel`, `AspirateWhileTracking`, `DispenseWhileTracking`, atomic `Transfer`, and `TransferWithVerifiedLiquidClass` |
 | `LabwareMovementController` | `MoveLabware` / `MoveLid` execute locally allowlisted plans with server-owned occupancy, module-state, waypoint, pickup-width, and cancellation checks |
-| `PipetteController` | `GetAttachedPipettes`; full, single-nozzle, and rectangular partial-tip layouts for 1/8/96-channel heads |
+| `PipetteController` | `GetAttachedPipettes`; full, single-nozzle, and rectangular partial-tip layouts for 1/8/96-channel heads; `ConfigureTipType`, `SetFlowRates` (µL/s), `GetFlowRates` |
 | `TipController` | Atomic move + `PickUpTip` / `DropTip`, `GetTipPresence`; sensor verification and defined recovery errors (use `MotionController.EmergencyStop` for a global halt) |
 | `GripperController` | `Grip`, `Ungrip`, `HomeJaw`; `Status`, `JawWidth` |
 | `CalibrationController` | `CalibratePipette`, `CalibrateGripperJaw`, `CalibrateDeck` (automatic probe-based routines) |

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- `PipetteController` 1.3: `ConfigureTipType` (50/200/1000 µL tips; restores that
+  tip's default flow rates), `SetFlowRates` and `GetFlowRates` in µL/s. A `Rate`
+  of 1 on later liquid commands now runs at exactly the configured µL/s.
+- `MotionController` 2.2: `DispenseWithoutPushOut` keeps the plunger ready to
+  aspirate in place (the dispense half of a mix cycle).
+- Dispensing below the pipette's minimum volume is now allowed (aliquots from
+  liquid already in the tip), as in Protocol Engine; the minimum still bounds
+  aspiration.
+- AS-MS over SiLA gRPC (`asms_sila_workflow`): compiles the prep and corrected
+  wash/elute protocols from Opentrons' own analysis into SiLA steps and runs
+  them over gRPC with vertical-only approaches, A1-nozzle single-tip pickups,
+  instrument-centre trash targets converted to the A1 tip, and the provisioned
+  ASMS gripper plans. Both run end to end on the OT3 simulator.
 - Zero-to-use setup: `bootstrap.sh` / `bootstrap.ps1` install uv, Python 3.12,
   the connector and `flexctl`, then run `flexctl setup`, which either starts the
   simulator or finds a Flex (mDNS), installs an SSH key (direct cable, or USB
