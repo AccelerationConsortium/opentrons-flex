@@ -162,6 +162,46 @@ class FlexGripperController:
             finally:
                 self._recovery_state.unregister_operation(task)
 
+    @translate_system_errors
+    async def lift_in_place(self) -> None:
+        """
+        Home only the gripper Z axis, straight up, ignoring the recovery gates; the jaw keeps its grip.
+
+        After a stall the Z axis position is unknown, so homing is the one move that is both possible
+        and safe: it only goes up. The gripper-home gate is set so a later Recover rehomes the jaw.
+        """
+        from opentrons.hardware_control.types import Axis
+
+        self._require_attached()
+        async with self._lock:
+            self._recovery_state.require_gripper_home("The gripper was lifted in place")
+            try:
+                await self._api.home([Axis.Z_G])
+            except Exception as exc:
+                msg = f"Lifting the gripper in place failed: {exc}"
+                raise GripActionError(msg) from exc
+
+    @translate_system_errors
+    async def release_in_place(self) -> None:
+        """
+        Open the jaw where it is, ignoring the recovery gates; no other axis moves.
+
+        Uses the jaw-open motion of ``OT3API.ungrip`` directly: the public call refuses an
+        unhomed jaw, which is the jaw state after a restart with a plate still held, and a jaw
+        home would first close the jaw on the plate to calibrate its width. The gripper-home
+        gate is set so a later Recover still homes and calibrates the jaw.
+        """
+        self._require_attached()
+        async with self._lock:
+            self._recovery_state.require_gripper_home("The jaw was released in place")
+            try:
+                gripper = self._api._gripper_handler.get_gripper()
+                duty_cycle = self._api._gripper_handler.get_duty_cycle_by_grip_force(gripper.default_home_force)
+                await self._api._ungrip(duty_cycle=duty_cycle)
+            except Exception as exc:
+                msg = f"Releasing the jaw in place failed: {exc}"
+                raise GripActionError(msg) from exc
+
     def clear_jaw_gate_if_detached(self) -> bool:
         """Clear the jaw-home gate when no gripper is attached (nothing to home); return whether it was cleared."""
         if self.attached or not self._recovery_state.gripper_home_required:

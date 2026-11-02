@@ -19,6 +19,7 @@ from ..io import (
 from ..io.recovery import (
     DoorOpenError,
     EmergencyStopEngagedError,
+    GripperRecoveryNotAllowedError,
     ManualStepsRequiredError,
     RecoveryCoordinator,
 )
@@ -102,6 +103,58 @@ class RecoveryController(sila.Feature):
             "Recovery finished; the robot is ready.",
             "Recovery cancelled; the robot was halted.",
             self._coordinator.recover(report),
+        )
+
+    @sila.ObservableCommand(errors=[GripperRecoveryNotAllowedError, GripActionError, *SYSTEM_ERRORS])
+    async def lift_gripper_in_place(
+        self,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> None:
+        """
+        Raise the gripper straight up to the top of travel, keeping the jaw closed on a held plate.
+
+        Use it after a plate hit something while being lowered: only the gripper's vertical axis
+        moves, upwards. Then support the plate by hand and run ReleaseGripperInPlace, or move on to
+        Recover once the plate is safe. Recover is still required afterwards.
+
+        Yields:
+            Update: Current gripper-lift progress update.
+        """
+        await run_observable(
+            status,
+            intermediate,
+            "Lifting the gripper straight up.",
+            "Gripper lifted to the top of travel; the jaw still holds.",
+            "Gripper lift cancelled.",
+            self._coordinator.lift_gripper_in_place(),
+        )
+
+    @sila.ObservableCommand(errors=[GripperRecoveryNotAllowedError, GripActionError, *SYSTEM_ERRORS])
+    async def release_gripper_in_place(
+        self,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> None:
+        """
+        Open the gripper jaw where it stopped, so a held plate can be taken out before Recover.
+
+        Use it after a failed or stopped plate move left a plate in the jaw: a full home lifts the
+        gripper first and opens the jaw only at the top, so the plate would fall. Support the plate
+        by hand first. Only the jaw moves; Recover is still required afterwards.
+
+        Yields:
+            Update: Current jaw-release progress update.
+        """
+        await run_observable(
+            status,
+            intermediate,
+            "Opening the gripper jaw in place.",
+            "Gripper jaw opened in place; take the plate out, then run Recover.",
+            "Gripper jaw release cancelled.",
+            self._coordinator.release_gripper_in_place(),
         )
 
     @sila.UnobservableCommand(errors=[EmergencyStopEngagedError])
