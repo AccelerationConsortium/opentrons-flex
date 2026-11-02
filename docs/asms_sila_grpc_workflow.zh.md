@@ -92,8 +92,14 @@ uv run python -m unitelabs.opentrons_flex.asms_sila_workflow compile wash-elute 
 
 **③ 只做预检**（不加 `--execute`，机器人不动）
 
+unit 模式下 SiLA 只监听机器人本机的 `127.0.0.1:50051`，要先在另一个终端开 SSH 隧道并保持运行：
+
 ```bash
-uv run python -m unitelabs.opentrons_flex.asms_sila_workflow run --plan prep.plan.json --host <robot-ip> --port 50051
+ssh -N -L 50052:127.0.0.1:50051 root@<robot-ip>
+```
+
+```bash
+uv run python -m unitelabs.opentrons_flex.asms_sila_workflow run --plan prep.plan.json --host 127.0.0.1 --port 50052
 ```
 
 预检检查这几项：
@@ -106,7 +112,7 @@ uv run python -m unitelabs.opentrons_flex.asms_sila_workflow run --plan prep.pla
 **④ 空跑**（不加液，只放空板、空 tube、满 tip 盒）
 
 ```bash
-uv run python -m unitelabs.opentrons_flex.asms_sila_workflow run --plan prep.plan.json --host <robot-ip> --port 50051 \
+uv run python -m unitelabs.opentrons_flex.asms_sila_workflow run --plan prep.plan.json --host 127.0.0.1 --port 50052 \
   --execute --confirm-deck PREP-DECK-READY --report prep-dry.json
 ```
 
@@ -122,7 +128,7 @@ tube rack 上的 snap cap 如果开着会向上翘，要确认没有被 pipette 
 
 ```bash
 uv run flexctl deck <robot-ip> reconcile --set A1=asms-plate --set B1=elution-plate --operator <name> --reason "asms wash start" --confirm
-uv run python -m unitelabs.opentrons_flex.asms_sila_workflow run --plan wash-elute.plan.json --host <robot-ip> --port 50051 \
+uv run python -m unitelabs.opentrons_flex.asms_sila_workflow run --plan wash-elute.plan.json --host 127.0.0.1 --port 50052 \
   --execute --confirm-deck WASH-ELUTE-DECK-READY --report wash-dry.json
 ```
 
