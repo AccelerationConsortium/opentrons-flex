@@ -476,6 +476,17 @@ class NozzleConfigurationError(Exception):
     """
 
 
+class PipetteConfigurationError(Exception):
+    """
+    The requested tip type or flow rate is not valid for the attached pipette.
+
+    Remove any attached tip before changing the tip type, choose a tip volume the
+    pipette supports (for example 50 µL tips on a 50 µL pipette; 50, 200, or 1000 µL
+    tips on a 1000 µL pipette), and give flow rates greater than 0 and at most the
+    stated maximum.
+    """
+
+
 def translate_liquid_errors(
     fn: typing.Callable[..., typing.Awaitable[object]],
 ) -> typing.Callable[..., typing.Awaitable[object]]:

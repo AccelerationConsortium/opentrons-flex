@@ -90,7 +90,12 @@ async def test_core_features_generate_sila_definitions():
     assert "Current lifecycle phase of the operation." in tip_fdl
     assert "Operator-facing progress or recovery message." in tip_fdl
     assert "PickUpTip" not in pipette_fdl
-    assert 'FeatureVersion="1.2"' in pipette_fdl
+    assert 'FeatureVersion="1.3"' in pipette_fdl
+    assert "<Identifier>ConfigureTipType</Identifier>" in pipette_fdl
+    assert "<Identifier>SetFlowRates</Identifier>" in pipette_fdl
+    assert "<Identifier>GetFlowRates</Identifier>" in pipette_fdl
+    assert "<Identifier>PipetteConfigurationError</Identifier>" in pipette_fdl
+    assert "<Label>µL/s</Label>" in pipette_fdl
     assert "<Identifier>ConfigureFullNozzleLayout</Identifier>" in pipette_fdl
     assert "<Identifier>ConfigureSingleNozzleLayout</Identifier>" in pipette_fdl
     assert "<Identifier>ConfigureRectangularNozzleLayout</Identifier>" in pipette_fdl
@@ -111,7 +116,8 @@ async def test_core_features_generate_sila_definitions():
     ):
         _SILA_FEATURE_DEFINITION_SCHEMA.validate(fdl)
 
-    assert 'FeatureVersion="2.1"' in motion_fdl
+    assert 'FeatureVersion="2.2"' in motion_fdl
+    assert "<Identifier>DispenseWithoutPushOut</Identifier>" in motion_fdl
     assert 'FeatureVersion="1.3"' in gripper_fdl
     assert 'FeatureVersion="1.2"' in calibration_fdl
     assert "<Identifier>MotionController</Identifier>" in motion_fdl

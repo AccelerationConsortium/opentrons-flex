@@ -8,13 +8,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from unitelabs.opentrons_flex import (
+    SILA_SERVER_VERSION,
     OpentronsFlexConfig,
     _RobotServerWatchdog,
-    __version__,
     _simulator_attached_instruments,
     _simulator_attached_modules,
+    runtime_preflight,
 )
-from unitelabs.opentrons_flex import runtime_preflight
 from unitelabs.opentrons_flex.io.robot_status import HttpServerState
 
 _ROOT = Path(__file__).parents[1]
@@ -32,7 +32,7 @@ def test_shipped_configs_take_their_version_from_the_installed_package(path: str
 
     config = OpentronsFlexConfig.from_dict(raw)
 
-    assert config.sila_server.version == __version__
+    assert config.sila_server.version == SILA_SERVER_VERSION
 
 
 def test_configs_without_server_identity_get_flex_defaults() -> None:
@@ -40,7 +40,7 @@ def test_configs_without_server_identity_get_flex_defaults() -> None:
 
     assert config.sila_server.name == "Opentrons Flex"
     assert config.sila_server.type == "LiquidHandler"
-    assert config.sila_server.version == __version__
+    assert config.sila_server.version == SILA_SERVER_VERSION
 
 
 def test_explicit_server_identity_is_kept() -> None:

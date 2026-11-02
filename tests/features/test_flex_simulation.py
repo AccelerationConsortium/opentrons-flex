@@ -335,3 +335,102 @@ async def test_features_construct_without_error(api: OT3API):
     assert TipController(motion) is not None
     assert GripperFeature(gripper) is not None
     assert CalibrationFeature(calibration) is not None
+
+
+# ── Tip type and flow rates ─────────────────────────────────────────────────
+
+
+async def test_tip_type_and_flow_rates_set_the_absolute_liquid_speed() -> None:
+    from unitelabs.opentrons_flex.features.pipette import PipetteMount as Mount
+    from unitelabs.opentrons_flex.io import PipetteConfigurationError
+
+    api = await OT3API.build_hardware_simulator(
+        attached_instruments={OT3Mount.RIGHT: {"model": "p1000_multi_v3.5", "id": "sim-right"}}
+    )
+    try:
+        await api.home()
+        feature = PipetteFeature(FlexMotionController.from_api(api, lock=asyncio.Lock()))
+
+        for tip_volume in (50.0, 200.0, 1000.0):
+            defaults = await feature.configure_tip_type(Mount.RIGHT, tip_volume)
+            assert defaults.tip_volume == tip_volume
+            assert defaults.aspirate > 0 and defaults.blow_out > 0
+
+        rates = await feature.set_flow_rates(Mount.RIGHT, 3.0, 80.0, 716.0)
+        assert (rates.aspirate, rates.dispense, rates.blow_out) == (3.0, 80.0, 716.0)
+        assert feature.get_flow_rates(Mount.RIGHT) == rates
+        instrument = api.hardware_instruments[OT3Mount.RIGHT.to_mount()]
+        assert instrument.aspirate_flow_rate == 3.0
+
+        # Changing the tip type restores that tip's defaults.
+        restored = await feature.configure_tip_type(Mount.RIGHT, 1000.0)
+        assert restored.aspirate != 3.0
+        with pytest.raises(PipetteConfigurationError, match="at most 1000"):
+            await feature.set_flow_rates(Mount.RIGHT, 1001.0, 80.0, 80.0)
+    finally:
+        await api.clean_up()
+
+
+async def test_tip_type_cannot_change_with_a_tip_attached() -> None:
+    from unitelabs.opentrons_flex.features.pipette import PipetteMount as Mount
+    from unitelabs.opentrons_flex.io import PipetteConfigurationError
+
+    api = await OT3API.build_hardware_simulator(
+        attached_instruments={OT3Mount.LEFT: {"model": "p50_multi_v3.5", "id": "sim-left"}}
+    )
+    try:
+        await api.home()
+        feature = PipetteFeature(FlexMotionController.from_api(api, lock=asyncio.Lock()))
+        assert (await feature.configure_tip_type(Mount.LEFT, 50.0)).tip_volume == 50.0
+        for unsupported in (200.0, 1000.0):
+            with pytest.raises(PipetteConfigurationError, match=f"does not support {unsupported:g}"):
+                await feature.configure_tip_type(Mount.LEFT, unsupported)
+        api.hardware_instruments[OT3Mount.LEFT.to_mount()].add_tip(tip_length=50.0)
+        with pytest.raises(PipetteConfigurationError, match="Remove the attached tip"):
+            await feature.configure_tip_type(Mount.LEFT, 50.0)
+    finally:
+        await api.clean_up()
+
+
+async def test_dispense_without_push_out_keeps_the_plunger_ready_to_aspirate() -> None:
+    api = await OT3API.build_hardware_simulator(
+        attached_instruments={OT3Mount.RIGHT: {"model": "p1000_multi_v3.5", "id": "sim-right"}}
+    )
+    try:
+        await api.home()
+        motion = MotionControlFeature(FlexMotionController.from_api(api, lock=asyncio.Lock()))
+        instrument = api.hardware_instruments[OT3Mount.RIGHT.to_mount()]
+        instrument.add_tip(tip_length=85.93)
+        await motion.prepare_for_aspirate(Mount.RIGHT, status=_Status(), intermediate=_Intermediate())
+
+        await motion.aspirate(Mount.RIGHT, 50.0, 1.0, status=_Status(), intermediate=_Intermediate())
+        await motion.dispense_without_push_out(Mount.RIGHT, 50.0, 1.0, status=_Status(), intermediate=_Intermediate())
+        assert instrument.ready_to_aspirate is True
+        await motion.aspirate(Mount.RIGHT, 50.0, 1.0, status=_Status(), intermediate=_Intermediate())
+
+        await motion.dispense(Mount.RIGHT, 50.0, 1.0, 0.0, status=_Status(), intermediate=_Intermediate())
+        assert instrument.ready_to_aspirate is False
+    finally:
+        await api.clean_up()
+
+
+async def test_aliquots_below_the_minimum_can_be_dispensed_but_not_aspirated() -> None:
+    from unitelabs.opentrons_flex.io import LiquidVolumeOutOfRangeError
+
+    api = await OT3API.build_hardware_simulator(
+        attached_instruments={OT3Mount.LEFT: {"model": "p50_multi_v3.5", "id": "sim-left"}}
+    )
+    try:
+        await api.home()
+        motion = MotionControlFeature(FlexMotionController.from_api(api, lock=asyncio.Lock()))
+        api.hardware_instruments[OT3Mount.LEFT.to_mount()].add_tip(tip_length=48.62)
+        await motion.prepare_for_aspirate(Mount.LEFT, status=_Status(), intermediate=_Intermediate())
+        with pytest.raises(LiquidVolumeOutOfRangeError, match="minimum is 5"):
+            await motion.aspirate(Mount.LEFT, 2.5, 1.0, status=_Status(), intermediate=_Intermediate())
+        await motion.aspirate(Mount.LEFT, 20.0, 1.0, status=_Status(), intermediate=_Intermediate())
+        for _ in range(3):
+            await motion.dispense(Mount.LEFT, 2.5, 1.0, 0.0, status=_Status(), intermediate=_Intermediate())
+        with pytest.raises(LiquidVolumeOutOfRangeError, match=r"dynamic limit is 12\.5"):
+            await motion.dispense(Mount.LEFT, 13.0, 1.0, 0.0, status=_Status(), intermediate=_Intermediate())
+    finally:
+        await api.clean_up()

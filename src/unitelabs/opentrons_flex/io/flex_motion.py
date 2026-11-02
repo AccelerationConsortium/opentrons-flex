@@ -36,6 +36,7 @@ from ._errors import (
     MachineErrorStateError,
     halt_cancellation_pending,
     NozzleConfigurationError,
+    PipetteConfigurationError,
     PipetteNotAttachedError,
     RecoveryRequiredError,
     TipNotAttachedError,
@@ -140,6 +141,20 @@ class NozzleConfigurationState:
     front_right_nozzle: str
     active_nozzles: int
     tiprack_diameter: float
+
+
+MAX_FLOW_RATE_UL_PER_S = 1000.0
+"""Upper bound accepted for any configured plunger flow rate."""
+
+
+@dataclass(frozen=True)
+class FlowRateState:
+    """Active tip type and plunger flow rates of one pipette, in µL and µL/s."""
+
+    tip_volume: float
+    aspirate: float
+    dispense: float
+    blow_out: float
 
 
 class FlexMotionController:
@@ -441,6 +456,45 @@ class FlexMotionController:
                 raise NozzleConfigurationError(str(exc)) from exc
             return self.nozzle_configuration(mount)
 
+    async def configure_tip_type(self, mount: OT3Mount, tip_volume: float) -> FlowRateState:
+        """Select the tip type by volume; this also restores that tip's default flow rates."""
+        async with self._lock:
+            self._assert_operation_ready()
+            self._assert_pipette_attached(mount)
+            instrument = self._api.hardware_instruments[mount.to_mount()]
+            if instrument.has_tip:
+                msg = "Remove the attached tip before changing the tip type."
+                raise PipetteConfigurationError(msg)
+            try:
+                self._api.set_working_volume(mount, tip_volume)
+            except Exception as exc:  # Opentrons raises several types for unsupported tips
+                msg = f"The attached pipette does not support {tip_volume:g} µL tips: {exc}"
+                raise PipetteConfigurationError(msg) from exc
+            return self.flow_rates(mount)
+
+    async def set_flow_rates(self, mount: OT3Mount, aspirate: float, dispense: float, blow_out: float) -> FlowRateState:
+        """Set the aspirate, dispense, and blow-out flow rates in µL/s for later liquid commands."""
+        for name, value in (("aspirate", aspirate), ("dispense", dispense), ("blow_out", blow_out)):
+            if not math.isfinite(value) or not 0.0 < value <= MAX_FLOW_RATE_UL_PER_S:
+                msg = f"{name} flow rate must be greater than 0 and at most {MAX_FLOW_RATE_UL_PER_S:g} µL/s."
+                raise PipetteConfigurationError(msg)
+        async with self._lock:
+            self._assert_operation_ready()
+            self._assert_pipette_attached(mount)
+            self._api.set_flow_rate(mount, aspirate=aspirate, dispense=dispense, blow_out=blow_out)
+            return self.flow_rates(mount)
+
+    def flow_rates(self, mount: OT3Mount) -> FlowRateState:
+        """Return the active tip type and flow rates without hardware I/O."""
+        self._assert_pipette_attached(mount)
+        instrument = self._api.hardware_instruments[mount.to_mount()]
+        return FlowRateState(
+            tip_volume=float(instrument.working_volume),
+            aspirate=float(instrument.aspirate_flow_rate),
+            dispense=float(instrument.dispense_flow_rate),
+            blow_out=float(instrument.blow_out_flow_rate),
+        )
+
     def nozzle_configuration(self, mount: OT3Mount) -> NozzleConfigurationState:
         """Return the cached active nozzle rectangle without hardware I/O."""
         self._assert_pipette_attached(mount)
@@ -559,7 +613,9 @@ class FlexMotionController:
         available = max(0.0, working_volume - current_volume)
         limit = available if aspirating else current_volume
         action = "aspirate" if aspirating else "dispense"
-        if minimum > 0 and volume < minimum:
+        # Like Protocol Engine, the minimum bounds aspiration only: dispensing a small aliquot
+        # of liquid already in the tip (multi-dispense) is allowed down to any positive volume.
+        if aspirating and minimum > 0 and volume < minimum:
             msg = (
                 f"Cannot {action} {volume:g} microlitres on {mount.name}; the attached pipette minimum is "
                 f"{minimum:g} microlitres."
