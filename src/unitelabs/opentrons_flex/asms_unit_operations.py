@@ -323,9 +323,10 @@ async def _inventory(
     right = next((item for item in pipettes if _enum_text(item.mount) == "RIGHT"), None)
     if right is None or not right.attached:
         raise UnitOperationError("No pipette is attached on the RIGHT mount.")
-    if right.model not in manifest.expected_pipette_models:
+    # ``model`` is the versioned hardware model (e.g. ``p1000_multi_v3.5``); the API aliases are in ``name``.
+    if right.model not in manifest.expected_pipette_models and right.name not in manifest.expected_pipette_models:
         raise UnitOperationError(
-            f"RIGHT pipette model {right.model!r} is not one of {manifest.expected_pipette_models!r}."
+            f"RIGHT pipette {right.name!r} (model {right.model!r}) is not one of {manifest.expected_pipette_models!r}."
         )
     if right.channels != 8:
         raise UnitOperationError(f"RIGHT pipette must have 8 channels; connector reported {right.channels}.")
