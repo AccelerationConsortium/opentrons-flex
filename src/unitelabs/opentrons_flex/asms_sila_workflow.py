@@ -149,6 +149,8 @@ class _Pipette:
     )
     tip_rack: str | None = None
     tip_wells: tuple[str, ...] = ()
+    #: Nozzle layout the protocol configured (``configure_nozzle_layout``); None picks it from the well row.
+    configured_layout: str | None = None
 
 
 @dataclass
@@ -217,8 +219,15 @@ class _Compiler:
         pipette.flow = dict(values)
         self.emit("set_flow_rates", mount=pipette.mount, **values)
 
-    def move(self, pipette: _Pipette, position: Mapping[str, float]) -> None:
-        self.emit("move", mount=pipette.mount, target=_point(position))
+    def where(self, params: Mapping[str, Any]) -> dict[str, str]:
+        """Name the well a liquid command addresses, so a client can track volumes and show the target."""
+        labware = self.labware.get(params.get("labwareId", ""))
+        if labware is None or "wellName" not in params:
+            return {}
+        return {"slot": labware.location, "labware": labware.load_name, "well": str(params["wellName"])}
+
+    def move(self, pipette: _Pipette, position: Mapping[str, float], at: Mapping[str, str] | None = None) -> None:
+        self.emit("move", mount=pipette.mount, target=_point(position), **({"at": dict(at)} if at else {}))
 
     # -- command handlers ---------------------------------------------------------------
 
@@ -292,7 +301,8 @@ class _Compiler:
         well = str(params["wellName"])
         row, column = well[0], well[1:]
         rows = "ABCDEFGH"
-        if pipette.channels == 1 or row != "A":
+        single = pipette.configured_layout == "single_A1" or (pipette.configured_layout is None and row != "A")
+        if pipette.channels == 1 or single:
             # One tip on the A1 nozzle: the other nozzles hang over the rows in front of it,
             # which must already be empty (or off the rack) so they cannot jam a tip.
             layout = "single_A1"
@@ -328,6 +338,17 @@ class _Compiler:
         rack.tips -= set(taken)
         pipette.has_tip, pipette.ready, pipette.volume = True, True, 0.0
         pipette.tip_rack, pipette.tip_wells = params["labwareId"], taken
+
+    def on_configureNozzleLayout(self, params: Mapping[str, Any], _result: Mapping[str, Any]) -> None:
+        pipette = self.pipette(params)
+        config = params.get("configurationParams") or {}
+        style = str(config.get("style", "")).upper()
+        if style == "ALL":
+            pipette.configured_layout = "full"
+        elif style == "SINGLE" and str(config.get("primaryNozzle", "")).upper() == "A1":
+            pipette.configured_layout = "single_A1"
+        else:
+            self.fail("only the full layout and a single A1 nozzle are supported")
 
     def on_moveToAddressableAreaForDropTip(self, params: Mapping[str, Any], result: Mapping[str, Any]) -> None:
         pipette = self.pipette(params)
@@ -371,7 +392,7 @@ class _Compiler:
         pipette.has_tip, pipette.ready, pipette.volume = False, False, 0.0
 
     def on_moveToWell(self, params: Mapping[str, Any], result: Mapping[str, Any]) -> None:
-        self.move(self.pipette(params), result["position"])
+        self.move(self.pipette(params), result["position"], self.where(params))
 
     def on_prepareToAspirate(self, params: Mapping[str, Any], _result: Mapping[str, Any]) -> None:
         pipette = self.pipette(params)
@@ -389,8 +410,9 @@ class _Compiler:
             self.emit("prepare_for_aspirate", mount=pipette.mount)
             pipette.ready = True
         self.set_flow(pipette, "aspirate", float(params["flowRate"]))
-        self.move(pipette, position)
-        self.emit("aspirate", mount=pipette.mount, volume=float(params["volume"]))
+        at = self.where(params)
+        self.move(pipette, position, at)
+        self.emit("aspirate", mount=pipette.mount, volume=float(params["volume"]), **({"at": at} if at else {}))
         pipette.volume += float(params["volume"])
 
     def on_airGapInPlace(self, params: Mapping[str, Any], _result: Mapping[str, Any]) -> None:
@@ -408,13 +430,19 @@ class _Compiler:
             self.fail(f"dispensing {volume:g} uL with only {pipette.volume:g} uL in the tip")
         push_out = params.get("pushOut")
         self.set_flow(pipette, "dispense", float(params["flowRate"]))
-        self.move(pipette, result["position"])
+        at = self.where(params)
+        self.move(pipette, result["position"], at)
         full = abs(volume - pipette.volume) < 1e-6
+        extra = {"at": at} if at else {}
         if push_out is not None and float(push_out) == 0.0:
-            self.emit("dispense", mount=pipette.mount, volume=volume, push_out="none")
+            self.emit("dispense", mount=pipette.mount, volume=volume, push_out="none", **extra)
         else:
             self.emit(
-                "dispense", mount=pipette.mount, volume=volume, push_out="default" if push_out is None else push_out
+                "dispense",
+                mount=pipette.mount,
+                volume=volume,
+                push_out="default" if push_out is None else push_out,
+                **extra,
             )
             if full:
                 pipette.ready = False
@@ -423,7 +451,7 @@ class _Compiler:
     def on_blowout(self, params: Mapping[str, Any], result: Mapping[str, Any]) -> None:
         pipette = self.pipette(params)
         self.set_flow(pipette, "blow_out", float(params["flowRate"]))
-        self.move(pipette, result["position"])
+        self.move(pipette, result["position"], self.where(params))
         self.emit("blow_out", mount=pipette.mount)
         pipette.ready, pipette.volume = False, 0.0
 
@@ -445,7 +473,7 @@ class _Compiler:
             size_x, size_y = float(well["xDimension"]), float(well["yDimension"])
         radius = float(params.get("radius", 1.0))
         top = self.well_top(params, position)
-        self.move(pipette, position)
+        self.move(pipette, position, self.where(params))
         self.emit(
             "touch_tip",
             mount=pipette.mount,
