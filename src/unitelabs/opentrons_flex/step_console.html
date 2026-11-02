@@ -1,0 +1,839 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flex Step Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Fira+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #F3FBF2; --surface: #FFFFFF; --sky: #DFF3F8; --mint: #DDF3DE; --mint-2: #C4E9CA;
+  --green-3: #AADCA9; --green-2: #8BCF8B; --green: #519D78; --green-ink: #2E6B50;
+  --blue: #5385BD; --blue-ink: #35648F; --blue-2: #9BC7DF;
+  --ink: #1C2F27; --muted: #50695D; --line: #D3E7D8; --line-2: #BFDCC8;
+  --danger: #B93A34; --danger-ink: #FFFFFF; --warn: #9A6412; --warn-bg: #FCF3DC;
+  --shadow: 0 1px 2px rgba(28, 47, 39, .06), 0 4px 14px rgba(28, 47, 39, .06);
+  --radius: 12px;
+  --mono: "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111C17; --surface: #18261F; --sky: #16303A; --mint: #1D3328; --mint-2: #24412F;
+    --green-3: #2F5A3F; --green-2: #5FA86F; --green: #6FBE93; --green-ink: #8FD4AE;
+    --blue: #79A6DA; --blue-ink: #A5C6EC; --blue-2: #2E516A;
+    --ink: #E4F1E8; --muted: #A2BBAD; --line: #2A4135; --line-2: #345242;
+    --danger: #E05A52; --warn: #E3B05A; --warn-bg: #3A2F17;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 6px 18px rgba(0, 0, 0, .25);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111C17; --surface: #18261F; --sky: #16303A; --mint: #1D3328; --mint-2: #24412F;
+  --green-3: #2F5A3F; --green-2: #5FA86F; --green: #6FBE93; --green-ink: #8FD4AE;
+  --blue: #79A6DA; --blue-ink: #A5C6EC; --blue-2: #2E516A;
+  --ink: #E4F1E8; --muted: #A2BBAD; --line: #2A4135; --line-2: #345242;
+  --danger: #E05A52; --warn: #E3B05A; --warn-bg: #3A2F17;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.5 "Fira Sans", -apple-system, "Segoe UI", sans-serif; }
+svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+button, select, input, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* -- top bar -- */
+.topbar { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 14px; padding: 10px 18px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 16px; }
+.brand .mark { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; background: var(--green); color: #fff; }
+.conn { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line-2); }
+.dot.ok { background: var(--green); } .dot.bad { background: var(--danger); } .dot.busy { background: var(--warn); }
+.spacer { flex: 1; }
+.segmented { display: inline-flex; padding: 3px; border-radius: 10px; background: var(--mint); border: 1px solid var(--line); }
+.segmented button { border: 0; background: transparent; padding: 6px 12px; border-radius: 8px; font-weight: 600; font-size: 13px; color: var(--muted); transition: background .15s, color .15s; }
+.segmented button[aria-pressed="true"] { background: var(--surface); color: var(--green-ink); box-shadow: var(--shadow); }
+.segmented button:disabled { cursor: progress; }
+.mode-label { font-size: 12px; color: var(--muted); }
+.stop { display: inline-flex; align-items: center; gap: 8px; border: 0; background: var(--danger); color: var(--danger-ink); padding: 10px 20px; border-radius: 10px; font-weight: 700; font-size: 15px; letter-spacing: .02em; box-shadow: var(--shadow); }
+.stop:hover { filter: brightness(1.06); }
+.stop kbd { font: 500 11px var(--mono); padding: 1px 5px; border-radius: 4px; background: rgba(255,255,255,.22); }
+
+/* -- layout -- */
+.layout { display: grid; grid-template-columns: 300px minmax(0, 1fr) 330px; gap: 16px; padding: 16px 18px 24px; align-items: start; }
+@media (max-width: 1180px) { .layout { grid-template-columns: 280px minmax(0, 1fr); } .right { grid-column: 1 / -1; } }
+@media (max-width: 760px) { .layout { grid-template-columns: 1fr; padding: 12px; } .topbar { flex-wrap: wrap; } }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+.card + .card { margin-top: 14px; }
+.card-h { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.card-h h2 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.card-b { padding: 12px 14px; }
+.left, .right { position: sticky; top: 66px; max-height: calc(100vh - 80px); overflow: auto; }
+@media (max-width: 1180px) { .left, .right { position: static; max-height: none; } }
+
+/* -- tabs -- */
+.tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; padding: 4px; margin: 10px 10px 0; background: var(--mint); border-radius: 10px; }
+.tabs button { border: 0; background: transparent; padding: 7px 4px; border-radius: 8px; font-size: 12.5px; font-weight: 600; color: var(--muted); display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.tabs button[aria-selected="true"] { background: var(--surface); color: var(--green-ink); box-shadow: var(--shadow); }
+.pane { display: none; padding: 12px 14px 14px; } .pane.on { display: block; }
+
+/* -- palette -- */
+.group-title { font-size: 11.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 12px 0 6px; }
+.group-title:first-child { margin-top: 0; }
+.block { display: flex; align-items: center; gap: 10px; padding: 8px 10px; margin-bottom: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); cursor: grab; transition: border-color .15s, background .15s; }
+.block:hover { border-color: var(--green-2); background: var(--bg); }
+.block .ico { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; background: var(--mint); color: var(--green-ink); flex: none; }
+.block.g-gripper .ico { background: var(--sky); color: var(--blue-ink); }
+.block.g-liquid .ico { background: #E6EEF9; color: var(--blue-ink); }
+.block .txt { flex: 1; min-width: 0; }
+.block .t { font-weight: 600; font-size: 13.5px; }
+.block .h { font-size: 12px; color: var(--muted); }
+.icon-btn { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--muted); transition: color .15s, border-color .15s, background .15s; }
+.icon-btn:hover { color: var(--green-ink); border-color: var(--green-2); background: var(--mint); }
+.icon-btn.danger:hover { color: var(--danger); border-color: var(--danger); background: transparent; }
+
+/* -- buttons/inputs -- */
+.btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line-2); background: var(--surface); padding: 7px 12px; border-radius: 9px; font-weight: 600; font-size: 13px; transition: background .15s, border-color .15s; }
+.btn:hover { background: var(--mint); border-color: var(--green-2); }
+.btn.primary { background: var(--green-ink); border-color: var(--green-ink); color: #fff; }
+.btn.primary:hover { background: #25573F; }
+.btn.blue { background: var(--blue-ink); border-color: var(--blue-ink); color: #fff; }
+.btn.blue:hover { background: #2B5379; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+label.f { display: flex; flex-direction: column; gap: 3px; font-size: 12px; font-weight: 500; color: var(--muted); }
+.in { padding: 6px 8px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--bg); min-width: 0; }
+.in:focus { border-color: var(--blue); outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 25%, transparent); }
+input.in[type=number] { font-family: var(--mono); width: 96px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+.note { font-size: 12.5px; color: var(--muted); margin: 8px 0 0; }
+
+/* -- sequence -- */
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.toolbar .count { font-size: 12.5px; color: var(--muted); }
+.seq-title { display: flex; align-items: center; gap: 8px; padding: 14px 14px 0; }
+.seq-title input { font-weight: 600; font-size: 16px; border: 1px dashed transparent; background: transparent; padding: 4px 6px; border-radius: 8px; flex: 1; min-width: 0; }
+.seq-title input:hover, .seq-title input:focus { border-color: var(--line-2); background: var(--bg); outline: none; }
+#seq { min-height: 260px; padding: 12px 14px 16px; }
+#seq.over { background: var(--bg); }
+.empty { border: 2px dashed var(--line-2); border-radius: 12px; padding: 36px 16px; text-align: center; color: var(--muted); }
+.empty svg.i { width: 26px; height: 26px; color: var(--green); margin-bottom: 6px; }
+.step { position: relative; border: 1px solid var(--line); border-left: 4px solid var(--line-2); border-radius: 10px; background: var(--surface); margin-bottom: 8px; transition: border-color .15s, box-shadow .15s; }
+.step:hover { border-color: var(--line-2); }
+.step.sel { box-shadow: 0 0 0 2px var(--blue-2); }
+.step.running { border-left-color: var(--warn); background: var(--warn-bg); }
+.step.done { border-left-color: var(--green); }
+.step.failed { border-left-color: var(--danger); }
+.step.dragging { opacity: .45; }
+.step .head { display: flex; align-items: center; gap: 10px; padding: 8px 10px; }
+.step .grip { color: var(--line-2); cursor: grab; display: grid; place-items: center; }
+.step .num { font: 500 12px var(--mono); color: var(--muted); min-width: 24px; text-align: right; }
+.step .kind-ico { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; background: var(--mint); color: var(--green-ink); flex: none; }
+.step.g-gripper .kind-ico { background: var(--sky); color: var(--blue-ink); }
+.step.g-liquid .kind-ico { background: #E6EEF9; color: var(--blue-ink); }
+.step .title { font-weight: 600; }
+.step .sum { font: 12px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.step .meta { flex: 1; min-width: 0; cursor: pointer; }
+.step .acts { display: flex; gap: 4px; }
+.step .fields { display: none; flex-wrap: wrap; gap: 10px; padding: 4px 12px 12px 72px; }
+.step.open .fields { display: flex; }
+.step .fields fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px 8px; margin: 0; display: flex; gap: 8px; flex-wrap: wrap; }
+.step .fields legend { font-size: 11.5px; color: var(--muted); padding: 0 4px; }
+.step .result { padding: 0 12px 9px 72px; font-size: 12.5px; word-break: break-word; }
+.step .result:empty { display: none; }
+.step.done .result { color: var(--green-ink); } .step.failed .result { color: var(--danger); } .step.running .result { color: var(--warn); }
+@media (max-width: 760px) { .step .fields, .step .result { padding-left: 12px; } }
+
+/* -- status -- */
+.kv { display: grid; grid-template-columns: 92px 1fr; gap: 6px 10px; font-size: 13px; margin: 0; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+.kv dd.mono { font: 12.5px var(--mono); }
+.pill { display: inline-flex; align-items: center; gap: 5px; padding: 1px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--mint); color: var(--green-ink); }
+.pill.bad { background: #F8E1DF; color: var(--danger); } .pill.warn { background: var(--warn-bg); color: var(--warn); } .pill.blue { background: var(--sky); color: var(--blue-ink); }
+.pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 8px; }
+.pad button { display: flex; align-items: center; justify-content: center; gap: 4px; padding: 9px 4px; border: 1px solid var(--line-2); border-radius: 9px; background: var(--surface); font-weight: 600; font-size: 12.5px; transition: background .15s; }
+.pad button:hover { background: var(--mint); }
+.ref { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.ref td { padding: 4px 0; border-bottom: 1px solid var(--line); }
+.ref td:first-child { font-family: var(--mono); width: 54px; color: var(--green-ink); }
+#history { font: 12px/1.45 var(--mono); max-height: 220px; overflow: auto; }
+#history div { padding: 3px 0; border-bottom: 1px dashed var(--line); }
+#history .bad { color: var(--danger); } #history .ok { color: var(--green-ink); }
+
+/* -- inventory -- */
+.deck { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.slot { min-height: 62px; padding: 6px 7px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); text-align: left; font-size: 12px; transition: border-color .15s, background .15s; }
+.slot:hover { border-color: var(--green-2); }
+.slot.filled { background: var(--mint); }
+.slot.tip { background: var(--sky); }
+.slot.sel { border-color: var(--blue); box-shadow: 0 0 0 2px var(--blue-2); }
+.slot b { display: block; font: 600 12px var(--mono); color: var(--muted); }
+.slot span { line-height: 1.25; color: var(--ink); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.wells { display: grid; grid-template-columns: repeat(12, 1fr); gap: 2px; margin: 8px 0; }
+.wells i { aspect-ratio: 1; border-radius: 50%; background: var(--green-2); }
+.wells i.used { background: var(--line); }
+.wells i.liq { background: var(--blue); }
+table.list { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.list td, table.list th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: left; }
+table.list th { color: var(--muted); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; }
+table.list td.num { font-family: var(--mono); text-align: right; }
+.drop { border: 2px dashed var(--line-2); border-radius: 12px; padding: 22px 12px; text-align: center; color: var(--muted); transition: border-color .15s, background .15s; cursor: pointer; }
+.drop.over, .drop:hover { border-color: var(--green); background: var(--mint); }
+.drop svg.i { width: 26px; height: 26px; color: var(--green); }
+.toast { position: fixed; right: 18px; bottom: 18px; z-index: 50; max-width: 420px; padding: 10px 14px; border-radius: 10px; background: var(--ink); color: var(--surface); box-shadow: var(--shadow); font-size: 13px; opacity: 0; transform: translateY(8px); transition: opacity .2s, transform .2s; pointer-events: none; }
+.toast.on { opacity: 1; transform: none; }
+.wf { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.wf .n { flex: 1; min-width: 0; } .wf .n b { display: block; } .wf .n small { color: var(--muted); }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-flask" viewBox="0 0 24 24"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3"/><path d="M7.5 15h9"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></symbol>
+    <symbol id="i-move" viewBox="0 0 24 24"><path d="M12 2v20M2 12h20M12 2l-3 3M12 2l3 3M12 22l-3-3M12 22l3-3M2 12l3-3M2 12l3 3M22 12l-3-3M22 12l-3 3"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></symbol>
+    <symbol id="i-tip" viewBox="0 0 24 24"><path d="M9 2h6l-1 6h-4z"/><path d="M10 8l2 14 2-14"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 15h10l1-15"/></symbol>
+    <symbol id="i-sensor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8"/></symbol>
+    <symbol id="i-drop" viewBox="0 0 24 24"><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11z"/></symbol>
+    <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14M19 12l-7 7-7-7"/></symbol>
+    <symbol id="i-left" viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></symbol>
+    <symbol id="i-right" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></symbol>
+    <symbol id="i-wind" viewBox="0 0 24 24"><path d="M3 8h11a3 3 0 1 0-3-3M3 16h15a3 3 0 1 1-3 3M3 12h9"/></symbol>
+    <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M12 14l4-4"/><path d="M3.5 18a9 9 0 1 1 17 0"/></symbol>
+    <symbol id="i-hand" viewBox="0 0 24 24"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V12M11 11V4a1.5 1.5 0 0 1 3 0v7M14 11V5.5a1.5 1.5 0 0 1 3 0V14a7 7 0 0 1-7 7h-.5A6.5 6.5 0 0 1 4 15.5V12a1.5 1.5 0 0 1 3 0v1"/></symbol>
+    <symbol id="i-plate" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="7.5" cy="10" r="1"/><circle cx="12" cy="10" r="1"/><circle cx="16.5" cy="10" r="1"/><circle cx="7.5" cy="14" r="1"/><circle cx="12" cy="14" r="1"/><circle cx="16.5" cy="14" r="1"/></symbol>
+    <symbol id="i-route" viewBox="0 0 24 24"><circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M8 19h7a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h7"/></symbol>
+    <symbol id="i-open" viewBox="0 0 24 24"><path d="M4 7v10M20 7v10M8 12H4M20 12h-4"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M9 7v10M15 7v10M4 12h5M15 12h5"/></symbol>
+    <symbol id="i-temp" viewBox="0 0 24 24"><path d="M14 14.8V4a2 2 0 1 0-4 0v10.8a4 4 0 1 0 4 0z"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-msg" viewBox="0 0 24 24"><path d="M4 5h16v11H8l-4 4z"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></symbol>
+    <symbol id="i-next" viewBox="0 0 24 24"><path d="M5 4l10 8-10 8zM19 5v14"/></symbol>
+    <symbol id="i-square" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    <symbol id="i-grip" viewBox="0 0 24 24"><circle cx="9" cy="6" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="18" r="1"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 3 2 8l10 5 10-5z"/><path d="m2 13 10 5 10-5"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24"><path d="M5 3h11l3 3v15H5z"/><path d="M8 3v5h7V3M8 21v-7h8v7"/></symbol>
+    <symbol id="i-box" viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4z"/><path d="M3 7v10l9 4 9-4V7M12 11v10"/></symbol>
+    <symbol id="i-crosshair" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M4 12l5 5L20 6"/></symbol>
+  </defs>
+</svg>
+
+<header class="topbar">
+  <div class="brand"><span class="mark"><svg class="i"><use href="#i-flask"/></svg></span>Flex Step Console</div>
+  <span class="conn"><span class="dot" id="connDot"></span><span id="conn">Connecting…</span></span>
+  <span class="spacer"></span>
+  <span class="mode-label" id="modeLabel">Connector mode</span>
+  <div class="segmented" role="group" aria-label="Connector mode">
+    <button id="modePe" aria-pressed="false" title="connector-pe: direct gripper jaw control, Opentrons HTTP API on">PE</button>
+    <button id="modeUnit" aria-pressed="false" title="connector-unit: preset plate moves against the deck ledger">Unit</button>
+  </div>
+  <button class="stop" id="stop" title="Cancel the running command and send EmergencyStop (Esc)"><svg class="i"><use href="#i-square"/></svg>STOP <kbd>Esc</kbd></button>
+</header>
+
+<main class="layout">
+  <aside class="left card">
+    <div class="tabs" role="tablist">
+      <button role="tab" aria-selected="true" data-tab="build"><svg class="i"><use href="#i-layers"/></svg>Build</button>
+      <button role="tab" aria-selected="false" data-tab="import"><svg class="i"><use href="#i-upload"/></svg>Import</button>
+      <button role="tab" aria-selected="false" data-tab="workflows"><svg class="i"><use href="#i-save"/></svg>Workflows</button>
+      <button role="tab" aria-selected="false" data-tab="inventory"><svg class="i"><use href="#i-box"/></svg>Inventory</button>
+    </div>
+    <section class="pane on" id="pane-build" role="tabpanel">
+      <div id="palette"></div>
+      <p class="note">Drag a command into the sequence, or press + to append it. Every step stops where it ends; nothing homes unless you add Home.</p>
+    </section>
+    <section class="pane" id="pane-import" role="tabpanel">
+      <div class="drop" id="dropZone" tabindex="0" role="button" aria-label="Choose an Opentrons protocol file">
+        <svg class="i"><use href="#i-upload"/></svg>
+        <div><b>Drop an Opentrons Flex protocol</b></div>
+        <div class="note">.py file · analysed by Opentrons, then compiled to SiLA commands</div>
+      </div>
+      <input type="file" id="protocolFile" accept=".py" hidden>
+      <div class="row" style="margin-top:10px">
+        <label class="f">After import
+          <select class="in" id="importMode"><option value="replace">Replace the sequence</option><option value="append">Append to the sequence</option></select>
+        </label>
+      </div>
+      <div id="importResult" class="note"></div>
+    </section>
+    <section class="pane" id="pane-workflows" role="tabpanel">
+      <div class="row">
+        <button class="btn primary" id="saveWorkflow"><svg class="i"><use href="#i-save"/></svg>Save current sequence</button>
+      </div>
+      <p class="note">Saved in the console database under the sequence name, with every edited value.</p>
+      <div id="workflowList"></div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn" id="exportJson">Export JSON</button>
+        <button class="btn" id="importJson">Import JSON</button>
+      </div>
+    </section>
+    <section class="pane" id="pane-inventory" role="tabpanel">
+      <div class="deck" id="deck"></div>
+      <div id="slotEditor"></div>
+      <div class="group-title" style="margin-top:16px">Tracked liquids</div>
+      <div id="liquidTable"></div>
+    </section>
+  </aside>
+
+  <section class="center">
+    <div class="card">
+      <div class="seq-title">
+        <svg class="i" style="color:var(--green)"><use href="#i-route"/></svg>
+        <input id="seqName" value="Untitled sequence" aria-label="Sequence name">
+      </div>
+      <div class="toolbar">
+        <button class="btn primary" id="runAll"><svg class="i"><use href="#i-play"/></svg>Run all</button>
+        <button class="btn" id="runFrom"><svg class="i"><use href="#i-play"/></svg>Run from selected</button>
+        <button class="btn blue" id="runNext" title="Send the selected step, then select the next one"><svg class="i"><use href="#i-next"/></svg>Step</button>
+        <span class="spacer"></span>
+        <span class="count" id="count">0 steps</span>
+        <button class="icon-btn" id="expandAll" title="Show all fields" aria-label="Show all fields"><svg class="i"><use href="#i-sliders"/></svg></button>
+        <button class="icon-btn danger" id="clear" title="Clear the sequence" aria-label="Clear the sequence"><svg class="i"><use href="#i-x"/></svg></button>
+      </div>
+      <div id="seq"></div>
+    </div>
+  </section>
+
+  <aside class="right">
+    <div class="card">
+      <div class="card-h"><h2>Robot status</h2></div>
+      <div class="card-b"><dl class="kv" id="status"></dl></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><h2>Jog</h2><span class="spacer"></span><span class="note" style="margin:0">runs now, not added</span></div>
+      <div class="card-b">
+        <div class="row">
+          <label class="f">Mount<select class="in" id="jogMount"><option value="RIGHT">Right</option><option value="LEFT">Left</option><option value="GRIPPER">Gripper</option></select></label>
+          <label class="f">Step (mm)<select class="in" id="jogStep"><option>0.5</option><option>1</option><option selected>5</option><option>10</option><option>20</option></select></label>
+        </div>
+        <div class="pad">
+          <button data-jog="dz:1"><svg class="i"><use href="#i-up"/></svg>Up</button>
+          <button data-jog="dy:1"><svg class="i"><use href="#i-up"/></svg>Back</button>
+          <button data-jog="dz:-1"><svg class="i"><use href="#i-down"/></svg>Down</button>
+          <button data-jog="dx:-1"><svg class="i"><use href="#i-left"/></svg>Left</button>
+          <button data-jog="dy:-1"><svg class="i"><use href="#i-down"/></svg>Front</button>
+          <button data-jog="dx:1"><svg class="i"><use href="#i-right"/></svg>Right</button>
+        </div>
+        <button class="btn" id="teach" style="width:100%;margin-top:8px;justify-content:center"><svg class="i"><use href="#i-crosshair"/></svg>Save position as a step</button>
+        <p class="note">Up and Down are straight vertical moves. Sideways jogs rise to 150 mm, move level, and come back down.</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-h"><h2>Height reference</h2></div>
+      <div class="card-b">
+        <table class="ref"><tbody>
+          <tr><td>0</td><td>Deck surface</td></tr>
+          <tr><td>≈15</td><td>Top of a 96-well plate on the deck</td></tr>
+          <tr><td>99</td><td>Top of a Flex tip rack</td></tr>
+          <tr><td>150</td><td>Travel height for every level move</td></tr>
+          <tr><td>≈164</td><td>Highest point with a 1000 µL tip, or the gripper</td></tr>
+          <tr><td>250</td><td>Highest point of a pipette without a tip</td></tr>
+        </tbody></table>
+        <p class="note">z is the A1 nozzle end, the tip end with a tip attached, or the gripper jaw centre. Add the module height for labware on a module.</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-h"><h2>Run history</h2></div>
+      <div class="card-b"><div id="history"></div></div>
+    </div>
+  </aside>
+</main>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+// ---------------------------------------------------------------- definitions
+const SLOTS = ["A1","A2","A3","B1","B2","B3","C1","C2","C3","D1","D2","D3"];
+const WELLS96 = [..."ABCDEFGH"].flatMap(r => Array.from({length: 12}, (_, i) => r + (i + 1)));
+const SINGLE_ORDER = Array.from({length: 12}, (_, i) => [..."HGFEDCBA"].map(r => r + (i + 1))).flat();
+const MOUNTS = { RIGHT: "Right (p1000)", LEFT: "Left (p50)" };
+const ALL_MOUNTS = { RIGHT: "Right", LEFT: "Left", GRIPPER: "Gripper" };
+const F = {
+  mount: { label: "Mount", type: "select", options: ALL_MOUNTS },
+  pmount: { key: "mount", label: "Pipette", type: "select", options: MOUNTS },
+  slot: { label: "Slot", type: "select", options: Object.fromEntries(SLOTS.map(s => [s, s])) },
+  z: { label: "Height z (mm)", type: "number", value: 150 },
+  x: { label: "x (mm)", type: "number", value: 200 }, y: { label: "y (mm)", type: "number", value: 200 },
+  dx: { label: "Δx (+ right)", type: "number", value: 0 }, dy: { label: "Δy (+ back)", type: "number", value: 0 },
+  dz: { label: "Δz (+ up)", type: "number", value: -5 },
+  tiprack: { label: "Tip rack", type: "select", options: { opentrons_flex_96_tiprack_1000ul: "Flex 1000 µL", opentrons_flex_96_tiprack_50ul: "Flex 50 µL" } },
+  mode: { label: "Pickup", type: "select", options: { single: "Single tip (A1 nozzle)", column: "Full column (8 tips)" } },
+  well_single: { key: "well", label: "Tip well", type: "select", options: Object.fromEntries(SINGLE_ORDER.map(w => [w, w])), showIf: { mode: "single" } },
+  column: { label: "Column", type: "number", value: 1, showIf: { mode: "column" } },
+  well: { label: "Well", type: "select", options: Object.fromEntries(WELLS96.map(w => [w, w])) },
+  origin: { label: "From", type: "select", options: { top: "Well top", bottom: "Well bottom" } },
+  offset: { label: "Offset (mm)", type: "number", value: 5 },
+  clearance: { label: "Above rack (mm)", type: "number", value: 10 },
+  volume: { label: "Volume (µL)", type: "number", value: 50 },
+  push_out: { label: "Push out", type: "select", options: { default: "Default", none: "None (keep plunger ready)" } },
+  aspirate: { label: "Aspirate (µL/s)", type: "number", value: 160 },
+  dispense: { label: "Dispense (µL/s)", type: "number", value: 160 },
+  blow_out: { label: "Blow out (µL/s)", type: "number", value: 80 },
+  grip_z: { label: "Jaw height z (mm)", type: "number", value: 7.2 },
+  force: { label: "Force (N, 5–25)", type: "number", value: 15 },
+  plan: { label: "Route", type: "select", options: {}, dynamic: "plans" },
+  celsius: { label: "Target (°C)", type: "number", value: 4 },
+  seconds: { label: "Seconds", type: "number", value: 5 },
+  message: { label: "Note", type: "text", value: "" },
+};
+const KINDS = {
+  home:              { g: "motion", icon: "home", title: "Home", hint: "Home every axis", fields: [] },
+  recover:           { g: "motion", icon: "refresh", title: "Recover", hint: "After a stop: home and reconcile", fields: [] },
+  move_to_slot:      { g: "motion", icon: "target", title: "Move to slot centre", hint: "Rough position: slot centre, between wells", fields: ["mount", "slot", "z"] },
+  move_to_well:      { g: "motion", icon: "pin", title: "Move to well", hint: "Any well of labware in Inventory", fields: ["pmount", "slot", "well", "origin", "offset"] },
+  move_to_tip_well:  { g: "motion", icon: "crosshair", title: "Move above tip", hint: "A1 nozzle over a rack well, to check alignment", fields: ["pmount", "slot", "well", "clearance"] },
+  move_to:           { g: "motion", icon: "move", title: "Move to coordinates", hint: "Absolute deck position", fields: ["mount", "x", "y", "z"] },
+  move_relative:     { g: "motion", icon: "move", title: "Jog", hint: "Nudge from the current position", fields: ["mount", "dx", "dy", "dz"] },
+  pick_up_tip:       { g: "tips", icon: "tip", title: "Pick up tip", hint: "Single tips from row H up, or a column", fields: ["pmount", "tiprack", "slot", "mode", "well_single", "column"] },
+  drop_tip_trash:    { g: "tips", icon: "trash", title: "Drop tip in trash", hint: "Trash bin in D1", fields: ["pmount"] },
+  tip_presence:      { g: "tips", icon: "sensor", title: "Read tip sensor", hint: "No motion", fields: ["pmount"] },
+  mark_rack_full:    { g: "tips", icon: "refresh", title: "Rack refilled", hint: "Mark every tip in a rack as present", fields: ["slot"] },
+  prepare_for_aspirate: { g: "liquid", icon: "gauge", title: "Prepare to aspirate", hint: "Do it above the liquid", fields: ["pmount"] },
+  aspirate:          { g: "liquid", icon: "drop", title: "Aspirate", hint: "At the current well", fields: ["pmount", "volume"] },
+  dispense:          { g: "liquid", icon: "drop", title: "Dispense", hint: "At the current well", fields: ["pmount", "volume", "push_out"] },
+  blow_out:          { g: "liquid", icon: "wind", title: "Blow out", hint: "Empty the tip", fields: ["pmount"] },
+  set_flow_rates:    { g: "liquid", icon: "gauge", title: "Set flow rates", hint: "µL/s for later moves", fields: ["pmount", "aspirate", "dispense", "blow_out"] },
+  pick_plate:        { g: "gripper", icon: "hand", title: "Pick up plate", hint: "Open · lower · grip · lift (PE)", fields: ["slot", "grip_z", "force"] },
+  place_plate:       { g: "gripper", icon: "plate", title: "Place plate", hint: "Lower · release · lift (PE)", fields: ["slot", "grip_z", "force"] },
+  move_labware:      { g: "gripper", icon: "route", title: "Move labware (preset)", hint: "Unit mode route; B2 needs a Magnetic Block", fields: ["plan"] },
+  gripper_home_jaw:  { g: "gripper", icon: "open", title: "Open jaw", hint: "Home the jaw (fully open)", fields: [] },
+  gripper_close:     { g: "gripper", icon: "close", title: "Close jaw", hint: "Grip with force (PE)", fields: ["force"] },
+  gripper_open:      { g: "gripper", icon: "open", title: "Release jaw", hint: "Ungrip (PE)", fields: ["force"] },
+  gripper_home_z:    { g: "gripper", icon: "up", title: "Home gripper Z", hint: "Straight up only", fields: [] },
+  lift_gripper_in_place: { g: "gripper", icon: "up", title: "Lift gripper in place", hint: "After a stall: straight up, jaw stays closed", fields: [] },
+  release_gripper_in_place: { g: "gripper", icon: "open", title: "Release jaw in place", hint: "After a stall: open only the jaw", fields: [] },
+  gripper_empty:     { g: "gripper", icon: "check", title: "Gripper is empty", hint: "After taking a plate out by hand", fields: [] },
+  set_temperature_and_wait: { g: "modules", icon: "temp", title: "Set temperature", hint: "Waits until reached", fields: ["celsius"] },
+  deactivate_temperature:   { g: "modules", icon: "temp", title: "Temperature off", hint: "Stop heating or cooling", fields: [] },
+  delay:             { g: "flow", icon: "clock", title: "Delay", hint: "Wait without moving", fields: ["seconds"] },
+  comment:           { g: "flow", icon: "msg", title: "Comment", hint: "A note in the sequence", fields: ["message"] },
+  // Kinds that only come from an imported protocol: edited with generic fields.
+  move:              { g: "motion", icon: "move", title: "Move", hidden: true },
+  drop_tip:          { g: "tips", icon: "trash", title: "Drop tip", hidden: true },
+  configure_tip_type:{ g: "tips", icon: "tip", title: "Configure tip type", hidden: true },
+  configure_nozzles: { g: "tips", icon: "tip", title: "Configure nozzles", hidden: true },
+  touch_tip:         { g: "liquid", icon: "target", title: "Touch tip", hidden: true },
+  switch_mode:       { g: "flow", icon: "refresh", title: "Switch connector mode", hidden: true },
+};
+// Imported steps of these kinds carry extra keys (e.g. "at"); show them with generic fields too.
+const GENERIC_WHEN = params => params && ("location" in params || "at" in params || "target" in params || "labware" in params);
+const GROUPS = { motion: "Motion", tips: "Tips", liquid: "Liquids", gripper: "Gripper", modules: "Modules", flow: "Flow" };
+const DEFAULTS = {
+  pick_up_tip: { mount: "RIGHT", tiprack: "opentrons_flex_96_tiprack_1000ul", slot: "C3", mode: "single", well: "H1", column: 1 },
+  move_to_slot: { mount: "RIGHT", slot: "D2" }, move_to_tip_well: { mount: "RIGHT", slot: "C3", well: "A1", clearance: 10 },
+  move_to_well: { mount: "RIGHT", slot: "C2", well: "A1", origin: "top", offset: 5 },
+  pick_plate: { slot: "A1", grip_z: 7.2, force: 15 }, place_plate: { slot: "C2", grip_z: 7.2, force: 15 },
+  mark_rack_full: { slot: "C3" }, drop_tip_trash: { mount: "RIGHT" }, tip_presence: { mount: "RIGHT" },
+};
+let PLANS = [], INVENTORY = null, running = false, busy = false, stopRequested = false, selected = null, MODE = null;
+
+// ---------------------------------------------------------------- helpers
+const $ = id => document.getElementById(id);
+const icon = name => `<svg class="i" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+function toast(text) { const t = $("toast"); t.textContent = text; t.classList.add("on"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("on"), 3600); }
+async function api(path, body, method) {
+  const opts = { method: method || (body === undefined ? "GET" : "POST") };
+  if (body instanceof FormData) opts.body = body;
+  else if (body !== undefined) { opts.headers = { "Content-Type": "application/json" }; opts.body = JSON.stringify(body); }
+  return (await fetch(path, opts)).json();
+}
+
+// ---------------------------------------------------------------- tabs
+for (const tab of document.querySelectorAll(".tabs button")) {
+  tab.onclick = () => {
+    for (const t of document.querySelectorAll(".tabs button")) t.setAttribute("aria-selected", t === tab);
+    for (const p of document.querySelectorAll(".pane")) p.classList.toggle("on", p.id === "pane-" + tab.dataset.tab);
+    if (tab.dataset.tab === "inventory") loadInventory();
+    if (tab.dataset.tab === "workflows") loadWorkflows();
+  };
+}
+
+// ---------------------------------------------------------------- palette
+const palette = $("palette");
+for (const [group, title] of Object.entries(GROUPS)) {
+  const items = Object.entries(KINDS).filter(([, k]) => k.g === group && !k.hidden);
+  if (!items.length) continue;
+  palette.insertAdjacentHTML("beforeend", `<div class="group-title">${title}</div>`);
+  for (const [kind, spec] of items) {
+    const block = document.createElement("div");
+    block.className = `block g-${spec.g}`; block.draggable = true;
+    block.innerHTML = `<span class="ico">${icon(spec.icon)}</span><span class="txt"><div class="t">${spec.title}</div><div class="h">${spec.hint}</div></span>
+      <button class="icon-btn" aria-label="Add ${spec.title}">${icon("plus")}</button>`;
+    block.querySelector("button").onclick = () => { const el = addStep(kind); select(el); el.classList.add("open"); el.scrollIntoView({ block: "nearest" }); };
+    block.addEventListener("dragstart", e => e.dataTransfer.setData("text/new-kind", kind));
+    palette.append(block);
+  }
+}
+
+// ---------------------------------------------------------------- sequence
+const seq = $("seq");
+const steps = () => [...seq.querySelectorAll(".step")];
+function renderEmpty() {
+  const empty = seq.querySelector(".empty");
+  if (!steps().length && !empty) seq.innerHTML = `<div class="empty">${icon("layers")}<div><b>No steps yet</b></div><div class="note">Drag commands from Build, import a protocol, or load a saved workflow.</div></div>`;
+  if (steps().length && empty) empty.remove();
+  $("count").textContent = `${steps().length} step${steps().length === 1 ? "" : "s"}`;
+}
+
+function fieldInput(f, value) {
+  let input;
+  if (f.type === "select") {
+    input = document.createElement("select"); input.className = "in";
+    const options = f.dynamic === "plans" ? Object.fromEntries(PLANS.map(p => [p.id, `${p.labware}: ${p.source} → ${p.destination}`])) : f.options;
+    for (const [v, t] of Object.entries(options)) input.add(new Option(t, v));
+    if (f.dynamic) input.dataset.dynamic = f.dynamic;
+  } else {
+    input = document.createElement("input"); input.className = "in";
+    input.type = f.type === "text" ? "text" : "number"; if (input.type === "number") input.step = "any";
+  }
+  if (value !== undefined && value !== null) input.value = value; else if (f.value !== undefined) input.value = f.value;
+  return input;
+}
+
+function genericFields(container, params, prefix = "") {
+  for (const [key, value] of Object.entries(params)) {
+    if (["seq", "source"].includes(key) && !prefix) continue;
+    const path = prefix + key;
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const fs = document.createElement("fieldset"); fs.innerHTML = `<legend>${esc(key)}</legend>`;
+      genericFields(fs, value, path + ".");
+      container.append(fs); continue;
+    }
+    const label = document.createElement("label"); label.className = "f"; label.textContent = key.replace(/_/g, " ");
+    const input = document.createElement("input"); input.className = "in";
+    if (typeof value === "number") { input.type = "number"; input.step = "any"; input.dataset.type = "number"; }
+    else if (Array.isArray(value)) { input.dataset.type = "list"; }
+    input.value = Array.isArray(value) ? value.join(", ") : value;
+    input.dataset.key = path;
+    label.append(input); container.append(label);
+  }
+}
+
+function summary(kind, p) {
+  const at = p.at ? ` · ${p.at.slot} ${p.at.well}` : "";
+  const xyz = o => o ? `(${(+o.x).toFixed(1)}, ${(+o.y).toFixed(1)}, ${(+o.z).toFixed(1)})` : "";
+  switch (kind) {
+    case "move_to_slot": return `${p.mount} → ${p.slot} · z ${p.z}`;
+    case "move_to_well": return `${p.mount} → ${p.slot} ${p.well} · ${p.origin} ${p.offset >= 0 ? "+" : ""}${p.offset} mm`;
+    case "move_to_tip_well": return `${p.mount} → ${p.slot} ${p.well} · +${p.clearance} mm`;
+    case "move_to": return `${p.mount} → ${xyz(p)}`;
+    case "move_relative": return `${p.mount} Δ (${p.dx}, ${p.dy}, ${p.dz})`;
+    case "move": return `${p.mount} → ${xyz(p.target)}${at}`;
+    case "pick_up_tip": return p.location ? `${p.mount} ← ${p.slot} ${(p.wells || []).join(" ")}` : `${p.mount} ← ${p.slot} ${p.mode === "column" ? "column " + p.column : p.well}`;
+    case "drop_tip": return `${p.mount} → ${p.destination || "drop"}`;
+    case "aspirate": case "dispense": return `${p.mount} · ${p.volume} µL${at}`;
+    case "pick_plate": case "place_plate": return `${p.slot} · jaw z ${p.grip_z} · ${p.force} N`;
+    case "move_labware": return p.plan || `${p.labware}: ${p.source} → ${p.destination}`;
+    case "set_temperature_and_wait": return `${p.celsius} °C`;
+    case "delay": return `${p.seconds} s`;
+    case "comment": return p.message;
+    case "set_flow_rates": return `${p.mount} · ${p.aspirate} / ${p.dispense} / ${p.blow_out} µL/s`;
+    case "configure_nozzles": return `${p.mount} · ${p.layout === "full" ? "all 8 nozzles" : "A1 nozzle only"}`;
+    case "configure_tip_type": return `${p.mount} · ${p.tip_volume} µL tips`;
+    case "switch_mode": return `connector-${p.mode}`;
+    default: return p.mount || "";
+  }
+}
+
+function addStep(kind, params, before) {
+  const spec = KINDS[kind] || { g: "flow", icon: "msg", title: kind, hidden: true };
+  const generic = !spec.fields || GENERIC_WHEN(params);
+  const el = document.createElement("div");
+  el.className = `step g-${spec.g}`; el.dataset.kind = kind; el.draggable = true;
+  el.innerHTML = `<div class="head">
+      <span class="grip">${icon("grip")}</span><span class="num"></span><span class="kind-ico">${icon(spec.icon)}</span>
+      <div class="meta"><div class="title">${esc(spec.title)}</div><div class="sum"></div></div>
+      <div class="acts">
+        <button class="icon-btn" data-act="run" title="Send this step" aria-label="Send this step">${icon("play")}</button>
+        <button class="icon-btn" data-act="dup" title="Duplicate" aria-label="Duplicate">${icon("copy")}</button>
+        <button class="icon-btn danger" data-act="del" title="Delete" aria-label="Delete">${icon("x")}</button>
+      </div></div><div class="fields"></div><div class="result"></div>`;
+  const fields = el.querySelector(".fields");
+  if (!generic) {
+    const values = { ...(DEFAULTS[kind] || {}), ...(params || {}) };
+    for (const name of spec.fields) {
+      const f = { ...F[name], key: F[name].key || name };
+      const label = document.createElement("label"); label.className = "f"; label.textContent = f.label;
+      const input = fieldInput(f, values[f.key]); input.dataset.key = f.key;
+      if (f.type === "number") input.dataset.type = "number";
+      if (f.showIf) label.dataset.showIf = JSON.stringify(f.showIf);
+      label.append(input); fields.append(label);
+    }
+    const keys = spec.fields.map(n => F[n].key || n);
+    el.dataset.extra = JSON.stringify(Object.fromEntries(Object.entries(params || {}).filter(([k]) => !keys.includes(k))));
+  } else {
+    genericFields(fields, params || {});
+    el.dataset.extra = JSON.stringify(Object.fromEntries(Object.entries(params || {}).filter(([k]) => ["seq", "source"].includes(k))));
+  }
+  if (!fields.children.length) fields.remove();
+  el.addEventListener("click", e => {
+    const act = e.target.closest("[data-act]")?.dataset.act;
+    if (act === "run") return runOne(el);
+    if (act === "dup") { const copy = addStep(kind, readParams(el), el.nextSibling); select(copy); return; }
+    if (act === "del") { if (selected === el) selected = null; el.remove(); return changed(); }
+    if (e.target.closest("input,select,fieldset")) return;
+    select(el);
+    if (e.target.closest(".meta")) el.classList.toggle("open");
+  });
+  el.addEventListener("dragstart", e => { if (e.target !== el) return; el.classList.add("dragging"); e.dataTransfer.setData("text/move", "1"); });
+  el.addEventListener("dragend", () => { el.classList.remove("dragging"); changed(); });
+  el.addEventListener("input", () => { applyShowIf(el); updateSummary(el); persist(); });
+  seq.insertBefore(el, before || null);
+  applyShowIf(el); updateSummary(el); changed();
+  return el;
+}
+function applyShowIf(el) {
+  for (const label of el.querySelectorAll("[data-show-if]")) {
+    const cond = JSON.parse(label.dataset.showIf);
+    label.style.display = Object.entries(cond).every(([k, v]) => el.querySelector(`[data-key="${k}"]`)?.value === v) ? "" : "none";
+  }
+}
+function readParams(el) {
+  const params = JSON.parse(el.dataset.extra || "{}");
+  for (const input of el.querySelectorAll("[data-key]")) {
+    if (input.closest("label")?.style.display === "none") continue;
+    const path = input.dataset.key.split(".");
+    let value = input.value;
+    if (input.dataset.type === "number") value = Number(value);
+    if (input.dataset.type === "list") value = value.split(",").map(s => s.trim()).filter(Boolean);
+    let node = params;
+    for (const key of path.slice(0, -1)) node = node[key] = node[key] || {};
+    node[path.at(-1)] = value;
+  }
+  return params;
+}
+function updateSummary(el) { el.querySelector(".sum").textContent = summary(el.dataset.kind, readParams(el)); }
+function changed() { steps().forEach((el, i) => el.querySelector(".num").textContent = i + 1); renderEmpty(); persist(); }
+function select(el) { selected?.classList.remove("sel"); selected = el; el?.classList.add("sel"); }
+function serialize() { return steps().map(el => ({ kind: el.dataset.kind, params: readParams(el) })); }
+function loadSteps(list, replace = true) { if (replace) { seq.innerHTML = ""; selected = null; } for (const s of list) addStep(s.kind, s.params); changed(); }
+
+function dropTarget(y) {
+  return steps().filter(el => !el.classList.contains("dragging")).find(el => { const r = el.getBoundingClientRect(); return y < r.top + r.height / 2; }) || null;
+}
+seq.addEventListener("dragover", e => { e.preventDefault(); seq.classList.add("over"); const moving = seq.querySelector(".dragging"); if (moving) seq.insertBefore(moving, dropTarget(e.clientY)); });
+seq.addEventListener("dragleave", () => seq.classList.remove("over"));
+seq.addEventListener("drop", e => { e.preventDefault(); seq.classList.remove("over"); const kind = e.dataTransfer.getData("text/new-kind"); if (kind) { const el = addStep(kind, null, dropTarget(e.clientY)); select(el); el.classList.add("open"); } });
+
+function persist() { try { localStorage.setItem("flex-console-draft", JSON.stringify({ name: $("seqName").value, steps: serialize() })); } catch {} }
+$("seqName").addEventListener("input", persist);
+
+// ---------------------------------------------------------------- running
+async function execute(el) {
+  for (const other of steps()) other.classList.remove("running");
+  el.classList.remove("done", "failed"); el.classList.add("running");
+  const result = el.querySelector(".result"); result.textContent = "Running…";
+  const kind = el.dataset.kind, params = readParams(el);
+  busy = true; setButtons();
+  const started = Date.now(), title = KINDS[kind]?.title || kind;
+  const elapsed = () => `${Math.round((Date.now() - started) / 1000)} s`;
+  setConn("busy", `Running: ${title} · 0 s`);
+  const ticker = setInterval(async () => {
+    let activity = "";
+    try { const s = await api("/api/state"); if (s.busy && s.activity) activity = s.activity; } catch {}
+    result.textContent = `${activity || "Running…"} (${elapsed()})`;
+    setConn("busy", `${activity || "Running: " + title} · ${elapsed()}`);
+  }, 1000);
+  try {
+    const r = await api("/api/step", { kind, params });
+    el.classList.remove("running"); el.classList.add(r.ok ? "done" : "failed");
+    result.textContent = r.ok ? r.message : r.error;
+    if (!r.ok && /may still be holding a plate/.test(r.error)) {
+      const confirmEmpty = document.createElement("button");
+      confirmEmpty.className = "btn"; confirmEmpty.style.marginTop = "6px";
+      confirmEmpty.innerHTML = `${icon("check")}Gripper is empty, ${kind === "recover" ? "recover" : "home"} anyway`;
+      confirmEmpty.onclick = async ev => { ev.stopPropagation(); await api("/api/step", { kind: "gripper_empty", params: {} }); execute(el); };
+      result.append(document.createElement("br"), confirmEmpty);
+    }
+    return r.ok;
+  } catch (err) {
+    el.classList.remove("running"); el.classList.add("failed"); result.textContent = "The console server did not answer: " + err; return false;
+  } finally { clearInterval(ticker); busy = false; setButtons(); refresh(); refreshHistory(); }
+}
+async function runOne(el) { if (!busy) { select(el); await execute(el); } }
+async function runSequence(start) {
+  const list = steps().slice(start); if (!list.length || busy) return;
+  running = true; stopRequested = false; setButtons();
+  for (const el of list) { if (stopRequested) break; select(el); el.scrollIntoView({ block: "nearest" }); if (!(await execute(el))) { toast("The sequence stopped at a failed step."); break; } }
+  running = false; setButtons();
+}
+$("runAll").onclick = () => runSequence(0);
+$("runFrom").onclick = () => runSequence(selected ? steps().indexOf(selected) : 0);
+$("runNext").onclick = async () => {
+  const el = selected || steps()[0]; if (!el || busy) return;
+  if (await execute(el)) { const next = el.nextElementSibling; if (next?.classList.contains("step")) { select(next); next.scrollIntoView({ block: "nearest" }); } }
+};
+async function stop() { stopRequested = true; const r = await api("/api/stop", {}); toast(r.stopped ? "Stopped: the running command was cancelled and EmergencyStop sent. Run Recover or Home next." : "Stopped the sequence; nothing was running."); }
+$("stop").onclick = stop;
+document.addEventListener("keydown", e => { if (e.key === "Escape") stop(); });
+$("clear").onclick = () => { if (confirm("Clear the whole sequence?")) { seq.innerHTML = ""; selected = null; changed(); } };
+$("expandAll").onclick = () => { const open = !steps().every(el => el.classList.contains("open")); steps().forEach(el => el.classList.toggle("open", open)); };
+function setButtons() { for (const b of document.querySelectorAll("#runAll,#runFrom,#runNext,.step [data-act=run],.pad button,#modePe,#modeUnit")) b.disabled = busy || running; }
+
+// ---------------------------------------------------------------- mode switch
+async function switchMode(mode) {
+  if (busy || mode === MODE) return;
+  if (!confirm(`Switch the connector to connector-${mode} mode? This restarts the connector (1–2 minutes) and homes the robot.`)) return;
+  const tmp = addStep("switch_mode", { mode }); const ok = await execute(tmp);
+  if (ok) { tmp.remove(); changed(); toast(`Connector is in connector-${mode} mode.`); }
+}
+$("modePe").onclick = () => switchMode("pe");
+$("modeUnit").onclick = () => switchMode("unit");
+
+// ---------------------------------------------------------------- jog + teach
+for (const b of document.querySelectorAll("[data-jog]")) {
+  const [axis, sign] = b.dataset.jog.split(":");
+  b.onclick = async () => {
+    if (busy) return;
+    const params = { mount: $("jogMount").value, dx: 0, dy: 0, dz: 0 }; params[axis] = Number($("jogStep").value) * Number(sign);
+    const tmp = addStep("move_relative", params); if (await execute(tmp)) { tmp.remove(); changed(); }
+  };
+}
+$("teach").onclick = async () => {
+  const s = await api("/api/state"); const mount = $("jogMount").value; const p = s.positions?.[mount];
+  if (!p) { toast(`Cannot read the ${mount} position.`); return; }
+  select(addStep("move_to", { mount, x: +p.x.toFixed(2), y: +p.y.toFixed(2), z: +p.z.toFixed(2) }));
+  toast(`Saved ${mount} at (${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}) as a step.`);
+};
+
+// ---------------------------------------------------------------- status
+function setConn(kind, text) { $("connDot").className = "dot " + kind; $("conn").textContent = text; }
+const pos = p => p ? `${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}` : "—";
+function kv(name, value, mono) { return `<dt>${name}</dt><dd${mono ? ' class="mono"' : ""}>${value}</dd>`; }
+async function refresh() {
+  if (busy) return;
+  try {
+    const s = await api("/api/state");
+    if (s.busy) return;
+    if (s.error) { setConn("bad", "SiLA connection problem"); $("status").innerHTML = kv("Error", esc(s.error)); return; }
+    setConn("ok", s.simulating ? "Connected · simulator" : "Connected · Flex");
+    MODE = s.mode || null;
+    $("modePe").setAttribute("aria-pressed", MODE === "pe"); $("modeUnit").setAttribute("aria-pressed", MODE === "unit");
+    $("modeLabel").textContent = MODE ? `connector-${MODE}` : "Connector mode";
+    const m = s.machine, tip = s.tip_contents || {};
+    const tipText = mount => esc(s.tips[mount] || "—") + (tip[mount] ? ` <small>· ${tip[mount].volume} µL ${esc(tip[mount].liquid)}</small>` : "");
+    $("status").innerHTML =
+      kv("State", m.error ? `<span class="pill bad">Error</span> ${esc(m.message)}` : `<span class="pill">Ready</span>`) +
+      kv("E-stop", `<span class="pill ${m.estop === "DISENGAGED" ? "" : "warn"}">${esc(m.estop)}</span>`) +
+      kv("Door", m.door_open ? `<span class="pill warn">Open</span>` : "Closed") +
+      kv("Left", pos(s.positions.LEFT), true) + kv("Right", pos(s.positions.RIGHT), true) +
+      kv("Gripper", (s.gripper_z_known === false ? "Z unknown, homes first on use" : pos(s.positions.GRIPPER)) + (s.holding_plate ? ' <span class="pill warn">Holding plate</span>' : ""), s.gripper_z_known !== false) +
+      kv("Left tip", tipText("LEFT")) + kv("Right tip", tipText("RIGHT"));
+  } catch { setConn("bad", "Console server not answering"); }
+}
+async function refreshHistory() {
+  try {
+    const inv = await api("/api/inventory"); INVENTORY = inv;
+    $("history").innerHTML = (inv.history || []).map(h => `<div class="${h.ok ? "ok" : "bad"}">${h.at.slice(11, 19)} ${h.ok ? "OK" : "FAIL"} ${esc(h.kind)} · ${esc(h.message)}</div>`).join("") || '<div class="note">Nothing run yet.</div>';
+    if ($("pane-inventory").classList.contains("on")) renderInventory();
+  } catch {}
+}
+
+// ---------------------------------------------------------------- import
+const dropZone = $("dropZone"), fileInput = $("protocolFile");
+dropZone.onclick = () => fileInput.click();
+dropZone.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); } };
+dropZone.ondragover = e => { e.preventDefault(); dropZone.classList.add("over"); };
+dropZone.ondragleave = () => dropZone.classList.remove("over");
+dropZone.ondrop = e => { e.preventDefault(); dropZone.classList.remove("over"); if (e.dataTransfer.files[0]) importFile(e.dataTransfer.files[0]); };
+fileInput.onchange = () => { if (fileInput.files[0]) importFile(fileInput.files[0]); fileInput.value = ""; };
+async function importFile(file) {
+  const box = $("importResult");
+  box.innerHTML = `<p><b>${esc(file.name)}</b>: running the Opentrons analysis and compiling to SiLA commands. This can take a minute…</p>`;
+  const form = new FormData(); form.append("protocol", file);
+  const r = await api("/api/import", form);
+  if (!r.ok) { box.innerHTML = `<p style="color:var(--danger)"><b>Not imported.</b> ${esc(r.error)}</p>`; return; }
+  loadSteps(r.steps, $("importMode").value === "replace");
+  $("seqName").value = r.protocol.replace(/\.py$/, ""); persist();
+  const labware = Object.entries(r.inventory.labware).map(([slot, name]) => `<tr><td>${slot}</td><td>${esc(name)}</td></tr>`).join("");
+  const liquids = r.inventory.liquids.map(l => `<tr><td>${l.slot} ${l.well}</td><td>${esc(l.liquid)}</td><td class="num">${l.volume}</td></tr>`).join("");
+  box.innerHTML = `<p><b>${esc(r.protocol)}</b> → ${r.steps.length} SiLA steps. Pipettes: ${Object.entries(r.pipettes).map(([m, n]) => `${m.toLowerCase()} ${esc(n)}`).join(", ")}.</p>
+    <div class="group-title">Deck setup in the protocol</div><table class="list"><tbody>${labware}</tbody></table>
+    ${liquids ? `<div class="group-title">Liquids</div><table class="list"><thead><tr><th>Well</th><th>Liquid</th><th>µL</th></tr></thead><tbody>${liquids}</tbody></table>` : ""}
+    <button class="btn primary" id="applyDeck" style="margin-top:10px">${icon("box")}Use as inventory</button>
+    <p class="note">Every coordinate, flow rate and tip length comes from the Opentrons analysis. Edit any step before you run it; a command with no SiLA mapping refuses the whole import instead of being skipped.</p>`;
+  $("applyDeck").onclick = async () => { const res = await api("/api/inventory", { action: "apply_protocol", ...r.inventory }); toast(res.ok ? "Inventory updated from the protocol." : res.error); refreshHistory(); };
+}
+
+// ---------------------------------------------------------------- workflows
+async function loadWorkflows() {
+  const r = await api("/api/workflows");
+  $("workflowList").innerHTML = (r.workflows || []).map(w => `<div class="wf"><div class="n"><b>${esc(w.name)}</b><small>${w.steps} steps · ${w.updated.slice(0, 16).replace("T", " ")}</small></div>
+      <button class="btn" data-load="${esc(w.name)}">Load</button><button class="icon-btn danger" data-del="${esc(w.name)}" aria-label="Delete ${esc(w.name)}">${icon("x")}</button></div>`).join("") || '<p class="note">No saved workflows yet.</p>';
+  for (const b of document.querySelectorAll("[data-load]")) b.onclick = async () => { const w = await api("/api/workflows?name=" + encodeURIComponent(b.dataset.load)); loadSteps(w.steps); $("seqName").value = b.dataset.load; persist(); toast(`Loaded ${b.dataset.load}.`); };
+  for (const b of document.querySelectorAll("[data-del]")) b.onclick = async () => { if (confirm(`Delete ${b.dataset.del}?`)) { await api("/api/workflows?name=" + encodeURIComponent(b.dataset.del), undefined, "DELETE"); loadWorkflows(); } };
+}
+$("saveWorkflow").onclick = async () => { const r = await api("/api/workflows", { name: $("seqName").value, steps: serialize() }); toast(r.ok ? `Saved “${$("seqName").value}”.` : r.error); loadWorkflows(); };
+$("exportJson").onclick = () => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify({ name: $("seqName").value, steps: serialize() }, null, 2)], { type: "application/json" })); a.download = ($("seqName").value || "sequence") + ".json"; a.click(); };
+$("importJson").onclick = () => { const input = document.createElement("input"); input.type = "file"; input.accept = ".json"; input.onchange = async () => { const data = JSON.parse(await input.files[0].text()); loadSteps(data.steps || data); if (data.name) $("seqName").value = data.name; persist(); }; input.click(); };
+
+// ---------------------------------------------------------------- inventory
+let selectedSlot = null;
+async function loadInventory() { INVENTORY = await api("/api/inventory"); renderInventory(); }
+function renderInventory() {
+  if (!INVENTORY) return;
+  const lw = INVENTORY.labware || {};
+  $("deck").innerHTML = SLOTS.map(slot => { const item = lw[slot];
+    return `<button class="slot ${item ? (item.is_tiprack ? "tip" : "filled") : ""} ${slot === selectedSlot ? "sel" : ""}" data-slot="${slot}"><b>${slot}</b><span>${item ? esc(item.label || item.display_name) : "Empty"}</span></button>`; }).join("");
+  for (const b of document.querySelectorAll(".slot")) b.onclick = () => { selectedSlot = b.dataset.slot; renderInventory(); };
+  const liq = INVENTORY.liquids || [];
+  $("liquidTable").innerHTML = liq.length ? `<table class="list"><thead><tr><th>Well</th><th>Liquid</th><th>µL</th></tr></thead><tbody>${liq.map(l => `<tr><td>${l.slot} ${l.well}</td><td>${esc(l.liquid)}</td><td class="num">${(+l.volume).toFixed(1)}</td></tr>`).join("")}</tbody></table>` : '<p class="note">No liquids recorded. Add them per slot, or import a protocol that loads liquids.</p>';
+  const ed = $("slotEditor");
+  if (!selectedSlot) { ed.innerHTML = '<p class="note">Select a slot to record what stands in it. Well positions for “Move to well” come from this.</p>'; return; }
+  const item = lw[selectedSlot];
+  const options = [...new Set([...(INVENTORY.catalogue || []), ...(item ? [item.load_name] : [])])].map(n => `<option value="${esc(n)}"></option>`).join("");
+  let extra = "";
+  if (item?.is_tiprack) {
+    const used = new Set((INVENTORY.used_tips || {})[selectedSlot] || []);
+    extra = `<div class="group-title" style="margin-top:12px">Tips · ${96 - used.size} left</div><div class="wells">${WELLS96.map(w => `<i class="${used.has(w) ? "used" : ""}" title="${w}"></i>`).join("")}</div>
+      <button class="btn" id="refill">${icon("refresh")}Rack refilled</button>`;
+  } else if (item) {
+    const here = new Set(liq.filter(l => l.slot === selectedSlot).map(l => l.well));
+    extra = `<div class="wells" style="margin-top:12px">${WELLS96.map(w => `<i class="${here.has(w) ? "liq" : ""}" title="${w}"></i>`).join("")}</div>
+      <div class="row"><label class="f">Well<input class="in" id="liqWell" value="A1" style="width:64px"></label>
+      <label class="f">Liquid<input class="in" id="liqName" value="Water" style="width:96px"></label>
+      <label class="f">µL<input class="in" type="number" id="liqVol" value="200"></label>
+      <button class="btn blue" id="setLiquid">Set</button></div>`;
+  }
+  ed.innerHTML = `<div class="group-title" style="margin-top:14px">Slot ${selectedSlot}</div>
+    <div class="row"><label class="f" style="flex:1">Labware<input class="in" list="catalogue" id="lwName" value="${esc(item?.load_name || "")}" placeholder="Opentrons load name"><datalist id="catalogue">${options}</datalist></label></div>
+    <div class="row" style="margin-top:6px"><label class="f" style="flex:1">Label<input class="in" id="lwLabel" value="${esc(item?.label || "")}" placeholder="optional"></label></div>
+    <div class="row" style="margin-top:8px"><button class="btn primary" id="saveSlot">Save</button>${item ? '<button class="btn" id="clearSlot">Empty slot</button>' : ""}</div>${extra}`;
+  $("saveSlot").onclick = () => inventoryAction({ action: "set_labware", slot: selectedSlot, load_name: $("lwName").value.trim(), label: $("lwLabel").value.trim() });
+  if ($("clearSlot")) $("clearSlot").onclick = () => inventoryAction({ action: "remove_labware", slot: selectedSlot });
+  if ($("refill")) $("refill").onclick = () => inventoryAction({ action: "refill_tips", slot: selectedSlot });
+  if ($("setLiquid")) $("setLiquid").onclick = () => inventoryAction({ action: "set_liquid", slot: selectedSlot, well: $("liqWell").value, liquid: $("liqName").value, volume: Number($("liqVol").value) });
+}
+async function inventoryAction(body) { const r = await api("/api/inventory", body); if (!r.ok) { toast(r.error); return; } await loadInventory(); }
+
+// ---------------------------------------------------------------- plans + start
+async function loadInfo() {
+  try {
+    const info = await api("/api/info"); if (info.busy) return;
+    PLANS = info.plans || [];
+    for (const sel of document.querySelectorAll("select[data-dynamic=plans]")) {
+      const current = sel.value; sel.innerHTML = "";
+      for (const p of PLANS) sel.add(new Option(`${p.labware}: ${p.source} → ${p.destination}`, p.id));
+      if (current) sel.value = current;
+    }
+  } catch {}
+}
+try { const draft = JSON.parse(localStorage.getItem("flex-console-draft") || "null"); if (draft) { $("seqName").value = draft.name || "Untitled sequence"; for (const s of draft.steps || []) addStep(s.kind, s.params); } } catch {}
+renderEmpty(); loadInfo().then(() => steps().forEach(updateSummary)); refresh(); refreshHistory();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
