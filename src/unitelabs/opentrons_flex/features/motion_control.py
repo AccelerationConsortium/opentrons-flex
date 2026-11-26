@@ -163,7 +163,7 @@ class MotionControlFeature(sila.Feature):
             category="robots",
             identifier="MotionController",
             name="Motion Controller",
-            version="2.1",
+            version="2.2",
         )
         self._controller = controller
 
@@ -388,6 +388,38 @@ class MotionControlFeature(sila.Feature):
         """
         po = push_out if push_out > 0 else None
         await self._controller.dispense(_ot3_mount(mount), volume=volume, rate=rate, push_out=po)
+
+    @sila.ObservableCommand(errors=_LIQUID_ERRORS)
+    @observable_action(
+        "Starting {mount.value} dispense without push-out.",
+        "{mount.value} dispense without push-out completed.",
+        "{mount.value} dispense without push-out cancelled.",
+    )
+    async def dispense_without_push_out(
+        self,
+        mount: Mount,
+        volume: _LiquidVolume,
+        rate: _FlowRateMultiplier,
+        *,
+        status: sila.Status,
+        intermediate: sila.Intermediate[OperationProgress],
+    ) -> None:
+        """
+        Expel liquid from the attached tip and stop the plunger at its bottom position.
+
+        Unlike Dispense, no push-out follows even when the tip is emptied, so the
+        pipette stays ready to aspirate in place. Use it for the dispense half of a
+        mix cycle.
+
+        Args:
+            mount: Pipette mount (LEFT or RIGHT).
+            volume: Volume to dispense in µL.
+            rate: Flow-rate multiplier on the pipette's configured dispense rate.
+
+        Yields:
+            Update: Current dispense progress update.
+        """
+        await self._controller.dispense(_ot3_mount(mount), volume=volume, rate=rate, push_out=0.0)
 
     @sila.ObservableCommand(errors=_LIQUID_ERRORS)
     @observable_action(

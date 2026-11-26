@@ -90,6 +90,19 @@ log = logging.getLogger(__name__)
 __version__ = version("unitelabs-opentrons-flex")
 
 
+def _sila_server_version(package_version: str) -> str:
+    """
+    Return the package version in SiLA 2 server form, ``major.minor.patch_label``.
+
+    A PEP 440 local version such as ``0.9.1+asms.1`` becomes ``0.9.1_asms_1``.
+    """
+    public, _, local = package_version.partition("+")
+    return f"{public}_{local.replace('.', '_')}" if local else public
+
+
+SILA_SERVER_VERSION = _sila_server_version(__version__)
+
+
 class _AppWithState(typing.Protocol):
     state: object
 
@@ -105,7 +118,7 @@ _SILA_SERVER_DEFAULTS = {
         _LIBRARY_SILA_DEFAULTS.description,
         "SiLA2 connector for liquid handling, tip and labware movement, modules, and calibration on an Opentrons Flex",
     ),
-    "version": (_LIBRARY_SILA_DEFAULTS.version, str(__version__)),
+    "version": (_LIBRARY_SILA_DEFAULTS.version, SILA_SERVER_VERSION),
     "vendor_url": (_LIBRARY_SILA_DEFAULTS.vendor_url, "https://opentrons.com/"),
 }
 
@@ -118,6 +131,14 @@ SIMULATED_MODULE_NAMES = (
     "gripper",
 )
 """Values accepted by ``OpentronsFlexConfig.simulated_modules``."""
+
+SIMULATED_PIPETTE_NAMES = (
+    "p50_single_flex",
+    "p50_multi_flex",
+    "p1000_single_flex",
+    "p1000_multi_flex",
+)
+"""Pipettes accepted by ``OpentronsFlexConfig.simulated_pipettes``, by Protocol API name."""
 
 
 @dataclasses.dataclass
@@ -164,7 +185,7 @@ class OpentronsFlexConfig(ConnectorBaseConfig):
                 "SiLA2 connector for liquid handling, tip and labware movement, modules, and calibration "
                 "on an Opentrons Flex"
             ),
-            version=str(__version__),
+            version=SILA_SERVER_VERSION,
             vendor_url="https://opentrons.com/",
         )
     )
@@ -238,6 +259,14 @@ class OpentronsFlexConfig(ConnectorBaseConfig):
     the individual ``simulated_*`` flags, which remain accepted for existing files.
     """
 
+    simulated_pipettes: dict[str, str] = dataclasses.field(default_factory=dict)
+    """Simulated pipettes to attach when ``use_simulator`` is enabled, by mount.
+
+    ``{"left": "p1000_single_flex"}``: mounts are ``left`` and ``right``, names are the
+    Protocol API names in ``SIMULATED_PIPETTE_NAMES``. Without it the simulator has no
+    pipette and every tip and liquid command fails with ``PipetteNotAttachedError``.
+    """
+
     recovery_state_path: str | None = None
     """Persist recovery gates (tip quarantine, jaw home) so a restart cannot clear them.
 
@@ -296,6 +325,13 @@ class OpentronsFlexConfig(ConnectorBaseConfig):
         if unknown:
             message = f"Unknown simulated_modules entries {unknown}; choose from {', '.join(SIMULATED_MODULE_NAMES)}."
             raise ValueError(message)
+        for mount, name in self.simulated_pipettes.items():
+            if mount not in ("left", "right") or name not in SIMULATED_PIPETTE_NAMES:
+                message = (
+                    f"simulated_pipettes[{mount}]={name!r} is not a pipette on a pipette mount; mounts are "
+                    f"left and right, pipettes are {', '.join(SIMULATED_PIPETTE_NAMES)}."
+                )
+                raise ValueError(message)
         if self.auto_recovery not in AUTO_RECOVERY_MODES:
             message = f"auto_recovery must be one of {', '.join(AUTO_RECOVERY_MODES)}."
             raise ValueError(message)
@@ -375,14 +411,19 @@ def _simulator_attached_instruments(config: OpentronsFlexConfig) -> dict:
     """Build the explicit instrument inventory passed to the OT3 simulator."""
     from opentrons.hardware_control.types import OT3Mount
 
-    if not config.simulated("gripper"):
-        return {}
-    return {
-        OT3Mount.GRIPPER: {
+    attached: dict = {}
+    for mount, name in config.simulated_pipettes.items():
+        volume, channels, _ = name.split("_")
+        attached[OT3Mount[mount.upper()]] = {
+            "model": f"{volume}_{channels}_v3.5",
+            "id": f"{volume}-{channels}-SIM-{mount}".upper(),
+        }
+    if config.simulated("gripper"):
+        attached[OT3Mount.GRIPPER] = {
             "model": "gripperV1",
             "id": "GRIPPER-SIM-1",
         }
-    }
+    return attached
 
 
 def _register_core_features(
@@ -763,7 +804,11 @@ async def create_app(config: OpentronsFlexConfig) -> collections.abc.AsyncGenera
     legacy_flags = [
         f"simulated_{name}" for name in SIMULATED_MODULE_NAMES if getattr(config, f"simulated_{name}", False)
     ]
-    simulated_modules = [*legacy_flags, *(f"simulated_modules[{name}]" for name in config.simulated_modules)]
+    simulated_modules = [
+        *legacy_flags,
+        *(f"simulated_modules[{name}]" for name in config.simulated_modules),
+        *(f"simulated_pipettes[{mount}]" for mount in config.simulated_pipettes),
+    ]
     if simulated_modules and not config.use_simulator:
         settings = ", ".join(simulated_modules)
         message = (

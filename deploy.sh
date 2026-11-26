@@ -67,7 +67,7 @@ CONFIG_ID="$(printf '%s' "$CONFIG_SHA" | cut -c1-12)"
 DEPLOYMENT_ID="$RELEASE_ID-cfg$CONFIG_ID"
 
 case "$DEPLOYMENT_ID" in
-    *[!A-Za-z0-9._-]*|"")
+    *[!A-Za-z0-9._+-]*|"")
         echo "ERROR: unsafe deployment identifier: $DEPLOYMENT_ID" >&2
         exit 1
         ;;

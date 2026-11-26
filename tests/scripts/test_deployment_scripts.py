@@ -598,3 +598,27 @@ def test_deploy_cleans_uploads_and_keeps_only_active_and_rollback_releases() -> 
     prune = script.index("for old_release in")
     assert '"$KEEP_ACTIVE" | "$KEEP_PREVIOUS" | "$RELEASE_PATH") continue' in script[prune:]
     assert script.index('ln -sfn "$RELEASE_PATH" "$ACTIVE_PATH"') < prune
+
+
+def _deployment_id_accepted(deployment_id: str) -> bool:
+    script = _text("deploy.sh")
+    start = script.index('case "$DEPLOYMENT_ID" in')
+    end = script.index("esac", start) + len("esac")
+    result = subprocess.run(
+        ["sh", "-c", script[start:end], "sh"],
+        env={**os.environ, "DEPLOYMENT_ID": deployment_id},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    return result.returncode == 0
+
+
+def test_deploy_accepts_a_local_version_in_the_deployment_identifier() -> None:
+    assert _deployment_id_accepted("flex-0.9.1+asms.1-ot9.0.0-py3.12-aarch64-799088deb3db-cfgec17ab105368")
+
+
+def test_deploy_rejects_unsafe_deployment_identifiers() -> None:
+    for unsafe in ("", "a b", "a/b", "a;b", "a'b", "$(x)"):
+        assert not _deployment_id_accepted(unsafe), unsafe

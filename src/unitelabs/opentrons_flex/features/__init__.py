@@ -49,7 +49,7 @@ from .liquid_handling import (
     WellGeometry,
 )
 from .motion_control import Lights, MotionControlFeature, Mount, Position
-from .pipette import NozzleConfiguration, PipetteFeature, PipetteInfo
+from .pipette import FlowRates, NozzleConfiguration, PipetteFeature, PipetteInfo
 from .robot_status import (
     EmergencyStopState,
     ModuleConnection,
@@ -73,6 +73,7 @@ __all__ = [
     "FlexStackerLimitSwitchStatus",
     "FlexStackerMaintenanceFeature",
     "FlexStackerStatus",
+    "FlowRates",
     "GripperFeature",
     "HeaterShakerFeature",
     "HopperDoorState",

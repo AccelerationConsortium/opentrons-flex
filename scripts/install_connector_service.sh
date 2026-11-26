@@ -231,9 +231,22 @@ if ! curl --fail --silent -H 'Opentrons-Version: *' --show-error --connect-timeo
     restore_stock
     exit 1
 fi
-if ! curl --fail --silent -H 'Opentrons-Version: *' --show-error --connect-timeout 2 --max-time 10 \
-    http://127.0.0.1:31950/openapi.json |
-    python3 -c "import json,sys; paths=json.load(sys.stdin).get('paths',{}); assert '/unitelabs/runs/{run_id}/mutations' in paths"; then
+# The OpenAPI document is several hundred kB and robot-server builds it on first request, which can
+# take well over 10 s on the Flex; a cut-off transfer is retried instead of failing the deployment.
+routes_present() {
+    curl --fail --silent -H 'Opentrons-Version: *' --show-error --connect-timeout 2 --max-time 60 \
+        http://127.0.0.1:31950/openapi.json |
+        python3 -c "import json,sys; paths=json.load(sys.stdin).get('paths',{}); assert '/unitelabs/runs/{run_id}/mutations' in paths"
+}
+ROUTES=no
+for attempt in 1 2 3; do
+    if routes_present; then
+        ROUTES=yes
+        break
+    fi
+    [ "$attempt" -lt 3 ] && sleep 5
+done
+if [ "$ROUTES" != yes ]; then
     echo "ERROR: controlled mutation routes are absent from embedded robot-server." >&2
     restore_stock
     exit 1

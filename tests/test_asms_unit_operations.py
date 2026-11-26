@@ -52,8 +52,8 @@ class FakeClient:
             PipetteInfo(
                 mount=PipetteMount.RIGHT,
                 attached=True,
-                model="p1000_multi_flex",
-                name="flex_8channel_1000",
+                model="p1000_multi_v3.5",
+                name="p1000_multi_flex",
                 pipette_id="P1000",
                 channels=8,
                 min_volume=5.0,
@@ -240,6 +240,15 @@ async def test_preflight_requires_exact_initial_occupancy() -> None:
 
     with pytest.raises(UnitOperationError, match="prepared initial state"):
         await run_phase(_manifest(), client, "preflight")
+
+
+@pytest.mark.asyncio
+async def test_health_rejects_a_right_pipette_that_is_not_the_eight_channel_1000() -> None:
+    client = FakeClient()
+    client.pipettes[0] = replace(client.pipettes[0], model="p50_multi_v3.5", name="p50_multi_flex")
+
+    with pytest.raises(UnitOperationError, match="p50_multi_flex"):
+        await run_phase(_manifest(), client, "health")
 
 
 @pytest.mark.asyncio

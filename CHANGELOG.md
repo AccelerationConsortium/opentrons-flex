@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- Step console (`python -m unitelabs.opentrons_flex.step_console --robot <ip>`): a local
+  web page that drives the connector over SiLA gRPC. Import an Opentrons Flex protocol
+  and edit the compiled SiLA steps, build sequences by drag and drop, run one step at a
+  time with a jog pad, save workflows. Every XY move lifts all mounts to 150 mm first.
+  A step that needs the other connector mode switches it (pe for direct jaw control,
+  unit for preset plate moves) unless a plate may be in the jaw or a tip is attached.
+  SQLite database (`~/.unitelabs/opentrons-flex/console.db`) for deck inventory, tip
+  usage (single tips from row H upwards), liquid volumes per well, workflows, history.
+- `RecoveryController` 1.0: `LiftGripperInPlace` (home only the gripper Z, jaw stays
+  closed) and `ReleaseGripperInPlace` (open only the jaw), allowed only while recovery
+  is pending, so a plate left in the jaw by a stalled move can be taken out before the
+  full home (which lifts first and opens the jaw at the top).
+- Protocol compiler: maps `configureNozzleLayout` (full, or single A1 nozzle) and tags
+  move, aspirate and dispense steps with the slot, labware and well they address.
+- Fix: `deploy.sh` accepted no `+` in the deployment identifier, so a PEP 440 local
+  version such as `0.9.1+asms.1` could not be deployed.
+- Fix: the connector-unit health check compared the versioned pipette model
+  (`p1000_multi_v3.5`) against the API aliases; it now also accepts the pipette name.
+- Branch build `0.9.1+asms.1` for the AS-MS gRPC test: a distinct package
+  version so `flexctl up` never mistakes a main 0.9.1 bundle for this branch.
+  The SiLA server reports PEP 440 local versions as `0.9.1_asms_1`.
+- `PipetteController` 1.3: `ConfigureTipType` (50/200/1000 µL tips; restores that
+  tip's default flow rates), `SetFlowRates` and `GetFlowRates` in µL/s. A `Rate`
+  of 1 on later liquid commands now runs at exactly the configured µL/s.
+- `MotionController` 2.2: `DispenseWithoutPushOut` keeps the plunger ready to
+  aspirate in place (the dispense half of a mix cycle).
+- Dispensing below the pipette's minimum volume is now allowed (aliquots from
+  liquid already in the tip), as in Protocol Engine; the minimum still bounds
+  aspiration.
+- AS-MS over SiLA gRPC (`asms_sila_workflow`): compiles the prep and corrected
+  wash/elute protocols from Opentrons' own analysis into SiLA steps and runs
+  them over gRPC with vertical-only approaches, A1-nozzle single-tip pickups,
+  instrument-centre trash targets converted to the A1 tip, and the provisioned
+  ASMS gripper plans. Both run end to end on the OT3 simulator.
 - Zero-to-use setup: `bootstrap.sh` / `bootstrap.ps1` install uv, Python 3.12,
   the connector and `flexctl`, then run `flexctl setup`, which either starts the
   simulator or finds a Flex (mDNS), installs an SSH key (direct cable, or USB

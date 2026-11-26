@@ -52,6 +52,16 @@ class DoorOpenError(Exception):
     """
 
 
+class GripperRecoveryNotAllowedError(Exception):
+    """
+    The gripper can only be lifted or released in place while the robot waits for recovery.
+
+    These actions are for a plate left in the jaw by a failed or stopped move. When no recovery
+    is pending, use the usual gripper or labware-movement commands. When a recovery is already
+    running, wait for it to finish.
+    """
+
+
 class ManualStepsRequiredError(Exception):
     """
     Automatic recovery finished, but some steps need a person.
@@ -183,6 +193,54 @@ class RecoveryCoordinator:
             raise EmergencyStopEngagedError(str(exc)) from exc
         self._events.record(EventKind.RECOVERY, "AcknowledgeEmergencyStop", f"E-stop now {state}")
         return state
+
+    def _check_gripper_recovery_action(self, action: str) -> None:
+        if self._gripper is None or not self._gripper.attached:
+            msg = f"No gripper is attached, so there is nothing to {action}."
+            raise GripperRecoveryNotAllowedError(msg)
+        if self._lock.locked():
+            msg = f"A recovery is running; wait for it to finish before you {action}."
+            raise GripperRecoveryNotAllowedError(msg)
+        if self._motion.recovery_state.operation_ready:
+            msg = (
+                "No recovery is pending. Use the usual gripper commands (Ungrip in connector-pe mode, "
+                "or LabwareMovementController)."
+            )
+            raise GripperRecoveryNotAllowedError(msg)
+
+    async def lift_gripper_in_place(self) -> None:
+        """
+        Raise the gripper straight up to the top of travel, keeping the jaw closed.
+
+        For a plate that hit something while being lowered: the gripper Z axis lost its position
+        in the stall, so this homes that one axis, which only moves up. The jaw keeps holding the
+        plate and no other axis moves; every recovery gate stays set, so Recover is still required.
+
+        Raises:
+            GripperRecoveryNotAllowedError: No recovery is pending, a recovery is running, or no gripper is attached.
+        """
+        self._check_gripper_recovery_action("lift the gripper")
+        async with self._lock:
+            await self._gripper.lift_in_place()
+            self._events.record(EventKind.RECOVERY, "RecoveryController", "Gripper lifted in place before recovery")
+
+    async def release_gripper_in_place(self) -> None:
+        """
+        Open the gripper jaw where it stopped, before the full home a recovery needs.
+
+        A full home lifts the gripper first and opens the jaw last, at the top of travel, so a
+        plate left in the jaw would fall from there. Releasing first lets an operator take it out.
+        No other axis moves, and every recovery gate stays set: Recover is still required.
+
+        Raises:
+            GripperRecoveryNotAllowedError: No recovery is pending, a recovery is running, or no gripper is attached.
+        """
+        self._check_gripper_recovery_action("release the jaw")
+        async with self._lock:
+            await self._gripper.release_in_place()
+            self._events.record(
+                EventKind.RECOVERY, "RecoveryController", "Gripper jaw released in place before recovery"
+            )
 
     async def recover(self, progress: Callable[[float, str], None] | None = None) -> list[str]:
         """
@@ -434,6 +492,7 @@ __all__ = [
     "AutoRecovery",
     "DoorOpenError",
     "EmergencyStopEngagedError",
+    "GripperRecoveryNotAllowedError",
     "ManualStepsRequiredError",
     "PlannedStep",
     "RecoveryCoordinator",

@@ -1,0 +1,20 @@
+{
+  "runs": {
+    "prep": {
+      "protocol": "../asms_single_point_plate_prep.py",
+      "labware": [
+        "../labware/thermokingfisherdeepwell_96_wellplate_2000ul.json",
+        "../labware/azenta_96_wellplate_200ul_pcr.json"
+      ],
+      "labware_identifiers": {}
+    },
+    "wash-elute": {
+      "protocol": "../asms_single_point_wash_and_elute.py",
+      "labware": [
+        "../labware/thermokingfisherdeepwell_96_wellplate_2000ul.json",
+        "../labware/azenta_96_wellplate_200ul_pcr.json"
+      ],
+      "labware_identifiers": {"A1": "asms-plate", "B1": "elution-plate"}
+    }
+  }
+}
