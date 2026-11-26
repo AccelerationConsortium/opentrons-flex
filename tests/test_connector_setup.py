@@ -58,6 +58,42 @@ def test_simulated_modules_list_and_legacy_flags_are_equivalent() -> None:
     assert _simulator_attached_instruments(from_list).keys() == _simulator_attached_instruments(from_flags).keys()
 
 
+async def test_simulated_pipettes_are_attached_to_the_simulator_by_mount() -> None:
+    from opentrons.hardware_control.ot3api import OT3API
+    from opentrons.hardware_control.types import OT3Mount
+
+    from unitelabs.opentrons_flex import SIMULATED_PIPETTE_NAMES
+
+    assert _simulator_attached_instruments(OpentronsFlexConfig(use_simulator=True)) == {}
+    for name in SIMULATED_PIPETTE_NAMES:
+        config = OpentronsFlexConfig(
+            use_simulator=True, simulated_modules=["gripper"], simulated_pipettes={"left": name}
+        )
+        inventory = _simulator_attached_instruments(config)
+        assert set(inventory) == {OT3Mount.LEFT, OT3Mount.GRIPPER}
+        api = await OT3API.build_hardware_simulator(attached_instruments=inventory)
+        try:
+            await api.cache_instruments()
+            attached = api.attached_instruments[OT3Mount.LEFT.to_mount()]
+            assert attached["name"] == name
+        finally:
+            await api.clean_up()
+
+
+def test_a_simulated_pipette_needs_a_pipette_mount_and_a_flex_pipette() -> None:
+    for pipettes in ({"gripper": "p50_single_flex"}, {"left": "p300_single_gen2"}):
+        with pytest.raises(ValueError, match="p1000_multi_flex"):
+            OpentronsFlexConfig(use_simulator=True, simulated_pipettes=pipettes)
+
+
+async def test_simulated_pipettes_are_rejected_in_live_mode() -> None:
+    from unitelabs.opentrons_flex import create_app
+
+    generator = create_app(OpentronsFlexConfig(use_simulator=False, simulated_pipettes={"left": "p50_single_flex"}))
+    with pytest.raises(ValueError, match=r"simulated_pipettes\[left\]"):
+        await generator.__anext__()
+
+
 def test_unknown_simulated_module_is_rejected_with_the_valid_choices() -> None:
     with pytest.raises(ValueError, match="heater_shaker"):
         OpentronsFlexConfig(use_simulator=True, simulated_modules=["magnetic_module"])
